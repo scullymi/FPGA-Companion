@@ -1350,20 +1350,30 @@ void menu_notify_network_disconnected(void) {
 
 void menu_joystick_state(unsigned char state) {
   static unsigned char prev_state = 0;
+  static TickType_t last_event = 0;   // when the last event was sent
 
   if(state != prev_state) {
-    static unsigned long msg;
-    menu_debugf("Joystick state change to %02x", state);
+    // Use the newly pressed bits, not state: holding up and touching right
+    // (08 -> 09) must not send up again.
+    unsigned char pressed = state & ~prev_state;
+    unsigned long msg = 0;
+    TickType_t now = xTaskGetTickCount();
+    menu_debugf("Joystick state change to %02x (new %02x)", state, pressed);
 
-    msg = 0;
-    if(state & 0x08) msg = MENU_EVENT_UP;      
-    if(state & 0x04) msg = MENU_EVENT_DOWN;      
-    if(state & 0x02) msg = MENU_EVENT_BACK;      
-    if(state & 0x10) msg = MENU_EVENT_SELECT;
-    if(state & 0x20) msg = MENU_EVENT_BACK;
-    if(!msg) msg = MENU_EVENT_KEY_RELEASE;
-    menu_notify(msg);
+    if(pressed & 0x08) msg = MENU_EVENT_UP;
+    if(pressed & 0x04) msg = MENU_EVENT_DOWN;
+    if(pressed & 0x02) msg = MENU_EVENT_BACK;
+    if(pressed & 0x10) msg = MENU_EVENT_SELECT;
+    if(pressed & 0x20) msg = MENU_EVENT_BACK;
 
+    // at most one event per 150 ms against a bouncing stick
+    if(msg && (now - last_event) < pdMS_TO_TICKS(150)) msg = 0;
+    if(msg) last_event = now;
+
+    // all event bits released: stop the key repeat
+    if(!msg && !(state & 0x3e)) msg = MENU_EVENT_KEY_RELEASE;  // 0x3e = 0x02|0x04|0x08|0x10|0x20, the bits used above
+
+    if(msg) menu_notify(msg);
     prev_state = state;
   }
 }
