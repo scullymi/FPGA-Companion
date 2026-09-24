@@ -41,7 +41,10 @@
 #else   
 // change to 0 if using on-board native micro USB
 // change to 1 if using pico-pio-usb as host controller for raspberry rp2040
+// can be set from the build instead, e.g. -DCFG_TUH_RPI_PIO_USB=0
+#ifndef CFG_TUH_RPI_PIO_USB
 #define CFG_TUH_RPI_PIO_USB   1
+#endif
 #endif
 
 #define BOARD_TUH_RHPORT      CFG_TUH_RPI_PIO_USB
