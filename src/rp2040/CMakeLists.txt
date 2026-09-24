@@ -52,6 +52,13 @@ endif()
 include(./pico_sdk_import.cmake)
 
 project(${PROJECT} C CXX ASM)
+
+# USB host on the Pico's own micro USB port (OTG adapter) instead of PIO USB on GP2/GP3
+option(NATIVE_USB "Use the Pico's own micro USB port as USB host" OFF)
+if(NATIVE_USB)
+  message("Native USB host port selected")
+  add_compile_definitions(CFG_TUH_RPI_PIO_USB=0)
+endif()
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
