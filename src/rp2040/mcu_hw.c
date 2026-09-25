@@ -1403,7 +1403,9 @@ void mcu_hw_wifi_scan(void) {
 bool mcu_hw_wifi_connect(char *ssid, char *key) {
   if(!wifi_available()) return false;
 
-  debugf("WiFI: connect to %s/%s", ssid, key);
+  // key length only, logs end up in bug reports
+  debugf("WiFI: connect to %s (key: %u characters, not shown)",
+         ssid, (unsigned)(key ? strlen(key) : 0));
   
   if(!(network_status & NETWORK_STATUS_WIFI_AUTO))
     at_wifi_puts("Connecting...");

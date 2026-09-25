@@ -252,7 +252,8 @@ enum {
   CONFIG_TYPE_STRING,
   CONFIG_TYPE_IP,
   CONFIG_TYPE_INT,
-  CONFIG_TYPE_CHOICE
+  CONFIG_TYPE_CHOICE,
+  CONFIG_TYPE_SECRET   // string, debug output shows only its length
 };
 
 struct config_value_s {
@@ -294,7 +295,7 @@ static const struct {
 
   // wifi settings
   { "WIFI", "SSID", CONFIG_TYPE_STRING, NULL },
-  { "WIFI", "PASS", CONFIG_TYPE_STRING, NULL },
+  { "WIFI", "PASS", CONFIG_TYPE_SECRET, NULL },
 
   // (S)NTP
   { "NTP", "IP", CONFIG_TYPE_IP, NULL },
@@ -335,6 +336,10 @@ static void inifile_config_dump(void) {
 	switch(cfg->type) {
 	case CONFIG_TYPE_STRING:
 	  ini_debugf("    %s", val->data.str);	
+	  break;
+
+	case CONFIG_TYPE_SECRET:
+	  ini_debugf("    <%u characters, not shown>", (unsigned)strlen(val->data.str));
 	  break;
 
 	case CONFIG_TYPE_CHOICE:
@@ -509,6 +514,7 @@ static void inifile_config_parse_line(char *line) {
       
       switch(keys[i].type) {
       case CONFIG_TYPE_STRING:
+      case CONFIG_TYPE_SECRET:
 	// just copy the string	
 	inifile_config_append_value(cfg)->data.str = StrDup(value);
 	break;
