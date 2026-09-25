@@ -57,6 +57,7 @@
 #define SPI_SDC_IMAGE_WRITE   2
 
 #define SPI_TARGET_AUDIO  4   // audio (e.g. to play fake floppy sounds)
+#define SPI_TARGET_RAM    5   // RAM mirror (game RAM snapshot) for RetroAchievements
 #define SPI_AUDIO_ENABLE  1
 #define SPI_AUDIO_BUFFER  2   // return audio buffer usage
 #define SPI_AUDIO_WRITE   3

@@ -12,6 +12,103 @@
 #include "../menu.h"
 #include "../inifile.h"
 #include "../debug.h"
+#include "../spi.h"     /* SPI_TARGET_RAM */
+
+/* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
+   snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
+   as the first byte of the next transfer. The sizes must match ram_mirror_pkg.sv of
+   the game20k FPGA core. */
+#define RAM_MIRROR_HEAD  8
+#define RAM_MIRROR_DATA  5120                        /* bgram + wram1..3            */
+#define RAM_MIRROR_LOG   1536                        /* oracle log, 512 x 3 bytes   */
+#define RAM_MIRROR_BODY  (RAM_MIRROR_DATA + RAM_MIRROR_LOG)
+#define RAM_MIRROR_FOOT  (RAM_MIRROR_HEAD + RAM_MIRROR_BODY)
+#define RAM_MIRROR_BYTES (RAM_MIRROR_FOOT + 8)       /* 6672 */
+
+static unsigned char ram_mirror_buf[RAM_MIRROR_BYTES];
+static unsigned char ram_mirror_verdict = 0xA5;
+static int ram_mirror_frame = -1;                    /* frame number of the last good snapshot */
+static unsigned char ram_mirror_seen[RAM_MIRROR_DATA / 8];
+
+/* Read the header first. Byte 7 set means a harvest was running when the transfer
+   started: the shadow is half old, half new, so skip it and retry on the next poll.
+   That is normal, the verdict stays. From the verdict byte on, the FPGA starts no
+   new harvest until chip select rises, so a clear byte 7 holds to the end. A harvest
+   starting in exactly that clock tears the snapshot, the checksum (0xE6) catches it.
+   The header read is full duplex: hdr_tx goes to the FPGA meanwhile. */
+static void ram_mirror_poll(void) {
+  unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0,0,0,0,0,0,0,0 };
+
+  mcu_hw_spi_begin();
+  mcu_hw_spi_tx_u08(SPI_TARGET_RAM);
+  mcu_hw_spi_tx_u08(ram_mirror_verdict);     /* verdict on the previous transfer */
+  mcu_hw_spi_txrx_block(hdr_tx, ram_mirror_buf, RAM_MIRROR_HEAD);
+
+  /* Verdict: 0xA5 ok, otherwise the failed check. 0xE1 magic, 0xE2 layout,
+     0xE4 frame number, 0xE6 checksum, 0xE7 log overflow, 0xE8 and 0xE9 see below. */
+  if(ram_mirror_buf[0] != 'R' || ram_mirror_buf[1] != 'A' ||
+     ram_mirror_buf[2] != 'C' || ram_mirror_buf[3] != 'H') {
+    mcu_hw_spi_end(); ram_mirror_verdict = 0xE1; return;
+  }
+  if(ram_mirror_buf[4] != 0x02) {            /* layout 2: game RAM plus oracle log */
+    mcu_hw_spi_end(); ram_mirror_verdict = 0xE2; return;
+  }
+  if(ram_mirror_buf[7] != 0x00) {            /* harvest running, retry next poll */
+    mcu_hw_spi_end(); return;
+  }
+  /* frame number counts harvests: same as the last good snapshot means nothing new */
+  int frame = ram_mirror_buf[5] | (ram_mirror_buf[6] << 8);
+  if(frame == ram_mirror_frame) {
+    mcu_hw_spi_end(); return;
+  }
+
+  mcu_hw_spi_rx_block(ram_mirror_buf + RAM_MIRROR_HEAD,
+                      RAM_MIRROR_BYTES - RAM_MIRROR_HEAD);
+  mcu_hw_spi_end();
+
+  /* Same checksum the FPGA forms when it fills the FIFO, over game RAM and oracle
+     log. Rotate before XOR so that the byte order counts. */
+  unsigned short sum = 0;
+  for(unsigned int i = RAM_MIRROR_HEAD; i < RAM_MIRROR_FOOT; i++)
+    sum = (unsigned short)(((sum << 1) | (sum >> 15)) ^ ram_mirror_buf[i]);
+
+  const unsigned char *ftr  = ram_mirror_buf + RAM_MIRROR_FOOT;
+  unsigned short       want = (unsigned short)(ftr[4] | (ftr[5] << 8));
+
+  /* Checksum before the underrun bit: the bit only says the FIFO ran empty, the
+     checksum says whether data arrived wrong. */
+  if(ram_mirror_buf[5] != ftr[0] ||
+     ram_mirror_buf[6] != ftr[1])                 { ram_mirror_verdict = 0xE4; return; }
+  if(sum != want)                                 { ram_mirror_verdict = 0xE6; return; }
+  if(ftr[3] != 0x00)                              { ram_mirror_verdict = 0xE7; return; }
+
+  /* Underrun with a good checksum did no harm: keep the snapshot, report 0xE8. */
+  unsigned char note = (ftr[2] != 0x00) ? 0xE8 : 0xA5;
+
+  /* Oracle. The log holds every game write during the harvest, and the snapshot must
+     carry the last value written to each of those addresses. Walk the log backwards
+     and check only the first hit per address. Other addresses cannot differ. */
+  unsigned int n = (unsigned int)ftr[6] | (((unsigned int)ftr[7] & 3u) << 8);
+  if(n > RAM_MIRROR_LOG / 3) n = RAM_MIRROR_LOG / 3;
+
+  for(unsigned int i = 0; i < sizeof(ram_mirror_seen); i++) ram_mirror_seen[i] = 0;
+
+  unsigned short bad = 0;
+  for(int i = (int)n - 1; i >= 0; i--) {
+    const unsigned char *e = ram_mirror_buf + RAM_MIRROR_HEAD + RAM_MIRROR_DATA + 3 * i;
+    unsigned short flat = (unsigned short)(e[0] | (e[1] << 8));
+    if(flat >= RAM_MIRROR_DATA) continue;                  /* cannot happen, guards the index */
+    if(ram_mirror_seen[flat >> 3] & (1u << (flat & 7))) continue;
+    ram_mirror_seen[flat >> 3] |= (unsigned char)(1u << (flat & 7));
+    if(ram_mirror_buf[RAM_MIRROR_HEAD + flat] != e[2]) bad++;
+  }
+  if(bad) { ram_mirror_verdict = 0xE9; return; }     /* snapshot does not match the log */
+
+  ram_mirror_frame   = frame;
+  ram_mirror_verdict = note;
+}
+
+
 #include "../ftpd.h"
 #include "../telnetd.h"
 #include "../xml.h"
@@ -104,8 +201,10 @@ static void com_task(__attribute__((unused)) void *p ) {
   
     for(;;) {
       mcu_hw_irq_ack();  // (re-)enable interrupt
-      ulTaskNotifyTake( pdTRUE, portMAX_DELAY);    
-      sys_handle_interrupts(sys_irq_ctrl(0xff), false);
+      /* wake at least every 20 ms to poll the RAM mirror, not only on an interrupt */
+      if(ulTaskNotifyTake( pdTRUE, pdMS_TO_TICKS(20) ))
+        sys_handle_interrupts(sys_irq_ctrl(0xff), false);
+      ram_mirror_poll();
     }
   }
 

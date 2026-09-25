@@ -21,6 +21,9 @@ void mcu_hw_reset(void);
 void mcu_hw_spi_begin(void);
 unsigned char mcu_hw_spi_tx_u08(unsigned char b);
 void mcu_hw_spi_end(void);
+/* block transfers for the RAM mirror, implemented for rp2040 only */
+void mcu_hw_spi_rx_block(unsigned char *buf, unsigned int len);
+void mcu_hw_spi_txrx_block(const unsigned char *tx, unsigned char *rx, unsigned int len);
 
 bool mcu_hw_hid_present(void);
 void mcu_hw_usb_sector_read(void *buffer, int sector, int count);

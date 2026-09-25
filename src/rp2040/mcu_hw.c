@@ -642,6 +642,18 @@ unsigned char mcu_hw_spi_tx_u08(unsigned char b) {
   return retval;
 }
 
+/* Block read for the RAM mirror (about 6.7 kB per poll), sends 0x00. One call per
+   byte would make the call overhead set the rate. Bytes can follow back to back,
+   which is why the FPGA counts them in the SPI clock. */
+void mcu_hw_spi_rx_block(unsigned char *buf, unsigned int len) {
+  spi_read_blocking(SPI_BUS, 0x00, buf, len);
+}
+
+/* Full-duplex block: sends tx while receiving rx. */
+void mcu_hw_spi_txrx_block(const unsigned char *tx, unsigned char *rx, unsigned int len) {
+  spi_write_read_blocking(SPI_BUS, tx, rx, len);
+}
+
 /* ======================================================================= */
 /* ======                   custom usb host drivers              ========= */
 /* ======================================================================= */
