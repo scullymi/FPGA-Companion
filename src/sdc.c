@@ -370,6 +370,15 @@ static inline char *StrDup(const char *s) {
   return res;
 }
 
+// Same for strndup: cwd[] is freed with vPortFree(), so it must come from the FreeRTOS
+// heap as well, not from the C library.
+static inline char *StrNDup(const char *s, size_t n) {
+  char *res = pvPortMalloc(n+1);
+  memcpy(res, s, n);
+  res[n] = '\0';
+  return res;
+}
+
 void sdc_set_default(int drive, const char *name) {
   sdc_debugf("set default %d: %s", drive, name);
   if(drive >= MAX_DRIVES+MAX_IMAGES) return;
@@ -380,7 +389,7 @@ void sdc_set_default(int drive, const char *name) {
     char *p = strrchr(name+strlen(CARD_MOUNTPOINT), '/');
     if(p && *p) {
       if(cwd[drive]) vPortFree(cwd[drive]);
-      cwd[drive] = strndup(name, p-name);
+      cwd[drive] = StrNDup(name, p-name);
       if(image_name[drive]) vPortFree(image_name[drive]);
       image_name[drive] = StrDup(p+1);
     }
