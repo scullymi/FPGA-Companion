@@ -12,6 +12,8 @@
 
 #include <stdio.h>
 #include <strings.h>
+#include <time.h>
+#include <sys/time.h>
 #include "tusb.h"
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
@@ -777,6 +779,10 @@ static void netif_status_callback(struct netif *netif) {
 void sntp_set_system_time(u32_t sec) {
   debugf("%s(%lu)", __FUNCTION__, sec);
 
+  // set the Pico's own clock too, in UTC, get_fattime() reads it
+  struct timeval tv = { .tv_sec = (time_t)sec, .tv_usec = 0 };
+  settimeofday(&tv, NULL);
+
   time_t ut = sec + 3600 * inifile_config_get_int("ntp", "timezone", 0);
   struct tm* timeinfo = gmtime(&ut);
 
@@ -794,6 +800,21 @@ void sntp_set_system_time(u32_t sec) {
   sys_set_time(SYS_TIME_FLAGS_NTP | ( timeinfo->tm_isdst?SYS_TIME_FLAGS_DST:0),
 	       timeinfo->tm_year, timeinfo->tm_mon, timeinfo->tm_mday + (timeinfo->tm_wday << 5),
 	       timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+}
+
+// file timestamps for FatFs, local time like the core clock. Until SNTP
+// has set the clock, keep the fixed date from ffconf.h
+DWORD get_fattime(void) {
+  time_t t = time(NULL) + 3600 * inifile_config_get_int("ntp", "timezone", 0);
+  struct tm tm;
+
+  if(!gmtime_r(&t, &tm) || tm.tm_year < 80 || tm.tm_year > 80 + 127)      // tm_year counts from 1900: clock not set yet (1970) or outside FAT's 1980-2107
+    return (DWORD)(FF_NORTC_YEAR - 1980) << 25 |                          // then the fixed date from ffconf.h, same layout as below
+           (DWORD)FF_NORTC_MON << 21 | (DWORD)FF_NORTC_MDAY << 16;
+
+  return (DWORD)(tm.tm_year - 80) << 25 | (DWORD)(tm.tm_mon + 1) << 21 |  // bits 31-25 year since 1980, 24-21 month
+         (DWORD)tm.tm_mday << 16 | (DWORD)tm.tm_hour << 11 |              // bits 20-16 day, 15-11 hour
+         (DWORD)tm.tm_min << 5 | (DWORD)(tm.tm_sec / 2);                  // bits 10-5 minute, 4-0 seconds/2
 }
 
 static void netif_up(struct netif *netif) {
