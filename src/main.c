@@ -13,6 +13,9 @@
 #include "../inifile.h"
 #include "../debug.h"
 #include "../spi.h"     /* SPI_TARGET_RAM */
+#include "rc_runtime.h"
+#include "../ra_patch.h"
+#include "pico/time.h"
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
@@ -30,6 +33,39 @@ static unsigned char ram_mirror_verdict = 0xA5;
 static int ram_mirror_frame = -1;                    /* frame number of the last good snapshot */
 static unsigned char ram_mirror_seen[RAM_MIRROR_DATA / 8];
 
+/* rcheevos evaluates the achievement conditions over each good snapshot. The set
+   is defined on the flat layout of the mirror (bgram 2048, then wram1..3 of 1024
+   each), so an address is the offset in the snapshot. */
+static rc_runtime_t   ra_rt;
+static bool           ra_ready;
+static unsigned char  ra_triggered;         /* achievements triggered, saturating */
+static unsigned char  ra_last;              /* last one, 1-based position in the set */
+static unsigned short ra_us;                /* evaluation time of the last snapshot */
+static unsigned       ra_oob;               /* reads outside the mirror */
+
+static uint32_t ra_peek(uint32_t address, uint32_t num_bytes, void *ud) {
+  (void)ud;
+  /* outside the mirror there is nothing, say so once instead of reading air */
+  if(address + num_bytes > RAM_MIRROR_DATA) {
+    if(!ra_oob++) debugf("RA: condition reads 0x%lx, outside the mirror", (unsigned long)address);
+    return 0;
+  }
+  const unsigned char *p = ram_mirror_buf + RAM_MIRROR_HEAD + address;
+  switch(num_bytes) {
+  case 1: return p[0];
+  case 2: return p[0] | (p[1] << 8);
+  case 4: return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24);
+  default: return 0;
+  }
+}
+
+static void ra_event(const rc_runtime_event_t *ev) {
+  if(ev->type != RC_RUNTIME_EVENT_ACHIEVEMENT_TRIGGERED) return;
+  if(ra_triggered < 255) ra_triggered++;
+  ra_last = (unsigned char)ra_patch_index(ev->id);
+  debugf("RA: achievement %u triggered: %s", (unsigned)ev->id, ra_patch_title(ev->id));
+}
+
 /* Read the header first. Byte 7 set means a harvest was running when the transfer
    started: the shadow is half old, half new, so skip it and retry on the next poll.
    That is normal, the verdict stays. From the verdict byte on, the FPGA starts no
@@ -38,6 +74,12 @@ static unsigned char ram_mirror_seen[RAM_MIRROR_DATA / 8];
    The header read is full duplex: hdr_tx goes to the FPGA meanwhile. */
 static void ram_mirror_poll(void) {
   unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0,0,0,0,0,0,0,0 };
+  /* back channel for the diagnostic bars of the FPGA: the rcheevos state */
+  hdr_tx[0] = ra_triggered;
+  hdr_tx[1] = (unsigned char)ra_patch_count();
+  hdr_tx[2] = (unsigned char)(ra_us & 0xff);
+  hdr_tx[3] = (unsigned char)(ra_us >> 8);
+  hdr_tx[4] = ra_last;
 
   mcu_hw_spi_begin();
   mcu_hw_spi_tx_u08(SPI_TARGET_RAM);
@@ -103,6 +145,18 @@ static void ram_mirror_poll(void) {
     if(ram_mirror_buf[RAM_MIRROR_HEAD + flat] != e[2]) bad++;
   }
   if(bad) { ram_mirror_verdict = 0xE9; return; }     /* snapshot does not match the log */
+
+  /* rcheevos only sees a snapshot that passed every check. The set is read from
+     the card at the first one. */
+  if(!ra_ready) {
+    rc_runtime_init(&ra_rt);
+    ra_patch_load(&ra_rt);
+    ra_ready = true;
+  }
+  absolute_time_t t0 = get_absolute_time();
+  rc_runtime_do_frame(&ra_rt, ra_event, ra_peek, NULL, NULL);
+  int64_t dt = absolute_time_diff_us(t0, get_absolute_time());
+  ra_us = dt > 65535 ? 65535 : (unsigned short)dt;
 
   ram_mirror_frame   = frame;
   ram_mirror_verdict = note;

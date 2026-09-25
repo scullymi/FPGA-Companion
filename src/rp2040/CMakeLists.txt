@@ -75,6 +75,9 @@ include(./FreeRTOS_Kernel_import.cmake)
 file(GLOB U8G2_SRC ../u8g2/csrc/*.c)
 add_library(u8g2 ${U8G2_SRC})
 
+# rcheevos (submodule), for the achievements of the game20k core
+set(RCHEEVOS_DIR ${CMAKE_CURRENT_LIST_DIR}/../rcheevos)
+
 add_executable(${PROJECT}
 	../main.c
 	mcu_hw.c
@@ -99,6 +102,28 @@ add_executable(${PROJECT}
 	../ps2helper.c
 	../ftpd.c
 	../telnetd.c
+	../ra_patch.c
+	# rcheevos: the runtime that evaluates the conditions and the reader for the
+	# set (rapi), no rc_client. rc_validate.c stays out, only the editor needs it.
+	${RCHEEVOS_DIR}/src/rcheevos/alloc.c
+	${RCHEEVOS_DIR}/src/rcheevos/condition.c
+	${RCHEEVOS_DIR}/src/rcheevos/condset.c
+	${RCHEEVOS_DIR}/src/rcheevos/consoleinfo.c
+	${RCHEEVOS_DIR}/src/rcheevos/format.c
+	${RCHEEVOS_DIR}/src/rcheevos/lboard.c
+	${RCHEEVOS_DIR}/src/rcheevos/memref.c
+	${RCHEEVOS_DIR}/src/rcheevos/operand.c
+	${RCHEEVOS_DIR}/src/rcheevos/richpresence.c
+	${RCHEEVOS_DIR}/src/rcheevos/runtime.c
+	${RCHEEVOS_DIR}/src/rcheevos/runtime_progress.c
+	${RCHEEVOS_DIR}/src/rcheevos/trigger.c
+	${RCHEEVOS_DIR}/src/rcheevos/value.c
+	${RCHEEVOS_DIR}/src/rapi/rc_api_common.c
+	${RCHEEVOS_DIR}/src/rapi/rc_api_runtime.c
+	${RCHEEVOS_DIR}/src/rc_util.c
+	${RCHEEVOS_DIR}/src/rc_compat.c
+	${RCHEEVOS_DIR}/src/rc_version.c
+	${RCHEEVOS_DIR}/src/rhash/md5.c
 )
 
 family_add_pico_pio_usb(${PROJECT})
@@ -164,6 +189,9 @@ string(APPEND CMAKE_C_FLAGS " -Os -fdata-sections -ffunction-sections -Wno-error
 target_link_libraries(${PROJECT} PRIVATE pico_stdlib pico_multicore)
 target_link_libraries(${PROJECT} PRIVATE FreeRTOS-Kernel FreeRTOS-Kernel-Heap4)
 target_link_libraries(${PROJECT} PRIVATE hardware_pio hardware_dma hardware_spi hardware_adc)
+# rcheevos, without threads
+target_include_directories(${PROJECT} PRIVATE ${RCHEEVOS_DIR}/include ${RCHEEVOS_DIR}/src)
+target_compile_definitions(${PROJECT} PRIVATE RC_NO_THREADS=1)
 target_link_libraries(${PROJECT} PRIVATE pico_cyw43_arch_lwip_sys_freertos)
 target_link_libraries(${PROJECT} PRIVATE pico_btstack_cyw43 pico_btstack_classic)
 target_link_libraries(${PROJECT} PRIVATE tinyusb_host tinyusb_board u8g2)
