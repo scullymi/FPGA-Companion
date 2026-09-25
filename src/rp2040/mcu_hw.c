@@ -17,6 +17,7 @@
 #include "tusb.h"
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
+#include "hardware/dma.h"
 #include "hardware/flash.h"
 #include "../usb_controller_maps.h"
 
@@ -642,11 +643,38 @@ unsigned char mcu_hw_spi_tx_u08(unsigned char b) {
   return retval;
 }
 
-/* Block read for the RAM mirror (about 6.7 kB per poll), sends 0x00. One call per
-   byte would make the call overhead set the rate. Bytes can follow back to back,
-   which is why the FPGA counts them in the SPI clock. */
+/* Block read for the RAM mirror (about 6.7 kB per poll) by DMA: one channel sends
+   0x00, one stores what comes back, both paced by the SPI. Bytes follow back to
+   back, which is why the FPGA counts them in the SPI clock. */
+static int spi_dma_tx = -1, spi_dma_rx = -1;
+
 void mcu_hw_spi_rx_block(unsigned char *buf, unsigned int len) {
-  spi_read_blocking(SPI_BUS, 0x00, buf, len);
+  static unsigned char zero = 0;     // in RAM, flash may be busy while the DMA runs
+
+  if(spi_dma_tx < 0) {               // claimed on first use, after the drivers took theirs
+    spi_dma_tx = dma_claim_unused_channel(true);
+    spi_dma_rx = dma_claim_unused_channel(true);
+  }
+
+  dma_channel_config c = dma_channel_get_default_config(spi_dma_tx);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+  channel_config_set_dreq(&c, spi_get_dreq(SPI_BUS, true));
+  channel_config_set_read_increment(&c, false);
+  dma_channel_configure(spi_dma_tx, &c, &spi_get_hw(SPI_BUS)->dr, &zero, len, false);
+
+  c = dma_channel_get_default_config(spi_dma_rx);
+  channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+  channel_config_set_dreq(&c, spi_get_dreq(SPI_BUS, false));
+  channel_config_set_read_increment(&c, false);
+  channel_config_set_write_increment(&c, true);
+  dma_channel_configure(spi_dma_rx, &c, buf, &spi_get_hw(SPI_BUS)->dr, len, false);
+
+  dma_start_channel_mask((1u << spi_dma_tx) | (1u << spi_dma_rx));
+
+  // sleep for the whole milliseconds of the transfer, the CPU is free meanwhile
+  unsigned int us = len * 8000u / (spi_get_baudrate(SPI_BUS) / 1000u);
+  vTaskDelay(pdMS_TO_TICKS(us / 1000));
+  dma_channel_wait_for_finish_blocking(spi_dma_rx);
 }
 
 /* Full-duplex block: sends tx while receiving rx. */
