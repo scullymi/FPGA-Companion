@@ -303,6 +303,11 @@ static const struct {
 
   // MENU/OSD
   { "MENU", "GAMEPAD_TRIGGER", CONFIG_TYPE_INT, NULL },
+
+  // RetroAchievements: USER is the account name, TOKEN the connect token from
+  // r=login2, not the password and not the web API key
+  { "RA", "USER", CONFIG_TYPE_STRING, NULL },
+  { "RA", "TOKEN", CONFIG_TYPE_SECRET, NULL },
   
   { NULL, NULL, 0, NULL }
 };
