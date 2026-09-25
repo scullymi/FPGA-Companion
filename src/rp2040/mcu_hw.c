@@ -1234,6 +1234,7 @@ bool mcu_hw_wifi_connect(__attribute__((unused)) char *ssid, __attribute__((unus
 }
 #else  
 static bool is_pico_w = false;
+static int wifi_connect_err = 0;   // PICO_ERROR_* of the last connect attempt
 #include "pico/cyw43_arch.h"
 
 static void led_timer_w(__attribute__((unused)) TimerHandle_t pxTimer) {
@@ -1307,8 +1308,14 @@ static void mcu_hw_wifi_init(void) {
 
     debugf("Connecting to WiFi '%s'", inifile_config_get_str("wifi", "ssid"));
 
-    if(!mcu_hw_wifi_connect(inifile_config_get_str("wifi", "ssid"),
-			    inifile_config_get_str("wifi", "pass"))) {
+    // the router may still hold the connection from before a restart and
+    // refuse the first join (-8), so retry at once, but never after a timeout
+    bool connected = false;
+    for(int i=0;i<3 && !connected && wifi_connect_err != PICO_ERROR_TIMEOUT;i++)
+      connected = mcu_hw_wifi_connect(inifile_config_get_str("wifi", "ssid"),
+				      inifile_config_get_str("wifi", "pass"));
+
+    if(!connected) {
       debugf("failed");      
       network_status &= ~NETWORK_STATUS_WIFI_AUTO;
     }
@@ -1431,7 +1438,9 @@ bool mcu_hw_wifi_connect(char *ssid, char *key) {
   if(!(network_status & NETWORK_STATUS_WIFI_AUTO))
     at_wifi_puts("Connecting...");
   
-  if(cyw43_arch_wifi_connect_timeout_ms(ssid, key, CYW43_AUTH_WPA2_AES_PSK, 30000)) {
+  wifi_connect_err = cyw43_arch_wifi_connect_timeout_ms(ssid, key, CYW43_AUTH_WPA2_AES_PSK, 30000);
+  if(wifi_connect_err) {
+    debugf("WiFI: connect failed, error %d", wifi_connect_err);
     if(!(network_status & NETWORK_STATUS_WIFI_AUTO))
       at_wifi_puts("\r\nConnection failed!\r\n");
 
