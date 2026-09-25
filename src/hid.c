@@ -532,8 +532,10 @@ void joystick_parse(const hid_report_t *report, struct hid_joystick_state_S *sta
       joy |= hat_dir;
     }
 
-    usb_debugf("HAT raw=%d norm=%d steps=%d dir=0x%02x%s",
-               hat_raw, v, steps, hat_dir, neutral ? " (neutral)" : "");
+    // log only on change, comment out the 'if' line to print every report
+    if(joy != state->last_state)
+      usb_debugf("HAT raw=%d norm=%d steps=%d dir=0x%02x%s",
+                 hat_raw, v, steps, hat_dir, neutral ? " (neutral)" : "");
   }
 
   if((joy != state->last_state) ||
