@@ -8,11 +8,19 @@
  *  r=patch, and rcheevos' own parser reads it (rc_api_runtime.c). Nothing here
  *  interprets the JSON. Titles are copied into a small table, the parsed
  *  conditions live inside rcheevos. Nothing in this firmware writes the file
- *  yet, it is put on the card from outside. */
+ *  yet, it is put on the card from outside.
+ *
+ *  Two tasks share the work: the RA task reads and parses, so the game loop
+ *  never waits for the card, and hands the parsed set over a queue of one to
+ *  com_task, which activates it and alone changes rcheevos and the table. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 
+#include <FreeRTOS.h>
+#include <task.h>
+#include <queue.h>
 #include "rc_api_runtime.h"
 #include <ff.h>
 #include "debug.h"
@@ -40,17 +48,23 @@ static const ra_dip_t game_dips[] = { { 'L', 2 }, { 'B', 2 } };
 #define RA_PATCH_WARNING_ID 101000001u
 
 // the set file as it was read, for rcheevos' parser. Static, 40 KB would not
-// fit on a task's stack.
+// fit on a task's stack. RA task only.
 static char     body[RA_PATCH_BODY_MAX];
 static unsigned body_len;
 
+// one parsed set on its way from the RA task to com_task. rcheevos copies what
+// it needs out of the file, so a parsed set does not depend on body[].
+static QueueHandle_t handover;
+
 // the achievements that are active: the title for the log, the 1-based position
 // for the FPGA back channel and the RA task. rcheevos only reports an id when
-// one fires.
-static struct {
+// one fires. Written by com_task only.
+/** One achievement of the active set. */
+typedef struct {
   unsigned id;                        /**< achievement id on the server */
   char     title[RA_PATCH_TITLE_MAX];  /**< its title, cut to fit */
-} set[RA_PATCH_MAX];
+} entry_t;
+static entry_t  set[RA_PATCH_MAX];
 static unsigned set_n;
 
 const char *ra_game_hash(void) { return RA_PATCH_GAME_HASH; }
@@ -132,8 +146,8 @@ static int parse_body(rc_api_fetch_game_data_response_t *r) {
   sr.body = body;
   sr.body_length = body_len;
   sr.http_status_code = 200;
-  // unusable: not JSON or broken JSON, a required field missing, no memory, or a
-  // reply the server marked as failed. The server's text, else rcheevos' own.
+  // unusable: not JSON or broken JSON, a required field missing, or a reply
+  // the server marked as failed. The server's text, else rcheevos' own.
   int rv = rc_api_process_fetch_game_data_server_response(r, &sr);
   if(rv != RC_OK || !r->response.succeeded) {
     debugf("RA: set unusable: %s", r->response.error_message ? r->response.error_message :
@@ -151,24 +165,24 @@ static int parse_body(rc_api_fetch_game_data_response_t *r) {
 /* Activates the core achievements and fills the title table. A condition that
    rcheevos rejects is reported, it would otherwise never fire in silence. */
 static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_t *r) {
-  unsigned i, rejected = 0;
+  entry_t  next[RA_PATCH_MAX];
+  unsigned i, j, n = 0, rejected = 0;
 
   // every achievement of the set once: skip what does not count, stop when the
   // table is full, and hand the condition string of the others to rcheevos.
   // Stopping keeps rcheevos and the table in step: an achievement active without
   // a table entry would fire without title and position.
-  set_n = 0;
   for(i = 0; i < r->num_achievements; i++) {
     const rc_api_achievement_definition_t *a = &r->achievements[i];
     if(!core_item(a)) continue;
-    if(set_n >= RA_PATCH_MAX) {
+    if(n >= RA_PATCH_MAX) {
       debugf("RA: more than %u achievements, the rest is ignored", (unsigned)RA_PATCH_MAX);
       break;
     }
     // rcheevos parses the condition string and checks it from the next frame on,
     // it fires only after the condition was false once. NULL, 0 are the Lua
-    // arguments, unused. A string it cannot parse, or no memory for it, and the
-    // achievement is not activated and does not enter the table.
+    // arguments, unused. A string it cannot parse is not activated and does not
+    // enter the table. One it knows already with the same condition keeps running.
     int rv = rc_runtime_activate_achievement(rt, a->id, a->definition, NULL, 0);
     if(rv != RC_OK) {
       debugf("RA: condition %u (%s) rejected, code %d, it will never fire",
@@ -177,27 +191,66 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
       continue;
     }
     // keep id and title, snprintf cuts a long title to the table
-    set[set_n].id = a->id;
-    snprintf(set[set_n].title, sizeof(set[set_n].title), "%s", a->title ? a->title : "");
-    set_n++;
+    next[n].id = a->id;
+    snprintf(next[n].title, sizeof(next[n].title), "%s", a->title ? a->title : "");
+    n++;
   }
 
-  // leaderboards come with the set but are not evaluated yet, the log counts them
+  // what the previous set had and this one does not carry leaves rcheevos too,
+  // so nothing fires without an entry in the table
+  for(i = 0; i < set_n; i++) {
+    for(j = 0; j < n && next[j].id != set[i].id; j++) ;
+    if(j == n) rc_runtime_deactivate_achievement(rt, set[i].id);
+  }
 
+  // the table goes out in one piece: other tasks read it without a lock, and on
+  // this single core a change with interrupts off cannot be seen half done
+  taskENTER_CRITICAL();
+  memcpy(set, next, n * sizeof(set[0]));
+  set_n = n;
+  taskEXIT_CRITICAL();
+
+  // leaderboards come with the set but are not evaluated yet, the log counts them
   debugf("RA: set for '%s': %u achievements active, %u rejected, %u leaderboards ignored",
-         r->title ? r->title : "?", set_n, rejected, (unsigned)r->num_leaderboards);
-  return (int)set_n;
+         r->title ? r->title : "?", n, rejected, (unsigned)r->num_leaderboards);
+  return (int)n;
 }
 
-int ra_patch_load(rc_runtime_t *rt) {
-  rc_api_fetch_game_data_response_t r;
-  int n = -1;
+bool ra_patch_init(void) {
+  if(!handover) handover = xQueueCreate(1, sizeof(rc_api_fetch_game_data_response_t *));
+  return handover != NULL;
+}
 
-  // read, parse, activate. Each step logs its own failure. The parsed response
-  // is freed in every case, rcheevos has copied what it needs.
-  if(!card_read()) return -1;
-  memset(&r, 0, sizeof(r));
-  if(parse_body(&r) == 0) n = activate_set(rt, &r);
-  rc_api_destroy_fetch_game_data_response(&r);
-  return n;
+static void discard(rc_api_fetch_game_data_response_t *r) {
+  rc_api_destroy_fetch_game_data_response(r);
+  free(r);
+}
+
+int ra_patch_read_card(void) {
+  rc_api_fetch_game_data_response_t *r, *old;
+  unsigned i, n = 0;
+
+  // read and parse, each step logs its own failure. The parsed set lives on the
+  // heap until com_task has activated it.
+  if(!handover || !card_read()) return -1;
+  r = malloc(sizeof(*r));
+  if(!r) return -1;        // a guard only, pico_malloc stops the firmware when the heap is out
+  memset(r, 0, sizeof(*r));
+  if(parse_body(r) != 0) {
+    discard(r);
+    return -1;
+  }
+  for(i = 0; i < r->num_achievements; i++) if(core_item(&r->achievements[i])) n++;
+
+  // a set com_task has not taken yet gives way, the newer one counts
+  if(xQueueReceive(handover, &old, 0) == pdTRUE) discard(old);
+  xQueueSend(handover, &r, 0);
+  return (int)n;
+}
+
+void ra_patch_apply_pending(rc_runtime_t *rt) {
+  rc_api_fetch_game_data_response_t *r;
+  if(!handover || xQueueReceive(handover, &r, 0) != pdTRUE) return;
+  activate_set(rt, r);
+  discard(r);               // rcheevos has copied the conditions
 }

@@ -254,13 +254,14 @@ static void ram_mirror_poll(void) {
   }
   if(bad) { ram_mirror_verdict = 0xE9; return; }     /* snapshot does not match the log */
 
-  /* rcheevos only sees a snapshot that passed every check. The set is read from
-     the card at the first one. */
+  /* rcheevos only sees a snapshot that passed every check. The set comes from
+     the RA task, which reads it from the card, and is activated here once it
+     is there. */
   if(!ra_ready) {
     rc_runtime_init(&ra_rt);
-    ra_patch_load(&ra_rt);
     ra_ready = true;
   }
+  ra_patch_apply_pending(&ra_rt);
   absolute_time_t t0 = get_absolute_time();
   rc_runtime_do_frame(&ra_rt, ra_event, ra_peek, NULL, NULL);
   int64_t dt = absolute_time_diff_us(t0, get_absolute_time());

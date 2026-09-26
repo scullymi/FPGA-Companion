@@ -5,6 +5,7 @@
 #ifndef RA_PATCH_H
 #define RA_PATCH_H
 
+#include <stdbool.h>
 #include "rc_runtime.h"
 
 /** @brief Hash the server knows the current game by, an md5 in hex. */
@@ -21,10 +22,19 @@ typedef struct {
 /** @brief The DIP switches the set expects, n of them. NULL when it expects none. */
 const ra_dip_t *ra_game_dips(unsigned *n);
 
-/** @brief Reads the set from the card and activates it. Once, after rc_runtime_init().
+/** @brief Sets up the handover of a parsed set to com_task. Once, before the RA task runs. False when it failed. */
+bool ra_patch_init(void);
+
+/** @brief Reads the set from the card, parses it and hands it to com_task. RA task only.
  *
- *  Returns the number of achievements, or -1 when there is no usable set. */
-int ra_patch_load(rc_runtime_t *rt);
+ *  Returns the number of core achievements in the file, which com_task will try
+ *  to activate, or -1 when there is no usable set. */
+int ra_patch_read_card(void);
+
+/** @brief Activates a set the RA task handed over, if one waits. com_task only, before each frame.
+ *
+ *  Achievements of the previous set that the new one does not carry are deactivated. */
+void ra_patch_apply_pending(rc_runtime_t *rt);
 
 /** @brief Number of core achievements in the active set. */
 unsigned    ra_patch_count(void);

@@ -309,7 +309,11 @@ static void ra_task_main(__attribute__((unused)) void *p) {
 
   debugf("RA: client %s", ra_user_agent());
 
-  // 1. without an account there is nothing to do on the server, and unlocks are
+  // 1. the set from the card, for com_task. The achievements run without an
+  //    account too, only nothing goes to the server then.
+  ra_patch_read_card();
+
+  // 2. without an account there is nothing to do on the server, and unlocks are
   //    not kept: a guest's would later count for the owner
   user    = inifile_config_get_str("ra", "user");
   token   = inifile_config_get_str("ra", "token");
@@ -322,7 +326,7 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   ra_state_load(user);      // before the queue, its lines count as unlocked too
   ra_queue_open(user);
 
-  // 2. certificates are checked against the clock, so wait until NTP has set it.
+  // 3. certificates are checked against the clock, so wait until NTP has set it.
   //    Without a time server this can take forever, so say it once in the log.
   TickType_t tell = xTaskGetTickCount() + pdMS_TO_TICKS(RA_CLOCK_WAIT);
   bool told = false;
@@ -338,14 +342,14 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   }
   state = RA_TASK_CONNECTING;
 
-  // 3. reach the server, with growing pauses while it or the network is down
+  // 4. reach the server, with growing pauses while it or the network is down
   while(!check_server()) {
     state = RA_TASK_RETRYING;
     wait_to_retry(&backoff, "server not reached");
     state = RA_TASK_CONNECTING;
   }
 
-  // 4. log in. A rejected account stays rejected until the next start.
+  // 5. log in. A rejected account stays rejected until the next start.
   debugf("RA: logging in as '%s' (token %u characters, not shown)", user, (unsigned)strlen(token));
   backoff = RA_BACKOFF_MIN;
   for(;;) {
@@ -359,7 +363,7 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   debugf("RA: logged in");
   state = RA_TASK_LOGGED_IN;
 
-  // 5. the account's lists from the server, then the waiting unlocks one by
+  // 6. the account's lists from the server, then the waiting unlocks one by
   //    one, then wait for the next. Once the queue is empty after a submission
   //    changed the lists, they are asked again. When they cannot be fetched,
   //    the state from the card stays, the unlocks still go out, and the lists
@@ -421,7 +425,7 @@ void ra_task_start(void) {
   events    = xQueueCreateSet(RA_EVENTS);
   clock_sem = xSemaphoreCreateBinary();
   unlocks   = ra_queue_init();
-  if(!events || !clock_sem || !unlocks ||
+  if(!events || !clock_sem || !unlocks || !ra_patch_init() ||
      xQueueAddToSet(unlocks, events) != pdPASS || xQueueAddToSet(clock_sem, events) != pdPASS ||
      !ra_net_init(events, on_event)) {
     debugf("RA: events could not be set up");
