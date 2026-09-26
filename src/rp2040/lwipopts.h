@@ -135,8 +135,8 @@ const char *ra_user_agent(void);
 #define DHCP_DEBUG                  LWIP_DBG_OFF
 #define SNTP_DEBUG                  LWIP_DBG_OFF
 
-// in bytes. lwIP's TCP timers also run TLS code in this thread: 1024 overflowed
-// with mbedTLS debug output on, 4096 left 3480 free after a handshake (26.09.2026)
+// in bytes. lwIP's TCP timers also run TLS code in this thread, a handshake
+// leaves about 3.4 KB of it free. Not enough for mbedTLS debug output on top.
 #define TCPIP_THREAD_STACKSIZE 4096
 #define DEFAULT_THREAD_STACKSIZE 1024
 #define TCPIP_THREAD_PRIO 4

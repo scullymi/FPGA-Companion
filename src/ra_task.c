@@ -31,7 +31,7 @@
 #define RA_BACKOFF_MIN  10000u        /**< ms, first pause after a failed request */
 #define RA_BACKOFF_MAX  600000u       /**< ms, the pause doubles up to this */
 #define RA_EVENTS       (RA_QUEUE_HANDOVER + 2)   /**< queue set: the unlocks, the clock, the end of a request */
-#define RA_TASK_STACK   2048          /**< words, about 5 KB stayed free after a TLS handshake (26.09.2026) */
+#define RA_TASK_STACK   2048          /**< words, a TLS handshake leaves about 5 KB of it free */
 
 /** How a login ended, it decides whether to try again. */
 typedef enum {
@@ -475,9 +475,8 @@ void ra_task_start(void) {
     return;
   }
   // below com_task, like wifi_task. The stack is a static array and not taken from
-  // the FreeRTOS heap (112 KB): that is nearly full once an FTP session runs
-  // (12 KB), and 8 KB more of it left FTP no room to open a data connection
-  // (measured 26.09.2026)
+  // the FreeRTOS heap: that heap (112 KB) is nearly full once an FTP session runs
+  // (12 KB), and 8 KB more would leave FTP no room for a data connection
   task = xTaskCreateStatic(ra_task_main, "RA", RA_TASK_STACK, NULL, configMAX_PRIORITIES - 10,
                            task_stack, &task_tcb);
   if(!task) debugf("RA: task could not be created");

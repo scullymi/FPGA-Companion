@@ -41,7 +41,7 @@
 // never fire, without a word.
 static const ra_dip_t game_dips[] = { { 'L', 2 }, { 'B', 2 } };
 
-#define RA_PATCH_BODY_MAX   40960        /**< a whole set, e.g. Galaga 15757 bytes (24.09.2026) */
+#define RA_PATCH_BODY_MAX   40960        /**< a whole set, e.g. Galaga has about 15.7 KB */
 #define RA_PATCH_MAX        64           /**< achievements kept per set, e.g. Galaga 17 */
 #define RA_PATCH_TITLE_MAX  32           /**< titles are cut to 31 characters, the FPGA banner will show 24 */
 #define RA_PATCH_FILE       "/sd/ra_patch.json"   /**< the server's reply to r=patch, kept on the card */

@@ -40,7 +40,7 @@
 #define MBEDTLS_ECDSA_C
 #define MBEDTLS_ECP_DP_SECP256R1_ENABLED
 #define MBEDTLS_ECP_DP_SECP384R1_ENABLED
-#define MBEDTLS_ECP_NIST_OPTIM          /* fast reduction for both curves: 1.3 s instead of 6.8 s per request */
+#define MBEDTLS_ECP_NIST_OPTIM          /* fast reduction for both curves, a request takes 1.3 s with it and 6.8 s without */
 #define MBEDTLS_AES_C
 #define MBEDTLS_AES_ROM_TABLES
 #define MBEDTLS_GCM_C
