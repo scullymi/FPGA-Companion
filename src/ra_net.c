@@ -24,7 +24,7 @@
 #include "ra_ca.h"
 #include "ra_net.h"
 
-#define RA_HOST "retroachievements.org"
+#define RA_HOST "retroachievements.org"   /**< the server, and the name its certificate must carry */
 
 static struct altcp_tls_config *tls;
 static altcp_allocator_t        allocator;
@@ -45,7 +45,7 @@ const char *ra_user_agent(void) {
   return "game20k/v" GAME20K_VERSION " (" GAME20K_PLATFORM ") rcheevos/" RCHEEVOS_VERSION_STRING;
 }
 
-/* mbedTLS asks for a millisecond clock (MBEDTLS_PLATFORM_MS_TIME_ALT) */
+/** @brief Milliseconds since boot, the clock mbedTLS asks for (MBEDTLS_PLATFORM_MS_TIME_ALT). */
 mbedtls_ms_time_t mbedtls_ms_time(void) {
   return (mbedtls_ms_time_t)(to_us_since_boot(get_absolute_time()) / 1000);
 }

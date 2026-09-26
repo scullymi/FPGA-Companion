@@ -14,6 +14,7 @@
 #ifndef RA_CA_H
 #define RA_CA_H
 
+/** @brief GTS Root R4 as PEM. sizeof() includes the final NUL, which lwIP needs to parse it. */
 static const char ra_ca_pem[] =
   "-----BEGIN CERTIFICATE-----\n"
   "MIICCTCCAY6gAwIBAgINAgPlwGjvYxqccpBQUjAKBggqhkjOPQQDAzBHMQswCQYD\n"

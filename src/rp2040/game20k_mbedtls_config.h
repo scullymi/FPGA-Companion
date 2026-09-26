@@ -9,7 +9,9 @@
 #ifndef GAME20K_MBEDTLS_CONFIG_H
 #define GAME20K_MBEDTLS_CONFIG_H
 
-/* platform */
+/** @name Platform
+ *  Entropy from the RP2350 hardware, dates from the NTP clock. */
+/** @{ */
 #define MBEDTLS_PLATFORM_C
 #define MBEDTLS_ALLOW_PRIVATE_ACCESS
 #define MBEDTLS_NO_PLATFORM_ENTROPY     /* no /dev/urandom */
@@ -17,15 +19,21 @@
 #define MBEDTLS_HAVE_TIME
 #define MBEDTLS_HAVE_TIME_DATE          /* certificate dates, needs the NTP clock */
 #define MBEDTLS_PLATFORM_MS_TIME_ALT    /* mbedtls_ms_time() in ra_net.c */
+/** @} */
 
-/* TLS 1.2 client */
+/** @name TLS 1.2 client
+ *  ECDHE-ECDSA with the server name (SNI), nothing else. */
+/** @{ */
 #define MBEDTLS_SSL_TLS_C
 #define MBEDTLS_SSL_CLI_C
 #define MBEDTLS_SSL_PROTO_TLS1_2
 #define MBEDTLS_SSL_SERVER_NAME_INDICATION   /* the server needs SNI */
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED
+/** @} */
 
-/* crypto */
+/** @name Crypto
+ *  P-256 (server key), P-384 (the chain up to GTS Root R4), AES-GCM, SHA-2. */
+/** @{ */
 #define MBEDTLS_BIGNUM_C
 #define MBEDTLS_ECP_C
 #define MBEDTLS_ECDH_C
@@ -43,8 +51,11 @@
 #define MBEDTLS_SHA512_C
 #define MBEDTLS_ENTROPY_C
 #define MBEDTLS_CTR_DRBG_C
+/** @} */
 
-/* certificates */
+/** @name Certificates
+ *  X.509 for the chain, PEM for the anchor in ra_ca.h. */
+/** @{ */
 #define MBEDTLS_PK_C
 #define MBEDTLS_PK_PARSE_C
 #define MBEDTLS_ASN1_PARSE_C
@@ -54,5 +65,6 @@
 #define MBEDTLS_X509_CRT_PARSE_C
 #define MBEDTLS_BASE64_C
 #define MBEDTLS_PEM_PARSE_C             /* the anchor is PEM */
+/** @} */
 
 #endif /* GAME20K_MBEDTLS_CONFIG_H */

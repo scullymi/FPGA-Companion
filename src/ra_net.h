@@ -16,7 +16,7 @@ typedef struct {
   bool          truncated;   /**< the reply did not fit into the buffer */
 } ra_reply_t;
 
-/** @brief GET https://retroachievements.org<path> into buf and wait for the end.
+/** @brief GET path from https://retroachievements.org into buf and wait for the end.
  *
  *  Only from the RA task, one request at a time. Returns 0 when the request ran
  *  (see reply->result and ->status), -1 when it could not start. The log shows

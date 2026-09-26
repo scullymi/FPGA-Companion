@@ -19,13 +19,17 @@
 #include "ra_patch.h"
 #include "ra_task.h"
 
-#define RA_CLOCK_VALID  1735689600u   /* 2025-01-01, an earlier time() is not set yet */
-#define RA_CLOCK_WAIT   60000u        /* ms without time from NTP before the log says so */
-#define RA_BACKOFF_MIN  10000u        /* ms, first pause after a failed request */
-#define RA_BACKOFF_MAX  600000u       /* ms, the pause doubles up to this */
+#define RA_CLOCK_VALID  1735689600u   /**< 2025-01-01, an earlier time() is not set yet */
+#define RA_CLOCK_WAIT   60000u        /**< ms without time from NTP before the log says so */
+#define RA_BACKOFF_MIN  10000u        /**< ms, first pause after a failed request */
+#define RA_BACKOFF_MAX  600000u       /**< ms, the pause doubles up to this */
 
-/* how a login ended, it decides whether to try again */
-typedef enum { LOGIN_OK, LOGIN_REJECTED, LOGIN_RETRY } login_t;
+/** How a login ended, it decides whether to try again. */
+typedef enum {
+  LOGIN_OK,          /**< the server accepted the account */
+  LOGIN_REJECTED,    /**< HTTP 401 or Success:false, no new try until the next start */
+  LOGIN_RETRY        /**< anything else, tried again after a pause */
+} login_t;
 
 static TaskHandle_t task;             // NULL until ra_task_start()
 static char         reply_buf[512];   // replies to the small requests, a few hundred bytes

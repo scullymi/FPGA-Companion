@@ -22,20 +22,23 @@
    knows it by, md5("galaga"), the name of the arcade ROM set. The rest of the
    code asks ra_game_id() and ra_game_hash(), so the game's identity is set only
    here. */
-#define RA_PATCH_GAME_ID    12138u
-#define RA_PATCH_GAME_HASH  "b8140b5e33c53b0f7dd3cc368951a4dd"
+#define RA_PATCH_GAME_ID    12138u                               /**< id on the server */
+#define RA_PATCH_GAME_HASH  "b8140b5e33c53b0f7dd3cc368951a4dd"   /**< md5 of the ROM set name */
 
-#define RA_PATCH_BODY_MAX   40960        /* a whole set, e.g. Galaga 15757 bytes (24.09.2026) */
-#define RA_PATCH_MAX        64           /* achievements kept per set, e.g. Galaga 17 */
-#define RA_PATCH_TITLE_MAX  32           /* the banner shows 24 characters */
-#define RA_PATCH_FILE       "/sd/ra_patch.json"
-/* "Warning: Unknown Emulator", which the server adds for clients it does not
+#define RA_PATCH_BODY_MAX   40960        /**< a whole set, e.g. Galaga 15757 bytes (24.09.2026) */
+#define RA_PATCH_MAX        64           /**< achievements kept per set, e.g. Galaga 17 */
+#define RA_PATCH_TITLE_MAX  32           /**< the banner shows 24 characters */
+#define RA_PATCH_FILE       "/sd/ra_patch.json"   /**< the server's reply to r=patch, kept on the card */
+/** "Warning: Unknown Emulator", which the server adds for clients it does not
    know. Not an achievement of the game. */
 #define RA_PATCH_WARNING_ID 101000001u
 
 static char     body[RA_PATCH_BODY_MAX];
 static unsigned body_len;
-static struct { unsigned id; char title[RA_PATCH_TITLE_MAX]; } set[RA_PATCH_MAX];
+static struct {
+  unsigned id;                        /**< achievement id on the server */
+  char     title[RA_PATCH_TITLE_MAX];  /**< its title, cut to fit */
+} set[RA_PATCH_MAX];
 static unsigned set_n;
 
 const char *ra_game_hash(void) { return RA_PATCH_GAME_HASH; }
