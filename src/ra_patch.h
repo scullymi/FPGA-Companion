@@ -36,6 +36,16 @@ int ra_patch_read_card(void);
  *  Achievements of the previous set that the new one does not carry are deactivated. */
 void ra_patch_apply_pending(rc_runtime_t *rt);
 
+/** @brief The buffer for a set from the server, and its size. RA task only. */
+char *ra_patch_body(unsigned *cap);
+
+/** @brief Takes the server's reply of len bytes in that buffer. RA task only.
+ *
+ *  Undoes the chunked framing, parses the set, keeps it on the card when it
+ *  differs from the set the card had, and hands it to com_task. Returns 1 for a
+ *  new set, 0 when the card already had this one, -1 when the reply is no set. */
+int ra_patch_from_server(unsigned len);
+
 /** @brief Number of core achievements in the active set. */
 unsigned    ra_patch_count(void);
 /** @brief 1-based position of an achievement id in the set, 0 when not in it. */

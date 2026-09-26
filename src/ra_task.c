@@ -274,6 +274,35 @@ static bool fetch_list(bool hardcore, rc_api_fetch_user_unlocks_response_t *resp
   return false;
 }
 
+/* Asks the server for the game's set with r=patch, straight into ra_patch's
+   buffer, and lets ra_patch keep and apply it. false when no usable set came
+   back, for whatever reason: the caller asks again after a pause. A reply too
+   large for the buffer is the one thing that would not change, it is left. */
+static bool fetch_set(void) {
+  rc_api_fetch_game_data_request_t params;
+  rc_api_request_t request;
+  char path[128];
+  ra_reply_t reply;
+  unsigned cap;
+  char *buf = ra_patch_body(&cap);
+
+  memset(&params, 0, sizeof(params));
+  params.username  = user;
+  params.api_token = token;
+  params.game_id   = ra_game_id();
+  if(rc_api_init_fetch_game_data_request(&request, &params) != RC_OK) return false;
+  snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
+  rc_api_destroy_request(&request);
+
+  if(ra_net_get(path, buf, cap, &reply) != 0 || reply.result != 0 || reply.status != 200)
+    return false;
+  if(reply.truncated) {
+    debugf("RA: set from the server is larger than %u bytes, not used", cap - 1);
+    return true;
+  }
+  return ra_patch_from_server(reply.len) >= 0;
+}
+
 /* Both lists from the server, or none: the state never mixes a new list with
    an old one. On success both are kept on the card. */
 static bool fetch_state(void) {
@@ -363,12 +392,13 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   debugf("RA: logged in");
   state = RA_TASK_LOGGED_IN;
 
-  // 6. the account's lists from the server, then the waiting unlocks one by
-  //    one, then wait for the next. Once the queue is empty after a submission
-  //    changed the lists, they are asked again. When they cannot be fetched,
-  //    the state from the card stays, the unlocks still go out, and the lists
-  //    are asked again after a pause.
+  // 6. the account's lists and the game's set from the server, then the
+  //    waiting unlocks one by one, then wait for the next. Once the queue is
+  //    empty after a submission changed the lists, they are asked again. When
+  //    the server does not answer, what the card has stays, the unlocks still
+  //    go out, and the question is asked again after a pause.
   bool state_due = true, state_failed = false, state_stale = false;
+  bool set_due = true, set_failed = false;
   backoff = RA_BACKOFF_MIN;
   for(;;) {
     ra_unlock_t u;
@@ -377,17 +407,24 @@ static void ra_task_main(__attribute__((unused)) void *p) {
       state_failed = !fetch_state();
       if(!state_failed) backoff = RA_BACKOFF_MIN;
     }
+    if(set_due) {
+      set_due = false;
+      set_failed = !fetch_set();
+      if(!set_failed) backoff = RA_BACKOFF_MIN;
+    }
     int h = ra_queue_head(&u);
     if(h == 0) {
       if(state_stale) {
         state_stale = false;          // the lists changed, ask once more
         state_due = true;
-      } else if(state_failed) {
+      } else if(state_failed || set_failed) {
         // ask again after a pause. A new unlock ends the pause, it does not wait
-        debugf("RA: unlocked state not available, the card state stays, next try in %lu s",
+        debugf("RA: %s not fetched, what the card has stays, next try in %lu s",
+               state_failed && set_failed ? "unlocked state and set" : state_failed ? "unlocked state" : "set",
                (unsigned long)(backoff / 1000));
-        state_failed = false;
-        state_due = true;
+        state_due = state_failed;
+        set_due   = set_failed;
+        state_failed = set_failed = false;
         wait_event(pdMS_TO_TICKS(backoff));
         backoff = backoff < RA_BACKOFF_MAX / 2 ? backoff * 2 : RA_BACKOFF_MAX;
       } else
@@ -415,6 +452,11 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     }
     // a pause also after a refusal, so a queue of refused unlocks cannot hammer the server
     wait_to_retry(&backoff, what);
+    // a fetch that failed is due again after that pause too, so a refused unlock
+    // cannot keep the lists or the set from being asked for
+    state_due = state_due || state_failed;
+    set_due   = set_due   || set_failed;
+    state_failed = set_failed = false;
   }
 }
 
