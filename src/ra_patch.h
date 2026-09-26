@@ -1,16 +1,16 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright (C) 2026 scullymi */
 /** @file ra_patch.h
- *  @brief The achievement set of the current game, read from the card, see ra_patch.c. */
+ *  @brief The current game and its achievement set, read from the card, see ra_patch.c. */
 #ifndef RA_PATCH_H
 #define RA_PATCH_H
 
 #include "rc_runtime.h"
 
-/* Galaga on RetroAchievements, and the hash the server knows it by: md5("galaga"),
-   the name of the arcade ROM set */
-#define RA_PATCH_GAME_ID   12138u                               /**< game id on the server */
-#define RA_PATCH_GAME_HASH "b8140b5e33c53b0f7dd3cc368951a4dd"   /**< md5 of the ROM set name */
+/** @brief Hash the server knows the current game by, an md5 in hex. */
+const char *ra_game_hash(void);
+/** @brief Id of the current game on the server. */
+unsigned    ra_game_id(void);
 
 /** @brief Reads the set from the card and activates it. Once, after rc_runtime_init().
  *

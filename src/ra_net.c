@@ -31,7 +31,7 @@ static altcp_allocator_t        allocator;
 static httpc_connection_t       conn;
 static httpc_state_t           *req;
 static SemaphoreHandle_t        done;
-static volatile bool            busy;      /* set at the start, cleared only by on_done */
+static volatile bool            busy;      /* set at the start, cleared by on_done or when the request cannot start */
 
 static char       *dst;
 static unsigned    dst_cap, dst_len;
@@ -50,14 +50,16 @@ mbedtls_ms_time_t mbedtls_ms_time(void) {
   return (mbedtls_ms_time_t)(to_us_since_boot(get_absolute_time()) / 1000);
 }
 
-/* lwIP's HTTP client does not set the server name, the server needs it (SNI).
-   Without it mbedTLS also cannot check the name in the certificate and fails
-   the handshake. */
+/* lwIP's HTTP client does not set the server name. The server needs it (SNI),
+   and mbedTLS checks the certificate against it. Without a name mbedTLS would
+   skip that check, so no connection is opened without it. */
 static struct altcp_pcb *alloc_sni(void *arg, u8_t ip_type) {
   struct altcp_pcb *pcb = altcp_tls_alloc(arg, ip_type);
-  if(pcb) {
-    mbedtls_ssl_context *ssl = (mbedtls_ssl_context *)altcp_tls_context(pcb);
-    if(ssl) mbedtls_ssl_set_hostname(ssl, RA_HOST);
+  if(!pcb) return NULL;
+  mbedtls_ssl_context *ssl = (mbedtls_ssl_context *)altcp_tls_context(pcb);
+  if(!ssl || mbedtls_ssl_set_hostname(ssl, RA_HOST) != 0) {
+    altcp_abort(pcb);       // the request then fails at its start
+    return NULL;
   }
   return pcb;
 }

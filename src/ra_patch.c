@@ -18,6 +18,13 @@
 #include "sdc.h"
 #include "ra_patch.h"
 
+/* The game, fixed for now: Galaga on RetroAchievements, and the hash the server
+   knows it by, md5("galaga"), the name of the arcade ROM set. The rest of the
+   code asks ra_game_id() and ra_game_hash(), so the game's identity is set only
+   here. */
+#define RA_PATCH_GAME_ID    12138u
+#define RA_PATCH_GAME_HASH  "b8140b5e33c53b0f7dd3cc368951a4dd"
+
 #define RA_PATCH_BODY_MAX   40960        /* a whole set, e.g. Galaga 15757 bytes (24.09.2026) */
 #define RA_PATCH_MAX        64           /* achievements kept per set, e.g. Galaga 17 */
 #define RA_PATCH_TITLE_MAX  32           /* the banner shows 24 characters */
@@ -30,6 +37,9 @@ static char     body[RA_PATCH_BODY_MAX];
 static unsigned body_len;
 static struct { unsigned id; char title[RA_PATCH_TITLE_MAX]; } set[RA_PATCH_MAX];
 static unsigned set_n;
+
+const char *ra_game_hash(void) { return RA_PATCH_GAME_HASH; }
+unsigned    ra_game_id(void)   { return RA_PATCH_GAME_ID; }
 
 unsigned ra_patch_count(void) { return set_n; }
 
@@ -78,8 +88,8 @@ static int parse_body(rc_api_fetch_game_data_response_t *r) {
            r->response.error_message ? r->response.error_message : "no valid JSON");
     return -1;
   }
-  if(r->id != RA_PATCH_GAME_ID) {
-    debugf("RA: set is for game %u, not %u", (unsigned)r->id, (unsigned)RA_PATCH_GAME_ID);
+  if(r->id != ra_game_id()) {
+    debugf("RA: set is for game %u, not %u", (unsigned)r->id, ra_game_id());
     return -1;
   }
   return 0;
