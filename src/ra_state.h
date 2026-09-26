@@ -31,10 +31,10 @@ bool ra_state_known(unsigned id);
 /** @brief True when the account has it in softcore only. Any task. */
 bool ra_state_softcore_only(unsigned id);
 
-/** @brief Number of achievements unlocked in hardcore. */
+/** @brief Achievements of the active set unlocked in hardcore, or queued for it. */
 unsigned ra_state_count(void);
 
-/** @brief Number of achievements unlocked in softcore only. */
+/** @brief Achievements of the active set unlocked in softcore only. */
 unsigned ra_state_softcore_count(void);
 
 #endif /* RA_STATE_H */

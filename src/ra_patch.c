@@ -25,6 +25,11 @@
    here. */
 #define RA_PATCH_GAME_ID    12138u                               /**< id on the server */
 #define RA_PATCH_GAME_HASH  "b8140b5e33c53b0f7dd3cc368951a4dd"   /**< md5 of the ROM set name */
+// the switches the set expects: 3 lives (list 'L' value 2) and bonus at 20K/70K
+// (list 'B' value 2), the listentry values of the core's XML. Most of the
+// conditions read these settings from the game's RAM, so with other ones they
+// never fire, without a word.
+static const ra_dip_t game_dips[] = { { 'L', 2 }, { 'B', 2 } };
 
 #define RA_PATCH_BODY_MAX   40960        /**< a whole set, e.g. Galaga 15757 bytes (24.09.2026) */
 #define RA_PATCH_MAX        64           /**< achievements kept per set, e.g. Galaga 17 */
@@ -50,6 +55,10 @@ static unsigned set_n;
 
 const char *ra_game_hash(void) { return RA_PATCH_GAME_HASH; }
 unsigned    ra_game_id(void)   { return RA_PATCH_GAME_ID; }
+const ra_dip_t *ra_game_dips(unsigned *n) {
+  *n = sizeof(game_dips) / sizeof(game_dips[0]);
+  return game_dips;
+}
 
 unsigned ra_patch_count(void) { return set_n; }
 

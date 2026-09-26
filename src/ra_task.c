@@ -339,7 +339,11 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   state = RA_TASK_CONNECTING;
 
   // 3. reach the server, with growing pauses while it or the network is down
-  while(!check_server()) wait_to_retry(&backoff, "server not reached");
+  while(!check_server()) {
+    state = RA_TASK_RETRYING;
+    wait_to_retry(&backoff, "server not reached");
+    state = RA_TASK_CONNECTING;
+  }
 
   // 4. log in. A rejected account stays rejected until the next start.
   debugf("RA: logging in as '%s' (token %u characters, not shown)", user, (unsigned)strlen(token));
@@ -348,7 +352,9 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     login_t r = login();
     if(r == LOGIN_OK) break;
     if(r == LOGIN_REJECTED) { state = RA_TASK_REJECTED; sleep_forever(); }
+    state = RA_TASK_RETRYING;
     wait_to_retry(&backoff, "login failed");
+    state = RA_TASK_CONNECTING;
   }
   debugf("RA: logged in");
   state = RA_TASK_LOGGED_IN;

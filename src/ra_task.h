@@ -13,6 +13,7 @@ typedef enum {
   RA_TASK_NO_ACCOUNT,   /**< no user and token under [RA] in config.ini, achievements stay local */
   RA_TASK_CONNECTING,   /**< waiting for the clock, the server or the login */
   RA_TASK_NO_TIME,      /**< a minute without time from NTP, still waiting for it */
+  RA_TASK_RETRYING,     /**< the server or the login failed, the next try waits for its pause */
   RA_TASK_LOGGED_IN,    /**< the account is in */
   RA_TASK_REJECTED      /**< the server refused the account, no new try until the next start */
 } ra_task_state_t;

@@ -40,10 +40,18 @@ static bool in_list(const unsigned *list, unsigned n, unsigned id) {
 // com_task reads the lists while the RA task may change them. Every change
 // after the start runs with interrupts off, so on this single core a reader
 // never sees a list half copied or a count ahead of its entries.
-bool     ra_state_known(unsigned id)         { return in_list(hard, hard_n, id); }
-bool     ra_state_softcore_only(unsigned id) { return in_list(soft, soft_n, id); }
-unsigned ra_state_count(void)                { return hard_n; }
-unsigned ra_state_softcore_count(void)       { return soft_n; }
+bool ra_state_known(unsigned id)         { return in_list(hard, hard_n, id); }
+bool ra_state_softcore_only(unsigned id) { return in_list(soft, soft_n, id); }
+
+// the counts for the display: only ids of the active set, the account may hold
+// achievements a later set no longer has
+static unsigned count_in_set(const unsigned *list, unsigned n) {
+  unsigned c = 0;
+  for(unsigned i = 0; i < n; i++) if(ra_patch_index(list[i])) c++;
+  return c;
+}
+unsigned ra_state_count(void)          { return count_in_set(hard, hard_n); }
+unsigned ra_state_softcore_count(void) { return count_in_set(soft, soft_n); }
 
 // takes id out of soft, if it is there. Under the critical section of the caller.
 static void drop_soft(unsigned id) {

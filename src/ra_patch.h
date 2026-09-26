@@ -12,6 +12,15 @@ const char *ra_game_hash(void);
 /** @brief Id of the current game on the server. */
 unsigned    ra_game_id(void);
 
+/** @brief A DIP switch the set expects at one value, by the switch's id in the core's XML. */
+typedef struct {
+  char id;      /**< the id of the list in the core's XML, e.g. 'L' */
+  int  value;   /**< the listentry value the set expects, as the menu keeps it and the core gets it */
+} ra_dip_t;
+
+/** @brief The DIP switches the set expects, n of them. NULL when it expects none. */
+const ra_dip_t *ra_game_dips(unsigned *n);
+
 /** @brief Reads the set from the card and activates it. Once, after rc_runtime_init().
  *
  *  Returns the number of achievements, or -1 when there is no usable set. */

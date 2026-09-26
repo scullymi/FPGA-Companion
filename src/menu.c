@@ -31,6 +31,10 @@
 #include "menu.h"
 #include "sysctrl.h"
 #include "debug.h"
+#include "ra_patch.h"
+#include "ra_state.h"
+#include "ra_queue.h"
+#include "ra_task.h"
 #include "mcu_hw.h"
 
 #ifdef ENABLE_BLUETOOTH
@@ -719,6 +723,65 @@ void menu_draw_dialog(const char *title, const char *msg) {
   menu_draw_dialog_for(title, msg, pdMS_TO_TICKS(2000));
 }
 
+// The Network dialog: the address, or that there is none, and the WiFi name
+// under it, since a name is often longer than what fits beside the address.
+static void menu_net_status(void) {
+  char t[80];
+  const char *ssid = inifile_config_has("wifi", "ssid") ? inifile_config_get_str("wifi", "ssid") : "-";
+  if(network_was_connected) snprintf(t, sizeof(t), "IP %s\n%s", network_ipaddr, ssid);
+  else                      snprintf(t, sizeof(t), "not connected\n%s", ssid);
+  menu_draw_dialog_for("Network", t, pdMS_TO_TICKS(8000));
+}
+
+// The Achievements dialog: the account and where it stands, the count, and the
+// most urgent note. Four lines fit the display.
+static void menu_ra_status(void) {
+  char t[100], who[24], count[32], note[24];
+  const char *user = inifile_config_has("ra", "user") ? inifile_config_get_str("ra", "user") : "-";
+  const char *state;
+  const int width = u8g2_GetDisplayWidth(&u8g2);
+  unsigned n, i;
+
+  // the name on one line: a wide one is cut with "..", so the note below stays
+  // on the display
+  snprintf(who, sizeof(who), "%s", user);
+  u8g2_SetFont(&u8g2, font_helvR08_te);
+  for(size_t len = strlen(who); len > 2 && u8g2_GetStrWidth(&u8g2, who) > width; len--) {
+    who[len - 1] = '\0';
+    who[len - 2] = '.';
+    who[len - 3] = '.';
+  }
+
+  switch(ra_task_state()) {
+  case RA_TASK_LOGGED_IN:  state = "logged in";      break;
+  case RA_TASK_REJECTED:   state = "login rejected"; break;
+  case RA_TASK_NO_ACCOUNT: state = "no account";     break;
+  case RA_TASK_NO_TIME:    state = "no time server"; break;
+  case RA_TASK_RETRYING:   state = "retrying";       break;
+  default:                 state = "connecting";     break;
+  }
+  // the counts refer to the active set, without one there is nothing to count
+  if(!ra_patch_count())
+    snprintf(count, sizeof(count), "no set loaded");
+  else if(ra_state_softcore_count())
+    snprintf(count, sizeof(count), "%u of %u, %u softcore", ra_state_count(), ra_patch_count(), ra_state_softcore_count());
+  else
+    snprintf(count, sizeof(count), "%u of %u unlocked", ra_state_count(), ra_patch_count());
+
+  // the note: a DIP switch the set does not expect comes first, its conditions
+  // would never fire, then what still waits for the server. A switch this core
+  // does not have cannot be wrong.
+  const ra_dip_t *dip = ra_game_dips(&n);
+  for(i = 0; dip && i < n; i++)
+    if(menu_variable_exists(dip[i].id) && menu_variable_get(dip[i].id) != dip[i].value) break;
+  if(dip && i < n)            snprintf(note, sizeof(note), "DIP not default!");
+  else if(ra_queue_pending()) snprintf(note, sizeof(note), "%u to send", ra_queue_pending());
+  else                        note[0] = 0;
+
+  snprintf(t, sizeof(t), "%s\n%s\n%s\n%s", who, state, count, note);
+  menu_draw_dialog_for("Achievements", t, pdMS_TO_TICKS(8000));
+}
+
 static void menu_draw(const config_menu_t *menu, int selected, int scroll) {
   u8g2_ClearBuffer(&u8g2);
  
@@ -1048,7 +1111,15 @@ static void menu_select(void) {
   } break;
 
   case CONFIG_MENU_ENTRY_BUTTON:
-    if(entry->button->action)
+    // two buttons the companion answers itself, the action is told by its name.
+    // The rest goes to the core.
+    if(entry->button->action && entry->button->action->name &&
+       !strcmp(entry->button->action->name, "netinfo"))
+      menu_net_status();
+    else if(entry->button->action && entry->button->action->name &&
+            !strcmp(entry->button->action->name, "rainfo"))
+      menu_ra_status();
+    else if(entry->button->action)
       sys_run_action(entry->button->action);
     break;
 	
