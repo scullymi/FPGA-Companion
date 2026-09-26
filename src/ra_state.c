@@ -67,8 +67,9 @@ void ra_state_add(unsigned id) {
   taskEXIT_CRITICAL();
 }
 
-void ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n) {
+bool ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n) {
   unsigned tmp[RA_STATE_MAX], m = 0, fresh = 0, i;
+  unsigned before = hardcore ? hard_n : soft_n;
 
   // the new list, without the server's pseudo achievements. For the softcore
   // list also without what is in hardcore, the server lists those in both.
@@ -94,6 +95,8 @@ void ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n) {
 
   if(hardcore) debugf("RA: server: %u unlocked in hardcore (%u new here)", m, fresh);
   else         debugf("RA: server: %u unlocked in softcore only (%u new here)", m, fresh);
+  // the same ids as before: nothing new came, and with the same count nothing left
+  return fresh > 0 || m != before;
 }
 
 void ra_state_save(void) {

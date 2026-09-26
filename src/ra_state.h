@@ -16,8 +16,8 @@ void ra_state_load(const char *user);
 /** @brief Replaces one list with the server's. RA task only.
  *
  *  hardcore true for the hardcore list, false for the softcore list. Ids of the
- *  server's own pseudo achievements are left out. */
-void ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n);
+ *  server's own pseudo achievements are left out. True when the list changed. */
+bool ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n);
 
 /** @brief Writes both lists to the card. RA task only, after both were replaced. */
 void ra_state_save(void);

@@ -311,9 +311,10 @@ static bool fetch_state(void) {
   memset(&soft, 0, sizeof(soft));
   bool ok = fetch_list(true, &hard) && fetch_list(false, &soft);
   if(ok) {
-    ra_state_replace(true,  hard.achievement_ids, hard.num_achievement_ids);
-    ra_state_replace(false, soft.achievement_ids, soft.num_achievement_ids);
-    ra_state_save();
+    // the card only when something changed, a write holds the SPI bus for the mirror
+    bool changed = ra_state_replace(true, hard.achievement_ids, hard.num_achievement_ids);
+    changed |= ra_state_replace(false, soft.achievement_ids, soft.num_achievement_ids);
+    if(changed) ra_state_save();
   }
   rc_api_destroy_fetch_user_unlocks_response(&hard);
   rc_api_destroy_fetch_user_unlocks_response(&soft);
