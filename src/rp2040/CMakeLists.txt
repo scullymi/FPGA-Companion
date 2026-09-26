@@ -119,6 +119,7 @@ add_executable(${PROJECT}
 	../ra_net.c
 	../ra_task.c
 	../ra_queue.c
+	../ra_state.c
 	# rcheevos: the runtime that evaluates the conditions and the reader for the
 	# set (rapi), no rc_client. rc_validate.c stays out, only the editor needs it.
 	${RCHEEVOS_DIR}/src/rcheevos/alloc.c
@@ -136,6 +137,7 @@ add_executable(${PROJECT}
 	${RCHEEVOS_DIR}/src/rcheevos/value.c
 	${RCHEEVOS_DIR}/src/rapi/rc_api_common.c
 	${RCHEEVOS_DIR}/src/rapi/rc_api_runtime.c
+	${RCHEEVOS_DIR}/src/rapi/rc_api_user.c
 	${RCHEEVOS_DIR}/src/rc_util.c
 	${RCHEEVOS_DIR}/src/rc_compat.c
 	${RCHEEVOS_DIR}/src/rc_version.c

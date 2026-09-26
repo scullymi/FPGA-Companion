@@ -16,12 +16,15 @@
 #include <queue.h>
 #include <semphr.h>
 #include "rc_api_runtime.h"
+#include "rc_api_user.h"
+#include "rc_error.h"
 
 #include "debug.h"
 #include "inifile.h"
 #include "ra_net.h"
 #include "ra_patch.h"
 #include "ra_queue.h"
+#include "ra_state.h"
 #include "ra_task.h"
 
 #define RA_CLOCK_WAIT   60000u        /**< ms without time from NTP before the log says so */
@@ -51,7 +54,7 @@ static StaticTask_t      task_tcb;
 static QueueSetHandle_t  events;           // everything the task waits for
 static SemaphoreHandle_t clock_sem;        // given when NTP has set the clock
 static QueueHandle_t     unlocks;          // com_task -> RA task, see ra_queue.c
-static char              reply_buf[512];   // replies to the small requests, a few hundred bytes
+static char              reply_buf[2048];  // replies to the small requests, the longest is a list of unlocked ids
 static const char       *user, *token;     // [RA] in config.ini, the token is never logged
 static bool              account;          // both are set, only then unlocks are kept
 
@@ -231,6 +234,60 @@ static submit_t submit(const ra_unlock_t *u) {
   return result;
 }
 
+/* Asks the server for one of the account's lists with r=unlocks, h=1 the
+   hardcore one and h=0 the softcore one. A reply that did not fit into the
+   buffer is not used, its list would be incomplete. The caller destroys
+   response in every case. */
+static bool fetch_list(bool hardcore, rc_api_fetch_user_unlocks_response_t *response) {
+  rc_api_fetch_user_unlocks_request_t params;
+  rc_api_request_t request;
+  char path[128];
+  ra_reply_t reply;
+
+  memset(&params, 0, sizeof(params));
+  params.username  = user;
+  params.api_token = token;
+  params.game_id   = ra_game_id();
+  params.hardcore  = hardcore;
+  if(rc_api_init_fetch_user_unlocks_request(&request, &params) != RC_OK) return false;
+  snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
+  rc_api_destroy_request(&request);
+
+  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 ||
+     reply.result != 0 || reply.status != 200 || reply.truncated)
+    return false;
+
+  // rcheevos reads the list, only its error text goes to the log
+  rc_api_server_response_t server;
+  memset(&server, 0, sizeof(server));
+  server.body = reply_buf;
+  server.body_length = reply.len;
+  server.http_status_code = (int)reply.status;
+  int rv = rc_api_process_fetch_user_unlocks_server_response(response, &server);
+  if(rv == RC_OK && response->response.succeeded) return true;
+  debugf("RA: %s list unusable (%s)", hardcore ? "hardcore" : "softcore",
+         response->response.error_message ? response->response.error_message :
+         rv != RC_OK ? rc_error_str(rv) : "marked as failed");
+  return false;
+}
+
+/* Both lists from the server, or none: the state never mixes a new list with
+   an old one. On success both are kept on the card. */
+static bool fetch_state(void) {
+  rc_api_fetch_user_unlocks_response_t hard, soft;
+  memset(&hard, 0, sizeof(hard));     // destroy is safe on a zeroed response
+  memset(&soft, 0, sizeof(soft));
+  bool ok = fetch_list(true, &hard) && fetch_list(false, &soft);
+  if(ok) {
+    ra_state_replace(true,  hard.achievement_ids, hard.num_achievement_ids);
+    ra_state_replace(false, soft.achievement_ids, soft.num_achievement_ids);
+    ra_state_save();
+  }
+  rc_api_destroy_fetch_user_unlocks_response(&hard);
+  rc_api_destroy_fetch_user_unlocks_response(&soft);
+  return ok;
+}
+
 /* Pause before the next try. It doubles each time, up to RA_BACKOFF_MAX. */
 static void wait_to_retry(uint32_t *backoff, const char *what) {
   debugf("RA: %s, next try in %lu s", what, (unsigned long)(*backoff / 1000));
@@ -258,6 +315,7 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     debugf("RA: no account in config.ini, achievements stay local");
     sleep_forever();
   }
+  ra_state_load(user);      // before the queue, its lines count as unlocked too
   ra_queue_open(user);
 
   // 2. certificates are checked against the clock, so wait until NTP has set it.
@@ -287,13 +345,35 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   }
   debugf("RA: logged in");
 
-  // 5. hand the waiting unlocks to the server one by one, then wait for the next
+  // 5. the account's lists from the server, then the waiting unlocks one by
+  //    one, then wait for the next. Once the queue is empty after a submission
+  //    changed the lists, they are asked again. When they cannot be fetched,
+  //    the state from the card stays, the unlocks still go out, and the lists
+  //    are asked again after a pause.
+  bool state_due = true, state_failed = false, state_stale = false;
   backoff = RA_BACKOFF_MIN;
   for(;;) {
     ra_unlock_t u;
+    if(state_due) {
+      state_due = false;
+      state_failed = !fetch_state();
+      if(!state_failed) backoff = RA_BACKOFF_MIN;
+    }
     int h = ra_queue_head(&u);
     if(h == 0) {
-      wait_event(portMAX_DELAY);
+      if(state_stale) {
+        state_stale = false;          // the lists changed, ask once more
+        state_due = true;
+      } else if(state_failed) {
+        // ask again after a pause. A new unlock ends the pause, it does not wait
+        debugf("RA: unlocked state not available, the card state stays, next try in %lu s",
+               (unsigned long)(backoff / 1000));
+        state_failed = false;
+        state_due = true;
+        wait_event(pdMS_TO_TICKS(backoff));
+        backoff = backoff < RA_BACKOFF_MAX / 2 ? backoff * 2 : RA_BACKOFF_MAX;
+      } else
+        wait_event(portMAX_DELAY);
       continue;
     }
     if(h < 0) {
@@ -312,6 +392,7 @@ static void ra_task_main(__attribute__((unused)) void *p) {
       snprintf(what, sizeof(what), "unlock %u refused", u.id);
     else {
       backoff = RA_BACKOFF_MIN;
+      state_stale = true;             // DONE or PARK: the server's lists may differ now
       continue;
     }
     // a pause also after a refusal, so a queue of refused unlocks cannot hammer the server

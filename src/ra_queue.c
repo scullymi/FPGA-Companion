@@ -20,6 +20,7 @@
 #include "debug.h"
 #include "sdc.h"
 #include "ra_task.h"
+#include "ra_state.h"
 #include "ra_queue.h"
 
 #define RA_QUEUE_FILE     "/sd/ra_pending.txt"   /**< one line "id unixtime user" per unlock, '#' in front once done */
@@ -143,7 +144,7 @@ static int scan(void) {
       if(line[0] == RA_QUEUE_DONE) continue;
       ra_unlock_t u = { 0, 0 };
       int k = !parse(line, &u, user) ? LINE_BAD : strcasecmp(user, owner) ? LINE_OTHER : LINE_OWN;
-      if(k == LINE_OWN) own++;
+      if(k == LINE_OWN) { own++; ra_state_add(u.id); }   // queued counts as unlocked
       if(kind == LINE_NONE) {
         kind = k; head = u; head_at = at;
         snprintf(head_line, sizeof(head_line), "%s", line);
@@ -189,9 +190,15 @@ void ra_queue_take(bool keep) {
     debugf("RA: unlock %u not kept, no account", u.id);
     return;
   }
+  // what the account already has in hardcore is not sent again
+  if(ra_state_known(u.id)) {
+    debugf("RA: unlock %u already unlocked, not queued", u.id);
+    return;
+  }
   flush_ram();
   FRESULT r = append_unlock(RA_QUEUE_FILE, &u);
   if(r == FR_OK) {
+    ra_state_add(u.id);     // on the card, so from now on it counts as unlocked
     pending++;
     debugf("RA: unlock %u queued (%u pending)%s", u.id, pending,
            u.when ? "" : ", clock not set, unlock time unknown");
