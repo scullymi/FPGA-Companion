@@ -15,6 +15,7 @@
 #include "../spi.h"     /* SPI_TARGET_RAM */
 #include "rc_runtime.h"
 #include "../ra_patch.h"
+#include "../ra_task.h"
 #include "pico/time.h"
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
@@ -250,6 +251,10 @@ static void com_task(__attribute__((unused)) void *p ) {
     
     // finally prepare for wifi communication
     at_wifi_init();
+
+    // RetroAchievements talks to the server in a task of its own,
+    // so this loop never waits for it
+    ra_task_start();
 
     debugf("Entering main loop");
   

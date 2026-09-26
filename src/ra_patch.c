@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright (C) 2026 scullymi */
-/* The achievement set of the current game.
-
-   The conditions belong to RetroAchievements and are not compiled into the
-   firmware. The set lies on the card as RA_PATCH_FILE, the server's reply to
-   r=patch, and rcheevos' own parser reads it (rc_api_runtime.c). Nothing here
-   interprets the JSON. Titles are copied into a small table, the parsed
-   conditions live inside rcheevos. */
+/** @file ra_patch.c
+ *  @brief The achievement set of the current game.
+ *
+ *  The conditions belong to RetroAchievements and are not compiled into the
+ *  firmware. The set lies on the card as RA_PATCH_FILE, the server's reply to
+ *  r=patch, and rcheevos' own parser reads it (rc_api_runtime.c). Nothing here
+ *  interprets the JSON. Titles are copied into a small table, the parsed
+ *  conditions live inside rcheevos. */
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -17,12 +18,12 @@
 #include "sdc.h"
 #include "ra_patch.h"
 
-#define RA_PATCH_BODY_MAX   40960        /* Galaga on 24.09.2026: 15757 bytes */
-#define RA_PATCH_MAX        64           /* achievements kept, Galaga has 17 */
+#define RA_PATCH_BODY_MAX   40960        /* a whole set, e.g. Galaga 15757 bytes (24.09.2026) */
+#define RA_PATCH_MAX        64           /* achievements kept per set, e.g. Galaga 17 */
 #define RA_PATCH_TITLE_MAX  32           /* the banner shows 24 characters */
 #define RA_PATCH_FILE       "/sd/ra_patch.json"
 /* "Warning: Unknown Emulator", which the server adds for clients it does not
-   know. Not a Galaga achievement. */
+   know. Not an achievement of the game. */
 #define RA_PATCH_WARNING_ID 101000001u
 
 static char     body[RA_PATCH_BODY_MAX];

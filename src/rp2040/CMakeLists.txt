@@ -66,6 +66,10 @@ if (PICO_SDK_VERSION_STRING VERSION_LESS "2.2.0")
     message(FATAL_ERROR "Raspberry Pi Pico SDK version 2.2.0 (or later) required. Your version is ${PICO_SDK_VERSION_STRING}")
 endif()
 
+# mbedTLS for HTTPS to RetroAchievements; pico_mbedtls reads this when its
+# target is created, so it has to come before pico_sdk_init()
+set(PICO_MBEDTLS_CONFIG_FILE ${CMAKE_CURRENT_LIST_DIR}/game20k_mbedtls_config.h)
+
 pico_sdk_init()
 
 # Pull in FreeRTOS
@@ -77,6 +81,15 @@ add_library(u8g2 ${U8G2_SRC})
 
 # rcheevos (submodule), for the achievements of the game20k core
 set(RCHEEVOS_DIR ${CMAKE_CURRENT_LIST_DIR}/../rcheevos)
+
+# how this firmware introduces itself to RetroAchievements (User-Agent). Raise the
+# version with every release, override with -DGAME20K_VERSION=... when building.
+if(NOT DEFINED GAME20K_VERSION)
+  set(GAME20K_VERSION "0.1.0")
+endif()
+if(NOT DEFINED GAME20K_PLATFORM)
+  set(GAME20K_PLATFORM "Tang Nano 20K")
+endif()
 
 add_executable(${PROJECT}
 	../main.c
@@ -103,6 +116,8 @@ add_executable(${PROJECT}
 	../ftpd.c
 	../telnetd.c
 	../ra_patch.c
+	../ra_net.c
+	../ra_task.c
 	# rcheevos: the runtime that evaluates the conditions and the reader for the
 	# set (rapi), no rc_client. rc_validate.c stays out, only the editor needs it.
 	${RCHEEVOS_DIR}/src/rcheevos/alloc.c
@@ -192,10 +207,14 @@ target_link_libraries(${PROJECT} PRIVATE hardware_pio hardware_dma hardware_spi 
 # rcheevos, without threads
 target_include_directories(${PROJECT} PRIVATE ${RCHEEVOS_DIR}/include ${RCHEEVOS_DIR}/src)
 target_compile_definitions(${PROJECT} PRIVATE RC_NO_THREADS=1)
+target_compile_definitions(${PROJECT} PRIVATE
+	GAME20K_VERSION="${GAME20K_VERSION}" GAME20K_PLATFORM="${GAME20K_PLATFORM}")
 target_link_libraries(${PROJECT} PRIVATE pico_cyw43_arch_lwip_sys_freertos)
 target_link_libraries(${PROJECT} PRIVATE pico_btstack_cyw43 pico_btstack_classic)
 target_link_libraries(${PROJECT} PRIVATE tinyusb_host tinyusb_board u8g2)
 target_link_libraries(${PROJECT} PRIVATE pico_lwip_sntp)
+# HTTPS to RetroAchievements: the HTTP client, lwIP's TLS layer, mbedTLS
+target_link_libraries(${PROJECT} PRIVATE pico_lwip_http pico_lwip_mbedtls pico_mbedtls)
 
 pico_add_extra_outputs(${PROJECT})
 pico_enable_stdio_usb(${PROJECT} 0)

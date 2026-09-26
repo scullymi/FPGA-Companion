@@ -82,11 +82,28 @@ void sntp_set_system_time(uint32_t sec);
 #define SO_REUSE                    1
 #define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 2)
 
-#ifndef NDEBUG
+// HTTPS to retroachievements.org (ra_net.c): the certificate must pass, the
+// lwIP default MBEDTLS_SSL_VERIFY_OPTIONAL would connect even when it fails
+#define LWIP_ALTCP                  1
+#define LWIP_ALTCP_TLS              1
+#define LWIP_ALTCP_TLS_MBEDTLS      1
+#define ALTCP_MBEDTLS_AUTHMODE      MBEDTLS_SSL_VERIFY_REQUIRED
+// the User-Agent RetroAchievements knows this client by, built in ra_net.c
+const char *ra_user_agent(void);
+#define HTTPC_CLIENT_AGENT          ra_user_agent()
+
+// LWIP_DEBUG also in the release build, for the one line with the reason of a
+// failed TLS handshake (ALTCP_MBEDTLS_DEBUG). Everything else stays off, above
+// all HTTPC_DEBUG, which would print the query with the token.
 #define LWIP_DEBUG                  1
+#ifndef NDEBUG
 #define LWIP_STATS                  1
 #define LWIP_STATS_DISPLAY          1
 #endif
+#define ALTCP_MBEDTLS_DEBUG         LWIP_DBG_ON
+#define ALTCP_MBEDTLS_LIB_DEBUG     LWIP_DBG_OFF
+#define HTTPC_DEBUG                 LWIP_DBG_OFF
+#define HTTPC_DEBUG_REQUEST         0
 
 #define ETHARP_DEBUG                LWIP_DBG_OFF
 #define NETIF_DEBUG                 LWIP_DBG_OFF
@@ -118,7 +135,9 @@ void sntp_set_system_time(uint32_t sec);
 #define DHCP_DEBUG                  LWIP_DBG_OFF
 #define SNTP_DEBUG                  LWIP_DBG_OFF
 
-#define TCPIP_THREAD_STACKSIZE 1024
+// in bytes. lwIP's TCP timers also run TLS code in this thread: 1024 overflowed
+// with mbedTLS debug output on, 4096 left 3480 free after a handshake (26.09.2026)
+#define TCPIP_THREAD_STACKSIZE 4096
 #define DEFAULT_THREAD_STACKSIZE 1024
 #define TCPIP_THREAD_PRIO 4
 #if defined(PICO_RP2350)

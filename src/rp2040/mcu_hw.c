@@ -29,6 +29,7 @@
 #include "../at_wifi.h"
 #include "../inifile.h"
 #include "../menu.h"
+#include "../ra_task.h"
 #include "../gowin.h"
 
 #include "../mcu_hw.h"
@@ -840,6 +841,9 @@ void sntp_set_system_time(u32_t sec) {
   sys_set_time(SYS_TIME_FLAGS_NTP | ( timeinfo->tm_isdst?SYS_TIME_FLAGS_DST:0),
 	       timeinfo->tm_year, timeinfo->tm_mon, timeinfo->tm_mday + (timeinfo->tm_wday << 5),
 	       timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
+
+  // the clock is set, RetroAchievements can start now
+  ra_task_clock_set();
 }
 
 // file timestamps for FatFs, local time like the core clock. Until SNTP
