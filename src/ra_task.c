@@ -4,25 +4,31 @@
  *  @brief The RetroAchievements task: all network work for the achievements.
  *
  *  It runs apart from com_task, so the game loop never waits for the server. It
- *  sleeps until it is woken, for now only by the NTP clock. */
+ *  waits on one queue set for everything that can wake it: unlocks from com_task,
+ *  the NTP clock and, inside ra_net_get(), the end of a request. So an unlock is
+ *  written to the card at once, even while a request is running. */
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #include <FreeRTOS.h>
 #include <task.h>
+#include <queue.h>
+#include <semphr.h>
 #include "rc_api_runtime.h"
 
 #include "debug.h"
 #include "inifile.h"
 #include "ra_net.h"
 #include "ra_patch.h"
+#include "ra_queue.h"
 #include "ra_task.h"
 
-#define RA_CLOCK_VALID  1735689600u   /**< 2025-01-01, an earlier time() is not set yet */
 #define RA_CLOCK_WAIT   60000u        /**< ms without time from NTP before the log says so */
 #define RA_BACKOFF_MIN  10000u        /**< ms, first pause after a failed request */
 #define RA_BACKOFF_MAX  600000u       /**< ms, the pause doubles up to this */
+#define RA_EVENTS       (RA_QUEUE_HANDOVER + 2)   /**< queue set: the unlocks, the clock, the end of a request */
+#define RA_TASK_STACK   2048          /**< words, about 5 KB stayed free after a TLS handshake (26.09.2026) */
 
 /** How a login ended, it decides whether to try again. */
 typedef enum {
@@ -31,12 +37,51 @@ typedef enum {
   LOGIN_RETRY        /**< anything else, tried again after a pause */
 } login_t;
 
-static TaskHandle_t task;             // NULL until ra_task_start()
-static char         reply_buf[512];   // replies to the small requests, a few hundred bytes
-static const char  *user, *token;     // [RA] in config.ini, the token is never logged
+/** How submitting an unlock ended. */
+typedef enum {
+  SUBMIT_DONE,       /**< the server has it, also as "User already has" */
+  SUBMIT_PARK,       /**< refused for good, it goes to the parked file */
+  SUBMIT_REQUEUE,    /**< refused, but it may pass later, it goes behind the others */
+  SUBMIT_RETRY       /**< no answer from the server, tried again after a pause */
+} submit_t;
+
+static TaskHandle_t      task;             // NULL until ra_task_start()
+static StackType_t       task_stack[RA_TASK_STACK];   // outside the FreeRTOS heap, see ra_task_start()
+static StaticTask_t      task_tcb;
+static QueueSetHandle_t  events;           // everything the task waits for
+static SemaphoreHandle_t clock_sem;        // given when NTP has set the clock
+static QueueHandle_t     unlocks;          // com_task -> RA task, see ra_queue.c
+static char              reply_buf[512];   // replies to the small requests, a few hundred bytes
+static const char       *user, *token;     // [RA] in config.ini, the token is never logged
+static bool              account;          // both are set, only then unlocks are kept
 
 void ra_task_clock_set(void) {
-  if(task) xTaskNotifyGive(task);     // the task checks time() itself when it wakes
+  if(clock_sem) xSemaphoreGive(clock_sem);  // the task checks time() itself when it wakes
+}
+
+/* Handles one event of the queue set: an unlock goes to the card, the clock only
+   wakes the task. Also called by ra_net_get() while a request runs. */
+static void on_event(QueueSetMemberHandle_t m) {
+  if(m == unlocks)        ra_queue_take(account);
+  else if(m == clock_sem) xSemaphoreTake(clock_sem, 0);
+}
+
+/* Waits up to ticks for the next event and handles it. false when the time ran out. */
+static bool wait_event(TickType_t ticks) {
+  QueueSetMemberHandle_t m = xQueueSelectFromSet(events, ticks);
+  if(!m) return false;
+  on_event(m);
+  return true;
+}
+
+/* A pause that still handles every event. */
+static void pause_ms(uint32_t ms) {
+  TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(ms);
+  for(;;) {
+    TickType_t left = end - xTaskGetTickCount();
+    if((int32_t)left <= 0) return;
+    wait_event(left);
+  }
 }
 
 /* Asks the server which game the game hash belongs to. That needs no account,
@@ -121,39 +166,111 @@ static login_t login(void) {
   return result;
 }
 
+/* Sends one unlock with r=awardachievement. It is parked only when the server
+   refuses it in a normal reply and the id is no longer in the active set, so a
+   bad token or a server error never costs a real unlock. Any other refusal moves
+   it behind the others, so it cannot hold them up. */
+static submit_t submit(const ra_unlock_t *u) {
+  rc_api_award_achievement_request_t params;
+  rc_api_request_t request;
+  char path[320];
+  ra_reply_t reply;
+  submit_t result = SUBMIT_RETRY;
+  unsigned long now = (unsigned long)time(NULL);
+
+  // rcheevos builds the query with its signature. Hardcore: the machine has no
+  // save states or rewind, and while game20k is not a known client the server
+  // counts it as softcore anyway. Without a time the server takes its own.
+  memset(&params, 0, sizeof(params));
+  params.username       = user;
+  params.api_token      = token;
+  params.achievement_id = u->id;
+  params.hardcore       = 1;
+  params.game_hash      = ra_game_hash();
+  if(u->when && now >= u->when) params.seconds_since_unlock = now - u->when;
+  if(rc_api_init_award_achievement_request(&request, &params) != RC_OK) return SUBMIT_RETRY;
+  int n = snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
+  rc_api_destroy_request(&request);
+  if(n < 0 || n >= (int)sizeof(path)) {
+    debugf("RA: request for unlock %u too long", u->id);
+    return SUBMIT_RETRY;
+  }
+
+  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 ||
+     reply.result != 0 || reply.status != 200)
+    return SUBMIT_RETRY;
+
+  // rcheevos reads the reply and turns "User already has" into success
+  rc_api_award_achievement_response_t response;
+  rc_api_server_response_t server;
+  memset(&server, 0, sizeof(server));
+  server.body = reply_buf;
+  server.body_length = reply.len;
+  server.http_status_code = (int)reply.status;
+  int rv = rc_api_process_award_achievement_server_response(&response, &server);
+  const char *why = response.response.error_message ? response.response.error_message : "no reason given";
+  if(rv == RC_OK && response.response.succeeded) {
+    if(response.response.error_message)
+      debugf("RA: unlock %u already on the account", u->id);
+    else
+      debugf("RA: unlock %u confirmed, score %u, softcore %u, %u left", u->id,
+             (unsigned)response.new_player_score, (unsigned)response.new_player_score_softcore,
+             (unsigned)response.achievements_remaining);
+    result = SUBMIT_DONE;
+  } else if(rv == RC_OK) {
+    // the set belongs to com_task, it is only read here
+    if(ra_patch_count() && !ra_patch_index(u->id)) {
+      debugf("RA: unlock %u refused (%s), not in the set any more, parked", u->id, why);
+      result = SUBMIT_PARK;
+    } else {
+      debugf("RA: unlock %u refused (%s), moved behind the others", u->id, why);
+      result = SUBMIT_REQUEUE;
+    }
+  }
+  rc_api_destroy_award_achievement_response(&response);
+  return result;
+}
+
 /* Pause before the next try. It doubles each time, up to RA_BACKOFF_MAX. */
 static void wait_to_retry(uint32_t *backoff, const char *what) {
   debugf("RA: %s, next try in %lu s", what, (unsigned long)(*backoff / 1000));
-  vTaskDelay(pdMS_TO_TICKS(*backoff));
+  pause_ms(*backoff);
   *backoff = *backoff < RA_BACKOFF_MAX / 2 ? *backoff * 2 : RA_BACKOFF_MAX;
 }
 
-/* Nothing more to do. The task stays, so ra_task_clock_set() can still wake it. */
+/* Nothing more to do on the server. Unlocks are still kept. */
 static void sleep_forever(void) {
-  for(;;) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+  for(;;) wait_event(portMAX_DELAY);
 }
 
 static void ra_task_main(__attribute__((unused)) void *p) {
   uint32_t backoff = RA_BACKOFF_MIN;
+  char what[40];
 
   debugf("RA: client %s", ra_user_agent());
 
-  // 1. without an account there is nothing to do on the server
-  user  = inifile_config_get_str("ra", "user");
-  token = inifile_config_get_str("ra", "token");
-  if(!user || !*user || !token || !*token) {
+  // 1. without an account there is nothing to do on the server, and unlocks are
+  //    not kept: a guest's would later count for the owner
+  user    = inifile_config_get_str("ra", "user");
+  token   = inifile_config_get_str("ra", "token");
+  account = user && *user && token && *token;
+  if(!account) {
     debugf("RA: no account in config.ini, achievements stay local");
     sleep_forever();
   }
+  ra_queue_open(user);
 
   // 2. certificates are checked against the clock, so wait until NTP has set it.
   //    Without a time server this can take forever, so say it once in the log.
-  TickType_t wait = pdMS_TO_TICKS(RA_CLOCK_WAIT);
+  TickType_t tell = xTaskGetTickCount() + pdMS_TO_TICKS(RA_CLOCK_WAIT);
+  bool told = false;
   while((unsigned long)time(NULL) < RA_CLOCK_VALID) {
-    if(!ulTaskNotifyTake(pdTRUE, wait)) {
+    TickType_t left = tell - xTaskGetTickCount();
+    if(!told && (int32_t)left <= 0) {
       debugf("RA: no time from NTP yet, achievements wait for it (see [NTP] IP in config.ini)");
-      wait = portMAX_DELAY;   // said once, now sleep until the clock is set
+      told = true;            // said once, now sleep until the clock is set
     }
+    wait_event(told ? portMAX_DELAY : left);
   }
 
   // 3. reach the server, with growing pauses while it or the network is down
@@ -170,14 +287,56 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   }
   debugf("RA: logged in");
 
-  // 5. nothing more to do yet, unlocks follow here
-  sleep_forever();
+  // 5. hand the waiting unlocks to the server one by one, then wait for the next
+  backoff = RA_BACKOFF_MIN;
+  for(;;) {
+    ra_unlock_t u;
+    int h = ra_queue_head(&u);
+    if(h == 0) {
+      wait_event(portMAX_DELAY);
+      continue;
+    }
+    if(h < 0) {
+      wait_to_retry(&backoff, "queue on the card not readable");
+      continue;
+    }
+    submit_t r = submit(&u);
+    bool kept = r == SUBMIT_DONE    ? ra_queue_pop()     :
+                r == SUBMIT_PARK    ? ra_queue_park()    :
+                r == SUBMIT_REQUEUE ? ra_queue_requeue() : false;
+    if(r == SUBMIT_RETRY)
+      snprintf(what, sizeof(what), "unlock %u not submitted", u.id);
+    else if(!kept)
+      snprintf(what, sizeof(what), "unlock %u: card not updated", u.id);
+    else if(r == SUBMIT_REQUEUE)
+      snprintf(what, sizeof(what), "unlock %u refused", u.id);
+    else {
+      backoff = RA_BACKOFF_MIN;
+      continue;
+    }
+    // a pause also after a refusal, so a queue of refused unlocks cannot hammer the server
+    wait_to_retry(&backoff, what);
+  }
 }
 
 void ra_task_start(void) {
   if(task) return;
-  // below com_task, like wifi_task. 2048 words: about 5 KB were still free
-  // after a TLS handshake (measured 26.09.2026)
-  if(xTaskCreate(ra_task_main, "RA", 2048, NULL, configMAX_PRIORITIES - 10, &task) != pdPASS)
-    debugf("RA: task could not be created");
+  // one queue set for everything the task waits for, created before com_task
+  // can report an unlock
+  events    = xQueueCreateSet(RA_EVENTS);
+  clock_sem = xSemaphoreCreateBinary();
+  unlocks   = ra_queue_init();
+  if(!events || !clock_sem || !unlocks ||
+     xQueueAddToSet(unlocks, events) != pdPASS || xQueueAddToSet(clock_sem, events) != pdPASS ||
+     !ra_net_init(events, on_event)) {
+    debugf("RA: events could not be set up");
+    return;
+  }
+  // below com_task, like wifi_task. The stack is a static array and not taken from
+  // the FreeRTOS heap (112 KB): that is nearly full once an FTP session runs
+  // (12 KB), and 8 KB more of it left FTP no room to open a data connection
+  // (measured 26.09.2026)
+  task = xTaskCreateStatic(ra_task_main, "RA", RA_TASK_STACK, NULL, configMAX_PRIORITIES - 10,
+                           task_stack, &task_tcb);
+  if(!task) debugf("RA: task could not be created");
 }

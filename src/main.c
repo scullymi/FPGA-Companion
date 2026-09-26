@@ -15,6 +15,7 @@
 #include "../spi.h"     /* SPI_TARGET_RAM */
 #include "rc_runtime.h"
 #include "../ra_patch.h"
+#include "../ra_queue.h"
 #include "../ra_task.h"
 #include "pico/time.h"
 
@@ -65,6 +66,8 @@ static void ra_event(const rc_runtime_event_t *ev) {
   if(ra_triggered < 255) ra_triggered++;
   ra_last = (unsigned char)ra_patch_index(ev->id);
   debugf("RA: achievement %u triggered: %s", (unsigned)ev->id, ra_patch_title(ev->id));
+  // the RA task keeps it on the card and sends it, this never blocks
+  ra_queue_add(ev->id);
 }
 
 /* Read the header first. Byte 7 set means a harvest was running when the transfer

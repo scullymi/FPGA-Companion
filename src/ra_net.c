@@ -30,8 +30,10 @@ static struct altcp_tls_config *tls;
 static altcp_allocator_t        allocator;
 static httpc_connection_t       conn;
 static httpc_state_t           *req;
-static SemaphoreHandle_t        done;
+static SemaphoreHandle_t        done;      /* given by on_done, a member of the RA task's queue set */
 static volatile bool            busy;      /* set at the start, cleared by on_done or when the request cannot start */
+static QueueSetHandle_t         events;    /* the RA task's queue set */
+static void (*on_event)(QueueSetMemberHandle_t);   /* its handler for everything but done */
 
 static char       *dst;
 static unsigned    dst_cap, dst_len;
@@ -101,12 +103,21 @@ static void kind_of(const char *path, char *kind, size_t size) {
   kind[n] = 0;
 }
 
+bool ra_net_init(QueueSetHandle_t set, void (*handler)(QueueSetMemberHandle_t)) {
+  if(events) return true;
+  if(!set || !handler) return false;
+  if(!done && !(done = xSemaphoreCreateBinary())) return false;
+  if(xQueueAddToSet(done, set) != pdPASS) return false;
+  on_event = handler;
+  events   = set;
+  return true;
+}
+
 int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply) {
-  char kind[16];
+  char kind[24];                      // "awardachievement" is the longest
   err_t e = ERR_MEM;
 
-  if(busy || !buf || cap < 2 || !reply) return -1;
-  if(!done && !(done = xSemaphoreCreateBinary())) return -1;
+  if(busy || !events || !buf || cap < 2 || !reply) return -1;
 
   memset(reply, 0, sizeof(*reply));
   dst = buf; dst_cap = cap; dst_len = 0; dst[0] = 0; out = reply;
@@ -132,9 +143,14 @@ int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply) {
   if(!tls) { debugf("RA: TLS setup failed"); return -1; }
   if(e != ERR_OK) { debugf("RA: r=%s could not start, error %d", kind, (int)e); return -1; }
 
-  // lwIP always ends a request with on_done, its own timeouts included
-  while(xSemaphoreTake(done, pdMS_TO_TICKS(30000)) != pdTRUE)
-    debugf("RA: r=%s still waiting for the server", kind);
+  // lwIP always ends a request with on_done, its own timeouts included. Until
+  // then the task's other events are handled here, none waits for the server.
+  for(;;) {
+    QueueSetMemberHandle_t m = xQueueSelectFromSet(events, pdMS_TO_TICKS(30000));
+    if(m == done) { xSemaphoreTake(done, 0); break; }
+    if(m) on_event(m);
+    else  debugf("RA: r=%s still waiting for the server", kind);
+  }
 
   unsigned long ms = (unsigned long)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
   if(reply->result == HTTPC_RESULT_OK)

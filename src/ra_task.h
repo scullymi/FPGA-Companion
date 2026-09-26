@@ -5,6 +5,8 @@
 #ifndef RA_TASK_H
 #define RA_TASK_H
 
+#define RA_CLOCK_VALID 1735689600u   /**< 2025-01-01, an earlier time() means NTP has not set the clock yet */
+
 /** @brief Starts the task. Once, from com_task after the card and config.ini are ready. */
 void ra_task_start(void);
 

@@ -6,6 +6,8 @@
 #define RA_NET_H
 
 #include <stdbool.h>
+#include <FreeRTOS.h>
+#include <queue.h>
 
 /** @brief What came back from a request. */
 typedef struct {
@@ -15,6 +17,13 @@ typedef struct {
   unsigned      len;         /**< bytes in the buffer, which is NUL-terminated */
   bool          truncated;   /**< the reply did not fit into the buffer */
 } ra_reply_t;
+
+/** @brief Joins the RA task's queue set. Once, before the first request.
+ *
+ *  The end of a request then arrives through that set. While ra_net_get() waits
+ *  for it, every other event of the set goes to on_event, so the task goes on
+ *  handling them. false when the set could not be joined. */
+bool ra_net_init(QueueSetHandle_t set, void (*on_event)(QueueSetMemberHandle_t member));
 
 /** @brief GET path from https://retroachievements.org into buf and wait for the end.
  *
