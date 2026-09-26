@@ -57,6 +57,9 @@ static QueueHandle_t     unlocks;          // com_task -> RA task, see ra_queue.
 static char              reply_buf[2048];  // replies to the small requests, the longest is a list of unlocked ids
 static const char       *user, *token;     // [RA] in config.ini, the token is never logged
 static bool              account;          // both are set, only then unlocks are kept
+static volatile ra_task_state_t state = RA_TASK_STARTING;   // written here, read by com_task
+
+ra_task_state_t ra_task_state(void) { return state; }
 
 void ra_task_clock_set(void) {
   if(clock_sem) xSemaphoreGive(clock_sem);  // the task checks time() itself when it wakes
@@ -313,6 +316,7 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   account = user && *user && token && *token;
   if(!account) {
     debugf("RA: no account in config.ini, achievements stay local");
+    state = RA_TASK_NO_ACCOUNT;
     sleep_forever();
   }
   ra_state_load(user);      // before the queue, its lines count as unlocked too
@@ -322,14 +326,17 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   //    Without a time server this can take forever, so say it once in the log.
   TickType_t tell = xTaskGetTickCount() + pdMS_TO_TICKS(RA_CLOCK_WAIT);
   bool told = false;
+  state = RA_TASK_CONNECTING;
   while((unsigned long)time(NULL) < RA_CLOCK_VALID) {
     TickType_t left = tell - xTaskGetTickCount();
     if(!told && (int32_t)left <= 0) {
       debugf("RA: no time from NTP yet, achievements wait for it (see [NTP] IP in config.ini)");
       told = true;            // said once, now sleep until the clock is set
+      state = RA_TASK_NO_TIME;
     }
     wait_event(told ? portMAX_DELAY : left);
   }
+  state = RA_TASK_CONNECTING;
 
   // 3. reach the server, with growing pauses while it or the network is down
   while(!check_server()) wait_to_retry(&backoff, "server not reached");
@@ -340,10 +347,11 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   for(;;) {
     login_t r = login();
     if(r == LOGIN_OK) break;
-    if(r == LOGIN_REJECTED) sleep_forever();
+    if(r == LOGIN_REJECTED) { state = RA_TASK_REJECTED; sleep_forever(); }
     wait_to_retry(&backoff, "login failed");
   }
   debugf("RA: logged in");
+  state = RA_TASK_LOGGED_IN;
 
   // 5. the account's lists from the server, then the waiting unlocks one by
   //    one, then wait for the next. Once the queue is empty after a submission

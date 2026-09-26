@@ -16,7 +16,9 @@
 #include "rc_runtime.h"
 #include "../ra_patch.h"
 #include "../ra_queue.h"
+#include "../ra_state.h"
 #include "../ra_task.h"
+#include <string.h>
 #include "pico/time.h"
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
@@ -61,11 +63,109 @@ static uint32_t ra_peek(uint32_t address, uint32_t num_bytes, void *ud) {
   }
 }
 
+/* The banner at the bottom of the picture: 24 characters the FPGA shows for a
+   while. It carries the title of an unlock, or a message that starts with who
+   speaks, "RA: " for the achievements and "SYS: " for the machine itself. One
+   character goes over with each mirror poll in header bytes 6 and 7. The show
+   flag follows once the whole text is in the FPGA, so it appears at once. Banners
+   that arrive while one is shown wait their turn, a few of them. */
+#define BANNER_LEN   24
+#define BANNER_MS    8000
+#define BANNER_QUEUE 4
+typedef struct {
+  char text[BANNER_LEN];
+  bool gold;        /* text gold for hardcore, white for softcore, as on the RA site */
+  bool new;         /* mark green: new, goes to the server. Grey: the account has it, or it is queued */
+} banner_t;
+static banner_t   banner;                  /* the one being sent or shown */
+static banner_t   banner_q[BANNER_QUEUE];  /* the ones waiting, oldest first */
+static unsigned   banner_n;                /* how many wait */
+static unsigned   banner_pos;              /* next character to send */
+static bool       banner_pending;          /* text on its way, show follows after the pass */
+static bool       banner_live;             /* show flag on */
+static TickType_t banner_start;            /* when the show flag went on */
+
+static void banner_show(const char *text, bool gold, bool new) {
+  banner_t b;
+  unsigned i = 0;
+  if(banner_n >= BANNER_QUEUE) {
+    debugf("RA: banner '%s' dropped, %u already wait", text, banner_n);
+    return;
+  }
+  // the FPGA font has A-Z, 0-9, space and ! - . : so lower case is raised and
+  // anything else becomes a space. The rest of the line is spaces.
+  for(; text[i] && i < BANNER_LEN; i++) {
+    char c = text[i];
+    if(c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    else if(!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strchr(" !-.:", c))) c = ' ';
+    b.text[i] = c;
+  }
+  // a longer text ends at a word, if one ends in the last third of the line,
+  // rather than in the middle of one. Titles can have up to 64 characters.
+  if(text[i] && text[i] != ' ') {
+    unsigned cut = i;
+    while(cut > BANNER_LEN * 2 / 3 && b.text[cut - 1] != ' ') cut--;
+    if(cut > BANNER_LEN * 2 / 3) i = cut - 1;
+  }
+  for(; i < BANNER_LEN; i++) b.text[i] = ' ';
+  b.gold = gold;
+  b.new  = new;
+  banner_q[banner_n++] = b;
+  debugf("RA: banner '%.*s' for %u s (%s text, %s mark)%s", BANNER_LEN, b.text, BANNER_MS / 1000,
+         gold ? "gold" : "white", new ? "green" : "grey", banner_n > 1 ? ", waits" : "");
+}
+
+/* One poll's worth of banner work: ends a banner after BANNER_MS, starts the
+   next waiting one, and fills header bytes 6 and 7. Bit 7 show, bit 6 gold text,
+   bit 5 green mark, bits 4..0 the position, byte 7 the character. */
+static void banner_step(unsigned char *hdr) {
+  if(banner_live && (xTaskGetTickCount() - banner_start) >= pdMS_TO_TICKS(BANNER_MS))
+    banner_live = false;
+  if(!banner_live && !banner_pending && banner_n) {
+    banner = banner_q[0];
+    memmove(banner_q, banner_q + 1, (--banner_n) * sizeof(banner_q[0]));
+    banner_pos     = 0;
+    banner_pending = true;
+  }
+  hdr[6] = (unsigned char)((banner_live ? 0x80 : 0) | (banner.gold ? 0x40 : 0) |
+                           (banner.new ? 0x20 : 0) | (banner_pos & 0x1f));
+  hdr[7] = (unsigned char)banner.text[banner_pos];
+  if(++banner_pos >= BANNER_LEN) {
+    banner_pos = 0;
+    if(banner_pending) {            // the whole text is over, now it may show
+      banner_pending = false;
+      banner_live    = true;
+      banner_start   = xTaskGetTickCount();
+    }
+  }
+}
+
+/* A message when the RA task's state changes: the account is in, or the
+   player should know why nothing counts. */
+static void banner_login(void) {
+  static ra_task_state_t shown = RA_TASK_STARTING;
+  ra_task_state_t now = ra_task_state();
+  if(now == shown) return;
+  shown = now;
+  // messages are white, the mark is green when all is well and grey when not
+  if(now == RA_TASK_LOGGED_IN) {
+    char text[BANNER_LEN + 1];
+    snprintf(text, sizeof(text), "RA: %s", inifile_config_get_str("ra", "user"));
+    banner_show(text, false, true);
+  } else if(now == RA_TASK_REJECTED)
+    banner_show("RA: LOGIN REJECTED", false, false);
+  else if(now == RA_TASK_NO_TIME)
+    banner_show("RA: NO TIME SERVER", false, false);
+}
+
 static void ra_event(const rc_runtime_event_t *ev) {
   if(ev->type != RC_RUNTIME_EVENT_ACHIEVEMENT_TRIGGERED) return;
   if(ra_triggered < 255) ra_triggered++;
   ra_last = (unsigned char)ra_patch_index(ev->id);
   debugf("RA: achievement %u triggered: %s", (unsigned)ev->id, ra_patch_title(ev->id));
+  // gold unless the account has it only in softcore, a grey mark when it has it
+  // in hardcore already or one is queued. Asked before the queue takes this one.
+  banner_show(ra_patch_title(ev->id), !ra_state_softcore_only(ev->id), !ra_state_known(ev->id));
   // the RA task keeps it on the card and sends it, this never blocks
   ra_queue_add(ev->id);
 }
@@ -84,6 +184,10 @@ static void ram_mirror_poll(void) {
   hdr_tx[2] = (unsigned char)(ra_us & 0xff);
   hdr_tx[3] = (unsigned char)(ra_us >> 8);
   hdr_tx[4] = ra_last;
+
+  // the banner, one character per poll in bytes 6 and 7
+  banner_login();
+  banner_step(hdr_tx);
 
   mcu_hw_spi_begin();
   mcu_hw_spi_tx_u08(SPI_TARGET_RAM);
