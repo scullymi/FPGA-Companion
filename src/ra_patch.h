@@ -33,8 +33,15 @@ int ra_patch_read_card(void);
 
 /** @brief Activates a set the RA task handed over, if one waits. com_task only, before each frame.
  *
- *  Achievements of the previous set that the new one does not carry are deactivated. */
+ *  Achievements of the previous set that the new one does not carry are deactivated.
+ *  After ra_patch_core_reset() it first resets rcheevos. */
 void ra_patch_apply_pending(rc_runtime_t *rt);
+
+/** @brief The core has been reset. Any task, it only sets a flag.
+ *
+ *  Before the next frame, rcheevos starts over: hit counts, leaderboards and rich
+ *  presence begin anew, so nothing of the previous game carries into the next. */
+void ra_patch_core_reset(void);
 
 /** @brief The buffer for a set from the server, and its size. RA task only. */
 char *ra_patch_body(unsigned *cap);

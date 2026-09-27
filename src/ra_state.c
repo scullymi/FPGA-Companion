@@ -59,12 +59,20 @@ static void drop_soft(unsigned id) {
     if(soft[i] == id) { soft[i] = soft[--soft_n]; return; }
 }
 
-void ra_state_add(unsigned id) {
-  if(ra_state_known(id) || hard_n >= RA_STATE_MAX) return;
-  taskENTER_CRITICAL();
-  hard[hard_n++] = id;
-  drop_soft(id);            // it is on its way to hardcore, so no longer softcore only
-  taskEXIT_CRITICAL();
+void ra_state_add(unsigned id, bool hardcore) {
+  if(ra_state_known(id)) return;                 // hardcore already, nothing to add
+  if(hardcore) {
+    if(hard_n >= RA_STATE_MAX) return;
+    taskENTER_CRITICAL();
+    hard[hard_n++] = id;
+    drop_soft(id);          // it is on its way to hardcore, so no longer softcore only
+    taskEXIT_CRITICAL();
+  } else {
+    if(ra_state_softcore_only(id) || soft_n >= RA_STATE_MAX) return;
+    taskENTER_CRITICAL();
+    soft[soft_n++] = id;
+    taskEXIT_CRITICAL();
+  }
 }
 
 bool ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n) {

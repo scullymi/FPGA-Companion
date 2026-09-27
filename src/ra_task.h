@@ -5,7 +5,10 @@
 #ifndef RA_TASK_H
 #define RA_TASK_H
 
+#include <stdbool.h>
+
 #define RA_CLOCK_VALID 1735689600u   /**< 2025-01-01, an earlier time() means NTP has not set the clock yet */
+#define RA_RP_MAX      256           /**< rich presence text with its NUL, as rc_client keeps it */
 
 /** @brief Where the task stands, for the banner. */
 typedef enum {
@@ -26,5 +29,21 @@ void ra_task_start(void);
 
 /** @brief Tells the task that the clock is set. From sntp_set_system_time(). */
 void ra_task_clock_set(void);
+
+/** @brief True when unlocks count as hardcore. Any task.
+ *
+ *  The session, the pings and every unlock carry this mode. No setting switches
+ *  it, so it is softcore. */
+bool ra_task_hardcore(void);
+
+/** @brief Hands the rich presence text of the running game to the task. com_task only.
+ *
+ *  The next ping sends it. Longer texts are cut to RA_RP_MAX - 1 characters. */
+void ra_task_set_richpresence(const char *text);
+
+/** @brief Counts one frame rcheevos evaluated. com_task only.
+ *
+ *  Pings go out only while frames arrive, as rc_client does. */
+void ra_task_frame(void);
 
 #endif /* RA_TASK_H */

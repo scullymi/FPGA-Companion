@@ -32,6 +32,13 @@ bool ra_net_init(QueueSetHandle_t set, void (*on_event)(QueueSetMemberHandle_t m
  *  only the kind of request (r=...), never the query, which may carry the token. */
 int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply);
 
+/** @brief Removes the chunked transfer framing from a body, in place.
+ *
+ *  lwIP's HTTP client passes it through. len is updated and the body stays
+ *  NUL-terminated. A body that starts with '{' is plain already and stays. false
+ *  when the body is neither plain nor whole chunked framing. */
+bool ra_net_dechunk(char *buf, unsigned *len);
+
 /** @brief The User-Agent sent with every request, e.g. "game20k/v0.1.0 (Tang Nano 20K) rcheevos/12.5". */
 const char *ra_user_agent(void);
 

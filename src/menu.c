@@ -1092,6 +1092,9 @@ static void menu_select(void) {
     menu_fileselector_select(dir_entry(menu_state->dir, menu_state->selected-1));
     return;
   }
+
+  // a line of a custom page, e.g. About, is no menu entry: nothing to select
+  if(!entry) return;
   
   menu_debugf("Selected: %s '%s'", config_menuentry_get_type_str(entry), menuentry_get_label(entry));
 

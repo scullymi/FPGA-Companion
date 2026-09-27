@@ -6,7 +6,11 @@
  *  It runs apart from com_task, so the game loop never waits for the server. It
  *  waits on one queue set for everything that can wake it: unlocks from com_task,
  *  the NTP clock and, inside ra_net_get(), the end of a request. So an unlock is
- *  written to the card at once, even while a request is running. */
+ *  written to the card at once, even while a request is running.
+ *
+ *  After the login it starts a session and then pings every two minutes with
+ *  the rich presence text, as rc_client does, so the server shows what is being
+ *  played and keeps the session. */
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -32,6 +36,9 @@
 #define RA_BACKOFF_MAX  600000u       /**< ms, the pause doubles up to this */
 #define RA_EVENTS       (RA_QUEUE_HANDOVER + 2)   /**< queue set: the unlocks, the clock, the end of a request */
 #define RA_TASK_STACK   2048          /**< words, a TLS handshake leaves about 5 KB of it free */
+#define RA_PING_FIRST   30000u        /**< ms from the session start to the first ping, as rc_client */
+#define RA_PING_EVERY   120000u       /**< ms between pings, the server keeps the session meanwhile */
+#define RA_PATH_MAX     1024          /**< a ping with the rich presence text, url-encoded at three characters per byte */
 
 /** How a login ended, it decides whether to try again. */
 typedef enum {
@@ -58,8 +65,25 @@ static char              reply_buf[2048];  // replies to the small requests, the
 static const char       *user, *token;     // [RA] in config.ini, the token is never logged
 static bool              account;          // both are set, only then unlocks are kept
 static volatile ra_task_state_t state = RA_TASK_STARTING;   // written here, read by com_task
+static bool              hardcore;         // the mode of session, pings and unlocks, see ra_task_hardcore()
+static char              rp_text[RA_RP_MAX];   // rich presence from com_task, under a critical section
+static volatile unsigned frames;           // frames rcheevos evaluated, counted by com_task
+static char              path_buf[RA_PATH_MAX];  // path of session and ping requests, too large for the stack
+static bool              live;             // logged in: session and pings are due
+static TickType_t        next_ping;        // when the next ping, or the next try of the session, is due
 
 ra_task_state_t ra_task_state(void) { return state; }
+bool ra_task_hardcore(void) { return hardcore; }
+void ra_task_frame(void) { frames++; }
+
+void ra_task_set_richpresence(const char *text) {
+  size_t n = strnlen(text, RA_RP_MAX - 1);
+  // a short copy with interrupts off, the RA task copies it the same way
+  taskENTER_CRITICAL();
+  memcpy(rp_text, text, n);
+  rp_text[n] = 0;
+  taskEXIT_CRITICAL();
+}
 
 void ra_task_clock_set(void) {
   if(clock_sem) xSemaphoreGive(clock_sem);  // the task checks time() itself when it wakes
@@ -80,12 +104,20 @@ static bool wait_event(TickType_t ticks) {
   return true;
 }
 
-/* A pause that still handles every event. */
+static void keep_alive(void);
+
+/* A pause that still handles every event, and keeps the session alive once logged in. */
 static void pause_ms(uint32_t ms) {
   TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(ms);
   for(;;) {
-    TickType_t left = end - xTaskGetTickCount();
+    keep_alive();
+    TickType_t now = xTaskGetTickCount();
+    TickType_t left = end - now;
     if((int32_t)left <= 0) return;
+    // wake for the next ping too, when it comes first. One already due wakes at
+    // once, keep_alive() sends it at the top of the loop.
+    int32_t to_ping = (int32_t)(next_ping - now);
+    if(live && to_ping < (int32_t)left) left = to_ping > 0 ? (TickType_t)to_ping : 0;
     wait_event(left);
   }
 }
@@ -172,6 +204,121 @@ static login_t login(void) {
   return result;
 }
 
+/* Reads a reply into rcheevos' server response. */
+static void server_reply(rc_api_server_response_t *server, const ra_reply_t *reply) {
+  memset(server, 0, sizeof(*server));
+  server->body = reply_buf;
+  server->body_length = reply->len;
+  server->http_status_code = (int)reply->status;
+}
+
+/* Starts the session with r=startsession: the server notes that the game is
+   played, with which hash and in which mode. false when it did not take it, the
+   caller tries again at the next ping time. */
+static bool start_session(void) {
+  rc_api_start_session_request_t params;
+  rc_api_request_t request;
+  rc_api_server_response_t server;
+  ra_reply_t reply;
+
+  memset(&params, 0, sizeof(params));
+  params.username  = user;
+  params.api_token = token;
+  params.game_id   = ra_game_id();
+  params.game_hash = ra_game_hash();
+  params.hardcore  = hardcore;
+  if(rc_api_init_start_session_request(&request, &params) != RC_OK) return false;
+  int n = snprintf(path_buf, sizeof(path_buf), "/dorequest.php?%s", request.post_data);
+  rc_api_destroy_request(&request);
+  if(n < 0 || n >= (int)sizeof(path_buf)) return false;
+
+  if(ra_net_get(path_buf, reply_buf, sizeof(reply_buf), &reply) != 0 ||
+     reply.result != 0 || reply.status != 200)
+    return false;
+  // the reply also lists the account's unlocks, which r=unlocks fetches as well.
+  // A list too long for the buffer only cuts the reply, the session stands.
+  if(reply.truncated) {
+    debugf("RA: session started (%s), reply cut short", hardcore ? "hardcore" : "softcore");
+    return true;
+  }
+  rc_api_start_session_response_t response;
+  server_reply(&server, &reply);
+  int rv = rc_api_process_start_session_server_response(&response, &server);
+  bool ok = rv == RC_OK && response.response.succeeded;
+  if(ok)
+    debugf("RA: session started (%s)", hardcore ? "hardcore" : "softcore");
+  else
+    debugf("RA: session not started (%s)", response.response.error_message ?
+           response.response.error_message : rv != RC_OK ? rc_error_str(rv) : "marked as failed");
+  rc_api_destroy_start_session_response(&response);
+  return ok;
+}
+
+/* Pings with r=ping: keeps the session and sends the rich presence text, the
+   game hash and the mode. The log shows the text only when it changed. */
+static void ping(void) {
+  static char rp[RA_RP_MAX];          // the text this ping sends
+  static char rp_logged[RA_RP_MAX];   // the text the log showed last
+  rc_api_ping_request_t params;
+  rc_api_request_t request;
+  rc_api_server_response_t server;
+  ra_reply_t reply;
+
+  taskENTER_CRITICAL();
+  memcpy(rp, rp_text, sizeof(rp));
+  taskEXIT_CRITICAL();
+
+  memset(&params, 0, sizeof(params));
+  params.username      = user;
+  params.api_token     = token;
+  params.game_id       = ra_game_id();
+  params.rich_presence = rp[0] ? rp : NULL;
+  params.game_hash     = ra_game_hash();
+  params.hardcore      = hardcore;
+  if(rc_api_init_ping_request(&request, &params) != RC_OK) return;
+  int n = snprintf(path_buf, sizeof(path_buf), "/dorequest.php?%s", request.post_data);
+  rc_api_destroy_request(&request);
+  if(n < 0 || n >= (int)sizeof(path_buf)) {
+    debugf("RA: ping too long, not sent");
+    return;
+  }
+
+  // ra_net_get() logs the request, only a refusal needs a word more
+  if(ra_net_get(path_buf, reply_buf, sizeof(reply_buf), &reply) != 0 ||
+     reply.result != 0 || reply.status != 200)
+    return;
+  rc_api_ping_response_t response;
+  server_reply(&server, &reply);
+  int rv = rc_api_process_ping_server_response(&response, &server);
+  if(rv != RC_OK || !response.response.succeeded)
+    debugf("RA: ping refused (%s)", response.response.error_message ?
+           response.response.error_message : rv != RC_OK ? rc_error_str(rv) : "marked as failed");
+  else if(strcmp(rp, rp_logged)) {
+    debugf("RA: rich presence '%s'", rp);
+    memcpy(rp_logged, rp, sizeof(rp_logged));
+  }
+  rc_api_destroy_ping_response(&response);
+}
+
+/* Once logged in: at each ping time the session, while the server has not taken
+   it, else a ping, but only when frames arrived since the last one. Without
+   frames the server lets the session end, as it does with rc_client. */
+static void keep_alive(void) {
+  static bool     session;       // the server took the session
+  static unsigned frames_seen;   // frames at the last ping
+  if(!live) return;
+  TickType_t now = xTaskGetTickCount();
+  if((int32_t)(now - next_ping) < 0) return;
+  next_ping = now + pdMS_TO_TICKS(RA_PING_EVERY);
+  if(!session) {
+    session = start_session();
+    if(session) next_ping = xTaskGetTickCount() + pdMS_TO_TICKS(RA_PING_FIRST);
+  } else if(frames != frames_seen) {
+    frames_seen = frames;
+    ping();
+  }
+}
+
 /* Sends one unlock with r=awardachievement. It is parked only when the server
    refuses it in a normal reply and the id is no longer in the active set, so a
    bad token or a server error never costs a real unlock. Any other refusal moves
@@ -184,14 +331,13 @@ static submit_t submit(const ra_unlock_t *u) {
   submit_t result = SUBMIT_RETRY;
   unsigned long now = (unsigned long)time(NULL);
 
-  // rcheevos builds the query with its signature. Hardcore: the machine has no
-  // save states or rewind, and while game20k is not a known client the server
-  // counts it as softcore anyway. Without a time the server takes its own.
+  // rcheevos builds the query with its signature. The mode is the one the unlock
+  // was earned in. Without a time the server takes its own.
   memset(&params, 0, sizeof(params));
   params.username       = user;
   params.api_token      = token;
   params.achievement_id = u->id;
-  params.hardcore       = 1;
+  params.hardcore       = u->hardcore;
   params.game_hash      = ra_game_hash();
   if(u->when && now >= u->when) params.seconds_since_unlock = now - u->when;
   if(rc_api_init_award_achievement_request(&request, &params) != RC_OK) return SUBMIT_RETRY;
@@ -392,6 +538,8 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   }
   debugf("RA: logged in");
   state = RA_TASK_LOGGED_IN;
+  live = true;
+  next_ping = xTaskGetTickCount();   // the session right away
 
   // 6. the account's lists and the game's set from the server, then the
   //    waiting unlocks one by one, then wait for the next. Once the queue is
@@ -400,9 +548,12 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   //    go out, and the question is asked again after a pause.
   bool state_due = true, state_failed = false, state_stale = false;
   bool set_due = true, set_failed = false;
+  TickType_t retry_at = 0;            // when failed fetches are asked again
+  bool       retry_set = false;       // ... and that time is set
   backoff = RA_BACKOFF_MIN;
   for(;;) {
     ra_unlock_t u;
+    keep_alive();
     if(state_due) {
       state_due = false;
       state_failed = !fetch_state();
@@ -413,23 +564,37 @@ static void ra_task_main(__attribute__((unused)) void *p) {
       set_failed = !fetch_set();
       if(!set_failed) backoff = RA_BACKOFF_MIN;
     }
+    // both fetched, by whatever path: a retry time from an earlier failure is void
+    if(!state_failed && !set_failed) retry_set = false;
     int h = ra_queue_head(&u);
     if(h == 0) {
+      TickType_t now = xTaskGetTickCount();
+      TickType_t wake = next_ping;    // nothing to send: sleep until the next ping at most
       if(state_stale) {
         state_stale = false;          // the lists changed, ask once more
         state_due = true;
-      } else if(state_failed || set_failed) {
-        // ask again after a pause. A new unlock ends the pause, it does not wait
-        debugf("RA: %s not fetched, what the card has stays, next try in %lu s",
-               state_failed && set_failed ? "unlocked state and set" : state_failed ? "unlocked state" : "set",
-               (unsigned long)(backoff / 1000));
-        state_due = state_failed;
-        set_due   = set_failed;
-        state_failed = set_failed = false;
-        wait_event(pdMS_TO_TICKS(backoff));
-        backoff = backoff < RA_BACKOFF_MAX / 2 ? backoff * 2 : RA_BACKOFF_MAX;
-      } else
-        wait_event(portMAX_DELAY);
+        continue;
+      }
+      if(state_failed || set_failed) {
+        // ask again after a pause. A new unlock ends the wait, it goes out first
+        if(!retry_set) {
+          debugf("RA: %s not fetched, what the card has stays, next try in %lu s",
+                 state_failed && set_failed ? "unlocked state and set" : state_failed ? "unlocked state" : "set",
+                 (unsigned long)(backoff / 1000));
+          retry_at  = now + pdMS_TO_TICKS(backoff);
+          retry_set = true;
+          backoff = backoff < RA_BACKOFF_MAX / 2 ? backoff * 2 : RA_BACKOFF_MAX;
+        }
+        if((int32_t)(now - retry_at) >= 0) {
+          state_due = state_failed;
+          set_due   = set_failed;
+          state_failed = set_failed = false;
+          retry_set = false;
+          continue;
+        }
+        if((int32_t)(retry_at - wake) < 0) wake = retry_at;
+      }
+      if((int32_t)(wake - now) > 0) wait_event(wake - now);
       continue;
     }
     if(h < 0) {
@@ -458,6 +623,7 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     state_due = state_due || state_failed;
     set_due   = set_due   || set_failed;
     state_failed = set_failed = false;
+    retry_set = false;
   }
 }
 

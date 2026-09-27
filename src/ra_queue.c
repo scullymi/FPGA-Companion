@@ -4,7 +4,9 @@
  *  @brief Unlocks on their way to the server.
  *
  *  com_task only puts an unlock into a FreeRTOS queue, which never blocks the game
- *  loop. The RA task writes it to the card at once, as a line "id unixtime user".
+ *  loop. The RA task writes it to the card at once, as a line "id unixtime user mode",
+ *  mode h for hardcore and s for softcore. A line without a mode, as older firmware
+ *  wrote them, counts as softcore: a mode that was not recorded is never raised.
  *  Once the server has it, the line is marked done in place: its first digit
  *  becomes '#'. That is a single sector, nothing is rewritten or renamed, so a
  *  power cut can at worst leave a line unmarked, and sending an unlock twice is
@@ -23,9 +25,9 @@
 #include "ra_state.h"
 #include "ra_queue.h"
 
-#define RA_QUEUE_FILE     "/sd/ra_pending.txt"   /**< one line "id unixtime user" per unlock, '#' in front once done */
+#define RA_QUEUE_FILE     "/sd/ra_pending.txt"   /**< one line "id unixtime user mode" per unlock, '#' in front once done */
 #define RA_QUEUE_PARKED   "/sd/ra_parked.txt"    /**< unlocks that are not sent: refused for good, or of another account */
-#define RA_QUEUE_LINE_MAX 64                     /**< two numbers and an RA user name (at most 20 characters) fit */
+#define RA_QUEUE_LINE_MAX 64                     /**< two numbers, an RA user name (at most 20 characters) and the mode fit */
 #define RA_QUEUE_USER_MAX 32                     /**< longest user name kept */
 #define RA_QUEUE_RAM      8                      /**< unlocks kept in RAM while the card fails */
 #define RA_QUEUE_DONE     '#'                    /**< written over the first digit of a line that is done */
@@ -50,8 +52,8 @@ QueueHandle_t ra_queue_init(void) {
   return handover;
 }
 
-void ra_queue_add(unsigned id) {
-  ra_unlock_t u = { id, (unsigned long)time(NULL) };
+void ra_queue_add(unsigned id, bool hardcore) {
+  ra_unlock_t u = { id, (unsigned long)time(NULL), hardcore };
   if(u.when < RA_CLOCK_VALID) u.when = 0;
   if(!handover || xQueueSend(handover, &u, 0) != pdTRUE)
     debugf("RA: unlock %u lost, the RA task does not take it", id);
@@ -85,7 +87,7 @@ static FRESULT append_line(const char *path, const char *text) {
 
 static FRESULT append_unlock(const char *path, const ra_unlock_t *u) {
   char line[RA_QUEUE_LINE_MAX];
-  snprintf(line, sizeof(line), "%u %lu %s\n", u->id, u->when, owner);
+  snprintf(line, sizeof(line), "%u %lu %s %c\n", u->id, u->when, owner, u->hardcore ? 'h' : 's');
   return append_line(path, line);
 }
 
@@ -107,8 +109,8 @@ static FRESULT mark_done(FSIZE_t at) {
   return r;
 }
 
-/* "id unixtime user" with its newline. A line a power cut left without its end,
-   or anything else, is refused. */
+/* "id unixtime user mode" with its newline, the mode may be missing. A line a
+   power cut left without its end, or anything else, is refused. */
 static bool parse(const char *line, ra_unlock_t *u, char *user) {
   size_t len = strlen(line);
   if(len < 2 || line[len - 1] != '\n' || line[0] < '0' || line[0] > '9') return false;
@@ -120,6 +122,10 @@ static bool parse(const char *line, ra_unlock_t *u, char *user) {
   if(!u->id || !n || n >= RA_QUEUE_USER_MAX) return false;
   memcpy(user, end, n);
   user[n] = 0;
+  // the mode after the user, only an h makes it hardcore
+  end += n;
+  while(*end == ' ') end++;
+  u->hardcore = *end == 'h';
   return true;
 }
 
@@ -142,9 +148,10 @@ static int scan(void) {
       if(!f_gets(line, sizeof(line), &f)) break;
       lines = true;
       if(line[0] == RA_QUEUE_DONE) continue;
-      ra_unlock_t u = { 0, 0 };
+      ra_unlock_t u = { 0, 0, false };
       int k = !parse(line, &u, user) ? LINE_BAD : strcasecmp(user, owner) ? LINE_OTHER : LINE_OWN;
-      if(k == LINE_OWN) { own++; ra_state_add(u.id); }   // queued counts as unlocked
+      // queued counts as unlocked, in the mode it was earned in
+      if(k == LINE_OWN) { own++; ra_state_add(u.id, u.hardcore); }
       if(kind == LINE_NONE) {
         kind = k; head = u; head_at = at;
         snprintf(head_line, sizeof(head_line), "%s", line);
@@ -190,18 +197,18 @@ void ra_queue_take(bool keep) {
     debugf("RA: unlock %u not kept, no account", u.id);
     return;
   }
-  // what the account already has in hardcore is not sent again
-  if(ra_state_known(u.id)) {
+  // what the account already has in this mode, or in hardcore, is not sent again
+  if(ra_state_known(u.id) || (!u.hardcore && ra_state_softcore_only(u.id))) {
     debugf("RA: unlock %u already unlocked, not queued", u.id);
     return;
   }
   flush_ram();
   FRESULT r = append_unlock(RA_QUEUE_FILE, &u);
   if(r == FR_OK) {
-    ra_state_add(u.id);     // on the card, so from now on it counts as unlocked
+    ra_state_add(u.id, u.hardcore);   // on the card, so from now on it counts as unlocked
     pending++;
-    debugf("RA: unlock %u queued (%u pending)%s", u.id, pending,
-           u.when ? "" : ", clock not set, unlock time unknown");
+    debugf("RA: %s unlock %u queued (%u pending)%s", u.hardcore ? "hardcore" : "softcore", u.id,
+           pending, u.when ? "" : ", clock not set, unlock time unknown");
   } else if(ram_n < RA_QUEUE_RAM) {
     ram[ram_n++] = u;
     pending++;

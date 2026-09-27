@@ -22,8 +22,11 @@ bool ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n);
 /** @brief Writes both lists to the card. RA task only, after both were replaced. */
 void ra_state_save(void);
 
-/** @brief Counts an unlock as unlocked in hardcore, e.g. once it is queued. RA task only. */
-void ra_state_add(unsigned id);
+/** @brief Counts an unlock as unlocked in its mode, e.g. once it is queued. RA task only.
+ *
+ *  hardcore true adds it to the hardcore list and takes it out of the softcore
+ *  one. false adds it to the softcore list, unless the account has it in hardcore. */
+void ra_state_add(unsigned id, bool hardcore);
 
 /** @brief True when the account has this achievement in hardcore, or it is on its way there. Any task. */
 bool ra_state_known(unsigned id);

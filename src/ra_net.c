@@ -91,6 +91,48 @@ static void on_done(__attribute__((unused)) void *arg, httpc_result_t result,
   xSemaphoreGive(done);
 }
 
+static int hexval(char c) {
+  if(c >= '0' && c <= '9') return c - '0';
+  if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+bool ra_net_dechunk(char *buf, unsigned *len) {
+  char *end = buf + *len;
+  int pass;
+
+  if(*len == 0) return false;
+  if(buf[0] == '{') return true;
+  // each chunk is a hex length, CR LF, the data, CR LF, and a length of 0 ends it.
+  // Two passes: the first only checks that the framing is whole, the second moves
+  // the data down. A body that is not whole chunked framing stays as it came.
+  for(pass = 0; pass < 2; pass++) {
+    char *in = buf, *out = buf;
+    for(;;) {
+      unsigned long n = 0;
+      char *p = in;
+      while(p < end && hexval(*p) >= 0) { n = n * 16 + (unsigned long)hexval(*p); p++; }
+      if(p == in) return false;                       // no length line: not chunked
+      while(p < end && *p != '\n') p++;               // chunk extensions and the CR
+      if(p >= end) return false;
+      p++;                                            // the LF
+      if(n == 0) break;                               // the last chunk
+      if((unsigned long)(end - p) < n) return false;  // cut short
+      if(pass) memmove(out, p, n);
+      out += n;
+      in = p + n;
+      if(in < end && *in == '\r') in++;
+      if(in < end && *in == '\n') in++;
+    }
+    if(pass) {
+      *out = 0;
+      *len = (unsigned)(out - buf);
+    }
+  }
+  return true;
+}
+
 /* the kind of request, the r= parameter, for the log */
 static void kind_of(const char *path, char *kind, size_t size) {
   const char *r = strstr(path, "r=");
@@ -153,9 +195,16 @@ int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply) {
   }
 
   unsigned long ms = (unsigned long)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
+  // the server sends some replies chunked, and lwIP's HTTP client passes the
+  // framing through. A whole reply that is not JSON already loses it here, so
+  // every caller gets the plain body. One that is not chunked either stays as it is.
+  bool chunked = false;
+  if(reply->result == HTTPC_RESULT_OK && !reply->truncated && reply->len &&
+     buf[0] != '{' && buf[0] != '[')
+    chunked = ra_net_dechunk(buf, &reply->len);
   if(reply->result == HTTPC_RESULT_OK)
-    debugf("RA: r=%s -> HTTP %lu, %u bytes%s, %lu ms", kind, reply->status, reply->len,
-           reply->truncated ? " (truncated)" : "", ms);
+    debugf("RA: r=%s -> HTTP %lu, %u bytes%s%s, %lu ms", kind, reply->status, reply->len,
+           chunked ? " (chunked)" : "", reply->truncated ? " (truncated)" : "", ms);
   else
     debugf("RA: r=%s failed, result %d, lwIP error %d, %lu ms", kind, reply->result, reply->err, ms);
   return 0;

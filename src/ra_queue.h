@@ -13,8 +13,9 @@
 
 /** @brief One unlock waiting for the server. */
 typedef struct {
-  unsigned      id;     /**< achievement id */
-  unsigned long when;   /**< unix time of the unlock, 0 when the clock was not set */
+  unsigned      id;        /**< achievement id */
+  unsigned long when;      /**< unix time of the unlock, 0 when the clock was not set */
+  bool          hardcore;  /**< earned in hardcore mode, sent as that and nothing else */
 } ra_unlock_t;
 
 /** @brief Creates the handover queue and returns it, for the RA task's queue set.
@@ -22,8 +23,10 @@ typedef struct {
  *  Once, before com_task can report an unlock. */
 QueueHandle_t ra_queue_init(void);
 
-/** @brief Hands an unlock over to the RA task. From com_task, never blocks. */
-void ra_queue_add(unsigned id);
+/** @brief Hands an unlock over to the RA task. From com_task, never blocks.
+ *
+ *  hardcore is the mode the achievement was earned in. */
+void ra_queue_add(unsigned id, bool hardcore);
 
 /** @brief Opens the queue for this account and counts its waiting unlocks. RA task only.
  *

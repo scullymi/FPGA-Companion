@@ -46,6 +46,8 @@ static unsigned char  ra_triggered;         /* achievements triggered, saturatin
 static unsigned char  ra_last;              /* last one, 1-based position in the set */
 static unsigned short ra_us;                /* evaluation time of the last snapshot */
 static unsigned       ra_oob;               /* reads outside the mirror */
+static unsigned       ra_rp_frames;         /* frames since the rich presence text was read */
+#define RA_RP_EVERY   60                    /* frames between two readings, about a second */
 
 static uint32_t ra_peek(uint32_t address, uint32_t num_bytes, void *ud) {
   (void)ud;
@@ -160,14 +162,18 @@ static void banner_login(void) {
 
 static void ra_event(const rc_runtime_event_t *ev) {
   if(ev->type != RC_RUNTIME_EVENT_ACHIEVEMENT_TRIGGERED) return;
+  bool hardcore = ra_task_hardcore();
   if(ra_triggered < 255) ra_triggered++;
   ra_last = (unsigned char)ra_patch_index(ev->id);
-  debugf("RA: achievement %u triggered: %s", (unsigned)ev->id, ra_patch_title(ev->id));
-  // gold unless the account has it only in softcore, a grey mark when it has it
-  // in hardcore already or one is queued. Asked before the queue takes this one.
-  banner_show(ra_patch_title(ev->id), !ra_state_softcore_only(ev->id), !ra_state_known(ev->id));
+  debugf("RA: %s achievement %u triggered: %s", hardcore ? "hardcore" : "softcore",
+         (unsigned)ev->id, ra_patch_title(ev->id));
+  // gold in hardcore, white in softcore, as on the RA site. The mark is green when
+  // the unlock is new in this mode, grey when the account has it already or one
+  // is queued. Asked before the queue takes this one.
+  bool known = ra_state_known(ev->id) || (!hardcore && ra_state_softcore_only(ev->id));
+  banner_show(ra_patch_title(ev->id), hardcore, !known);
   // the RA task keeps it on the card and sends it, this never blocks
-  ra_queue_add(ev->id);
+  ra_queue_add(ev->id, hardcore);
 }
 
 /* Read the header first. Byte 7 set means a harvest was running when the transfer
@@ -266,6 +272,16 @@ static void ram_mirror_poll(void) {
   rc_runtime_do_frame(&ra_rt, ra_event, ra_peek, NULL, NULL);
   int64_t dt = absolute_time_diff_us(t0, get_absolute_time());
   ra_us = dt > 65535 ? 65535 : (unsigned short)dt;
+
+  /* the RA task pings only while frames arrive, and sends the rich presence text,
+     read here where the snapshot is valid, about once a second */
+  ra_task_frame();
+  if(++ra_rp_frames >= RA_RP_EVERY) {
+    char rp[RA_RP_MAX];
+    ra_rp_frames = 0;
+    rc_runtime_get_richpresence(&ra_rt, rp, sizeof(rp), ra_peek, NULL, NULL);
+    ra_task_set_richpresence(rp);
+  }
 
   ram_mirror_frame   = frame;
   ram_mirror_verdict = note;
