@@ -767,9 +767,12 @@ static void menu_ra_status(void) {
   case RA_TASK_REJECTED:   state = "login rejected"; break;
   case RA_TASK_NO_ACCOUNT: state = "no account";     break;
   case RA_TASK_NO_TIME:    state = "no time server"; break;
-  case RA_TASK_RETRYING:   state = "retrying";       break;
+  case RA_TASK_RETRYING:   state = "offline";        break;
   default:                 state = "connecting";     break;
   }
+  // the mode in front, it decides how the unlocks count
+  char line[40];
+  snprintf(line, sizeof(line), "%s, %s", ra_task_hardcore() ? "hardcore" : "softcore", state);
   // the counts refer to the active set, without one there is nothing to count
   if(!ra_patch_count())
     snprintf(count, sizeof(count), "no set loaded");
@@ -788,8 +791,8 @@ static void menu_ra_status(void) {
   else if(ra_queue_pending()) snprintf(note, sizeof(note), "%u to send", ra_queue_pending());
   else                        note[0] = 0;
 
-  snprintf(t, sizeof(t), "%s\n%s\n%s\n%s", who, state, count, note);
-  menu_draw_dialog_for("Achievements", t, pdMS_TO_TICKS(8000));
+  snprintf(t, sizeof(t), "%s\n%s\n%s\n%s", who, line, count, note);
+  menu_draw_dialog_for("Account", t, pdMS_TO_TICKS(8000));
 }
 
 static void menu_draw(const config_menu_t *menu, int selected, int scroll) {

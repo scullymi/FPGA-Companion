@@ -18,7 +18,7 @@
 #include "config.h"
 #include "mcu_hw.h"
 #include "at_wifi.h"
-#include "ra_patch.h"       // ra_patch_core_reset()
+#include "ra_task.h"        // ra_task_core_value()
 
 // we are using "puff" to decompress a gzip'd FPGA config as this is a slow, yet
 // very small and memory efficient implementation of the deflate de-compression
@@ -95,9 +95,9 @@ void sys_set_val(char id, int8_t value) {
   mcu_hw_spi_tx_u08(value);           // value itself
   mcu_hw_spi_end();  
 
-  // the core leaves reset: the achievements start over with the new game. Every
-  // reset from here ends with R=0, the menu's reset, a DIP switch, a new ROM.
-  if(id == 'R' && !(value & 1)) ra_patch_core_reset();
+  // the achievements follow the core: every reset from here (the menu's reset, a
+  // DIP switch, a new ROM) and the mode 'H' of the core's menu
+  ra_task_core_value(id, value);
 }
 
 unsigned char sys_irq_ctrl(unsigned char ack) {

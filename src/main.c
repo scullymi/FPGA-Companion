@@ -86,6 +86,7 @@ static unsigned   banner_pos;              /* next character to send */
 static bool       banner_pending;          /* text on its way, show follows after the pass */
 static bool       banner_live;             /* show flag on */
 static TickType_t banner_start;            /* when the show flag went on */
+static bool       banner_mode_due;         /* a game started or the mode changed: say which mode counts */
 
 static void banner_show(const char *text, bool gold, bool new) {
   banner_t b;
@@ -143,21 +144,41 @@ static void banner_step(unsigned char *hdr) {
 }
 
 /* A message when the RA task's state changes: the account is in, or the
-   player should know why nothing counts. */
+   player should know why nothing counts yet. Then the mode, at each game start
+   and when it changes, as RetroAchievements asks: the player sees what counts. */
 static void banner_login(void) {
   static ra_task_state_t shown = RA_TASK_STARTING;
+  static bool offline_told;                /* the offline message once, until the login */
+  static int  mode_shown = -1;
   ra_task_state_t now = ra_task_state();
-  if(now == shown) return;
-  shown = now;
-  // messages are white, the mark is green when all is well and grey when not
-  if(now == RA_TASK_LOGGED_IN) {
-    char text[BANNER_LEN + 1];
-    snprintf(text, sizeof(text), "RA: %s", inifile_config_get_str("ra", "user"));
-    banner_show(text, false, true);
-  } else if(now == RA_TASK_REJECTED)
-    banner_show("RA: LOGIN REJECTED", false, false);
-  else if(now == RA_TASK_NO_TIME)
-    banner_show("RA: NO TIME SERVER", false, false);
+  int mode = ra_task_hardcore();
+  if(now != shown) {
+    shown = now;
+    // messages are white, the mark is green when all is well and grey when not
+    if(now == RA_TASK_LOGGED_IN) {
+      char text[BANNER_LEN + 1];
+      snprintf(text, sizeof(text), "RA: %s", inifile_config_get_str("ra", "user"));
+      banner_show(text, false, true);
+    } else if(now == RA_TASK_REJECTED)
+      banner_show("RA: LOGIN REJECTED", false, false);
+    else if(now == RA_TASK_NO_TIME)
+      banner_show("RA: NO TIME SERVER", false, false);
+    else if(now == RA_TASK_RETRYING && !offline_told) {
+      // no server: achievements still count, their unlocks wait on the card
+      offline_told = true;
+      banner_show("RA: OFFLINE UNLOCKS KEPT", false, false);
+    }
+  }
+  if(mode != mode_shown) {
+    mode_shown = mode;
+    banner_mode_due = true;
+  }
+  // once the task knows whether there is an account: without one nothing counts
+  if(banner_mode_due && now != RA_TASK_STARTING) {
+    banner_mode_due = false;
+    if(now != RA_TASK_NO_ACCOUNT)
+      banner_show(mode ? "RA: HARDCORE" : "RA: SOFTCORE", mode, true);
+  }
 }
 
 static void ra_event(const rc_runtime_event_t *ev) {
@@ -267,7 +288,7 @@ static void ram_mirror_poll(void) {
     rc_runtime_init(&ra_rt);
     ra_ready = true;
   }
-  ra_patch_apply_pending(&ra_rt);
+  if(ra_patch_apply_pending(&ra_rt)) banner_mode_due = true;   /* a game starts */
   absolute_time_t t0 = get_absolute_time();
   rc_runtime_do_frame(&ra_rt, ra_event, ra_peek, NULL, NULL);
   int64_t dt = absolute_time_diff_us(t0, get_absolute_time());

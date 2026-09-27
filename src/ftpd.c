@@ -32,6 +32,7 @@
 #include "sdc.h"
 
 #include "ftpd.h"
+#include "ra_task.h"   /* ra_task_hardcore() */
 
 #define FTP_PORT             21
 #if defined(PICO_RP2040)
@@ -94,6 +95,17 @@ static bool disk_path_mounted(const char *path)
             return true;
     }
     return false;
+}
+
+/* In hardcore mode the files that decide what counts cannot be changed over
+ * FTP: the RetroAchievements files ra_* and config.ini in the card's root.
+ * FAT names are compared without case, and the short 8.3 names of these files
+ * start with the same letters. Reading stays possible. */
+static bool protected_path(const char *path)
+{
+    if (!ra_task_hardcore() || strchr(path, '/'))
+        return false;
+    return !strncasecmp(path, "ra_", 3) || !strcasecmp(path, "config.ini");
 }
 
 static void reply(ftps_t *fs, const char *s)
@@ -584,11 +596,17 @@ static void session(ftps_t *fs)
                 else
                     reply(fs, "550 Bad path.");
             } else if (!strcmp(line, "STOR")) {
-                if (resolve(fs, arg, path, sizeof(path)))
-                    do_stor(fs, path);
-                else
+                if (!resolve(fs, arg, path, sizeof(path)))
                     reply(fs, "550 Bad path.");
+                else if (protected_path(path))
+                    reply(fs, "550 Write protected in hardcore mode.");
+                else
+                    do_stor(fs, path);
             } else if (!strcmp(line, "DELE")) {
+                if (resolve(fs, arg, path, sizeof(path)) && protected_path(path)) {
+                    reply(fs, "550 Write protected in hardcore mode.");
+                    continue;
+                }
                 if (resolve(fs, arg, path, sizeof(path))) {
                     char full[FPATH_MAX];
                     full_path(path, full, sizeof(full));
@@ -603,6 +621,10 @@ static void session(ftps_t *fs)
                 }
                 reply(fs, "550 Delete failed (mounted image?).");
             } else if (!strcmp(line, "MKD") || !strcmp(line, "XMKD")) {
+                if (resolve(fs, arg, path, sizeof(path)) && protected_path(path)) {
+                    reply(fs, "550 Write protected in hardcore mode.");
+                    continue;
+                }
                 if (resolve(fs, arg, path, sizeof(path))) {
                     char full[FPATH_MAX];
                     full_path(path, full, sizeof(full));
@@ -643,6 +665,12 @@ static void session(ftps_t *fs)
                 else
                     reply(fs, "550 Bad path.");
             } else if (!strcmp(line, "RNTO")) {
+                if (fs->rnfr[0] && resolve(fs, arg, path, sizeof(path)) &&
+                    (protected_path(fs->rnfr) || protected_path(path))) {
+                    reply(fs, "550 Write protected in hardcore mode.");
+                    fs->rnfr[0] = 0;
+                    continue;
+                }
                 if (fs->rnfr[0] && resolve(fs, arg, path, sizeof(path))) {
                     char full_from[FPATH_MAX], full_to[FPATH_MAX];
                     full_path(fs->rnfr, full_from, sizeof(full_from));

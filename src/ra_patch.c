@@ -446,15 +446,18 @@ int ra_patch_from_server(unsigned len) {
 
 void ra_patch_core_reset(void) { reset_due = true; }
 
-void ra_patch_apply_pending(rc_runtime_t *rt) {
+bool ra_patch_apply_pending(rc_runtime_t *rt) {
   rc_api_fetch_game_data_response_t *r;
+  bool reset = reset_due;
   // after a reset of the core: hit counts, leaderboards and rich presence anew
-  if(reset_due) {
+  if(reset) {
     reset_due = false;
     rc_runtime_reset(rt);
     debugf("RA: core reset, achievement state starts over");
   }
-  if(!handover || xQueueReceive(handover, &r, 0) != pdTRUE) return;
-  activate_set(rt, r);
-  discard(r);               // rcheevos has copied the conditions
+  if(handover && xQueueReceive(handover, &r, 0) == pdTRUE) {
+    activate_set(rt, r);
+    discard(r);             // rcheevos has copied the conditions
+  }
+  return reset;
 }

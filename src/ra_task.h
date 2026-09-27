@@ -32,9 +32,18 @@ void ra_task_clock_set(void);
 
 /** @brief True when unlocks count as hardcore. Any task.
  *
- *  The session, the pings and every unlock carry this mode. No setting switches
- *  it, so it is softcore. */
+ *  The session, the pings and every unlock carry this mode. The core's menu sets
+ *  it with the value 'H', 1 hardcore and 0 softcore, see ra_task_core_value(). A
+ *  core without that value runs in softcore. */
 bool ra_task_hardcore(void);
+
+/** @brief A value the Companion sends to the core, from sys_set_val(). Any task.
+ *
+ *  'R' is the core's reset: when it ends, rcheevos starts over. 'H' is the mode.
+ *  Softcore applies at once. Hardcore applies at once while the core is in reset,
+ *  e.g. at the start, and otherwise the game is reset first, as RetroAchievements
+ *  asks: a game that started in softcore never continues in hardcore. */
+void ra_task_core_value(char id, int value);
 
 /** @brief Hands the rich presence text of the running game to the task. com_task only.
  *
