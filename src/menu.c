@@ -35,6 +35,7 @@
 #include "ra_state.h"
 #include "ra_queue.h"
 #include "ra_task.h"
+#include "rc_version.h"
 #include "mcu_hw.h"
 
 #ifdef ENABLE_BLUETOOTH
@@ -733,6 +734,15 @@ static void menu_net_status(void) {
   menu_draw_dialog_for("Network", t, pdMS_TO_TICKS(8000));
 }
 
+// The Version dialog: what this firmware tells RetroAchievements, split over three
+// lines. The version is the git describe of the game20k repository, handed in by its
+// build script, so between releases it carries the distance to the last tag.
+static void menu_version_status(void) {
+  char t[96];
+  snprintf(t, sizeof(t), "game20k v%s\n%s\nrcheevos %s", GAME20K_VERSION, GAME20K_PLATFORM, RCHEEVOS_VERSION_STRING);
+  menu_draw_dialog_for("Version", t, pdMS_TO_TICKS(8000));
+}
+
 // The Achievements dialog: the account and where it stands, the count, and the
 // most urgent note. Four lines fit the display.
 static void menu_ra_status(void) {
@@ -1119,6 +1129,9 @@ static void menu_select(void) {
     else if(entry->button->action && entry->button->action->name &&
             !strcmp(entry->button->action->name, "rainfo"))
       menu_ra_status();
+    else if(entry->button->action && entry->button->action->name &&
+            !strcmp(entry->button->action->name, "verinfo"))
+      menu_version_status();
     else if(entry->button->action)
       sys_run_action(entry->button->action);
     break;
