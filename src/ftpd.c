@@ -103,9 +103,21 @@ static bool disk_path_mounted(const char *path)
  * start with the same letters. Reading stays possible. */
 static bool protected_path(const char *path)
 {
-    if (!ra_task_hardcore() || strchr(path, '/'))
+    size_t n;
+    if (!ra_task_hardcore())
         return false;
-    return !strncasecmp(path, "ra_", 3) || !strcasecmp(path, "config.ini");
+    /* FatFs also splits at '\' and ends the path at a control byte, so such a
+     * path could reach a protected file: refused */
+    for (const char *c = path; *c; c++)
+        if ((unsigned char)*c < 0x20 || *c == '\\')
+            return true;
+    if (strchr(path, '/'))
+        return false;
+    /* FatFs drops trailing dots and spaces, "config.ini." is config.ini */
+    n = strlen(path);
+    while (n && (path[n - 1] == '.' || path[n - 1] == ' '))
+        n--;
+    return !strncasecmp(path, "ra_", 3) || (n == 10 && !strncasecmp(path, "config.ini", 10));
 }
 
 static void reply(ftps_t *fs, const char *s)
@@ -638,6 +650,11 @@ static void session(ftps_t *fs)
                 }
                 reply(fs, "550 Mkdir failed.");
             } else if (!strcmp(line, "RMD") || !strcmp(line, "XRMD")) {
+                /* f_unlink removes files as well, so the same guard as DELE */
+                if (resolve(fs, arg, path, sizeof(path)) && protected_path(path)) {
+                    reply(fs, "550 Write protected in hardcore mode.");
+                    continue;
+                }
                 if (resolve(fs, arg, path, sizeof(path))) {
                     char full[FPATH_MAX];
                     full_path(path, full, sizeof(full));
