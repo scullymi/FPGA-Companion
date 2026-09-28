@@ -31,11 +31,15 @@ bool ra_patch_init(void);
  *  to activate, or -1 when there is no usable set. */
 int ra_patch_read_card(void);
 
+#define RA_PATCH_RESET   1u   /**< ra_patch_apply_pending(): the core was reset, a game starts */
+#define RA_PATCH_NEW_SET 2u   /**< ra_patch_apply_pending(): a new set is active, table positions changed */
+
 /** @brief Activates a set the RA task handed over, if one waits. com_task only, before each frame.
  *
  *  Achievements of the previous set that the new one does not carry are deactivated.
- *  After ra_patch_core_reset() it first resets rcheevos and returns true: a game starts. */
-bool ra_patch_apply_pending(rc_runtime_t *rt);
+ *  After ra_patch_core_reset() it first resets rcheevos. Returns RA_PATCH_RESET and
+ *  RA_PATCH_NEW_SET for what happened, 0 when nothing did. */
+unsigned ra_patch_apply_pending(rc_runtime_t *rt);
 
 /** @brief The core has been reset. Any task, it only sets a flag.
  *
@@ -52,6 +56,36 @@ char *ra_patch_body(unsigned *cap);
  *  differs from the set the card had, and hands it to com_task. Returns 1 for a
  *  new set, 0 when the card already had this one, -1 when the reply is no set. */
 int ra_patch_from_server(unsigned len);
+
+#define RA_PATCH_TITLE_MAX    32   /**< titles are cut to 31 characters, the FPGA banner shows 24 */
+#define RA_PATCH_DESC_MAX     256  /**< descriptions up to 255 characters, as the server allows them */
+#define RA_PATCH_PROGRESS_MAX 24   /**< measured progress, "4294967295/4294967295" fits */
+
+/** @brief One achievement of the active set, as the menu shows it. */
+typedef struct {
+  unsigned id;                              /**< achievement id on the server */
+  unsigned points;                          /**< its points */
+  char     title[RA_PATCH_TITLE_MAX];        /**< title, cut to fit */
+  char     desc[RA_PATCH_DESC_MAX];          /**< description, cut to fit */
+  char     progress[RA_PATCH_PROGRESS_MAX];  /**< measured progress, "" when it has none */
+  bool     primed;                          /**< challenge on: all its conditions but the trigger hold */
+} ra_patch_item_t;
+
+/** @brief Copies achievement i (0-based, in the set's order) to out. Any task.
+ *
+ *  False when there is no such achievement. */
+bool ra_patch_item(unsigned i, ra_patch_item_t *out);
+
+/** @brief The progress of an achievement as text, "12/50" or "37%", "" when there is none. com_task only.
+ *
+ *  Empty also while the value is unknown or 0, e.g. right after a reset, and below
+ *  1 percent, as rc_client shows it. */
+void ra_patch_format_progress(const rc_runtime_t *rt, unsigned id, char *buf, size_t size);
+
+/** @brief Reads progress and challenge state of every achievement from rcheevos. com_task only, after a frame.
+ *
+ *  About once a second is enough, the menu shows what it read last. */
+void ra_patch_update_progress(const rc_runtime_t *rt);
 
 /** @brief Number of core achievements in the active set. */
 unsigned    ra_patch_count(void);

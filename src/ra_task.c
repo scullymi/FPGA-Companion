@@ -69,6 +69,9 @@ static volatile ra_task_state_t state = RA_TASK_STARTING;   // written here, rea
 static volatile bool     hardcore;         // the mode of session, pings and unlocks, see ra_task_hardcore()
 static volatile bool     hardcore_due;     // hardcore asked for, it applies when the reset for it ends
 static volatile bool     core_running;     // the core is out of reset, a game may be running
+static volatile bool     hc_wanted;        // the menu's 'H'
+static volatile unsigned hc_block;         // RA_HC_BLOCK_* reasons that keep hardcore off
+static volatile unsigned char core_flags;  // header byte 9 of the RAM mirror, 0 = release build
 static char              rp_text[RA_RP_MAX];   // rich presence from com_task, under a critical section
 static volatile unsigned frames;           // frames rcheevos evaluated, counted by com_task
 static char              path_buf[RA_PATH_MAX];  // path of session and ping requests, too large for the stack
@@ -78,34 +81,61 @@ static TickType_t        next_ping;        // when the next ping, or the next tr
 ra_task_state_t ra_task_state(void) { return state; }
 bool ra_task_hardcore(void) { return hardcore; }
 
+unsigned ra_task_hardcore_blocked(void) { return hc_block; }
+bool ra_task_hardcore_wanted(void) { return hc_wanted; }
+
+/* Brings the mode in line with what the menu wants and what blocks it. Softcore
+   applies at once. Hardcore applies at once while the core is in reset, e.g. at
+   the start, otherwise the running game is reset first and the mode applies when
+   the reset ends: a game that started in softcore never continues in hardcore. */
+static void hc_update(void) {
+  if(!hc_wanted || hc_block) {
+    if(hardcore || hardcore_due) debugf("RA: softcore from now on");
+    hardcore = hardcore_due = false;
+    return;
+  }
+  if(hardcore || hardcore_due) return;
+  if(!core_running) {
+    hardcore = true;          // no game runs, the next one starts in hardcore
+    return;
+  }
+  debugf("RA: hardcore, the game is reset");
+  hardcore_due = true;
+  sys_set_val('R', 1);
+  vTaskDelay(pdMS_TO_TICKS(10));
+  sys_set_val('R', 0);
+}
+
+void ra_task_hardcore_block(unsigned reason, bool on) {
+  unsigned before = hc_block;
+  hc_block = on ? (before | reason) : (before & ~reason);
+  if(hc_block != before) hc_update();
+}
+
+void ra_task_core_flags(unsigned char flags) {
+  if(flags == core_flags) return;
+  core_flags = flags;
+  if(flags) debugf("RA: the core was built for diagnostics (flags 0x%02x), no hardcore", flags);
+  ra_task_hardcore_block(RA_HC_BLOCK_CORE, flags != 0);
+}
+
 void ra_task_core_value(char id, int value) {
   if(id == 'R') {
     core_running = !(value & 1);
     if(!core_running) return;
-    // a reset ends: the game starts anew, in hardcore if that was asked for,
-    // and rcheevos starts over before the next frame
+    // a reset ends: rcheevos starts over before the next frame, and the game
+    // starts anew, in hardcore if that was asked for. The reset is flagged first:
+    // com_task runs above this task and must not evaluate a frame in hardcore
+    // with the hit counts of the game before.
+    ra_patch_core_reset();
     if(hardcore_due) {
       hardcore_due = false;
       hardcore = true;
       debugf("RA: hardcore from this game on");
     }
-    ra_patch_core_reset();
   } else if(id == 'H') {
-    bool want = value != 0;
-    if(!want) {
-      if(hardcore || hardcore_due) debugf("RA: softcore from now on");
-      hardcore = hardcore_due = false;
-    } else if(!core_running) {
-      hardcore = true;        // no game runs, the next one starts in hardcore
-    } else if(!hardcore && !hardcore_due) {
-      // a running game may not continue in hardcore: the core is reset, the
-      // mode applies when the reset ends (R=0 above)
-      debugf("RA: hardcore, the game is reset");
-      hardcore_due = true;
-      sys_set_val('R', 1);
-      vTaskDelay(pdMS_TO_TICKS(10));
-      sys_set_val('R', 0);
-    }
+    hc_wanted = value != 0;
+    hc_update();
   }
 }
 void ra_task_frame(void) { frames++; }

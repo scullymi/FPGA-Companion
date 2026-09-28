@@ -78,6 +78,10 @@ typedef struct config_custom_S {
   
   // Pointer to function that draws the custom contents
   void (*draw)(void); 
+
+  // Pointer to function called with the 0-based line when a line is
+  // selected, NULL when the lines select nothing
+  void (*select)(int line);
   
 } config_custom_t;
 
@@ -428,6 +432,9 @@ static void menu_entry_go(int step) {
   }							  
   
   int entries = menu_count_entries();
+  // a custom page can lose entries while it is open, e.g. when a new set arrives
+  if(menu_state->selected >= entries) menu_state->selected = entries - 1;
+  if(menu_state->scroll > (entries > 5 ? entries - 5 : 0)) menu_state->scroll = entries > 5 ? entries - 5 : 0;
   do {
     menu_state->selected += step;
     
@@ -743,7 +750,163 @@ static void menu_version_status(void) {
   menu_draw_dialog_for("Version", t, pdMS_TO_TICKS(8000));
 }
 
-// The Achievements dialog: the account and where it stands, the count, and the
+/* ================ the achievement list ================
+   One line per achievement of the active set, in the set's order: a mark, the
+   title and, on the right, the progress while it runs, else the points. The
+   mark is a disk when the account has it in hardcore, a ring when only in
+   softcore, an exclamation mark while its challenge is on. OK on a line shows
+   the details. RetroAchievements asks that progress and challenges show here. */
+static const unsigned char icn_hard_bits[]   = { 0x3c,0x7e,0xff,0xff,0xff,0xff,0x7e,0x3c };
+static const unsigned char icn_primed_bits[] = { 0x18,0x18,0x18,0x18,0x18,0x00,0x18,0x18 };
+
+/* Unlocked in the mode that counts: hardcore counts in both modes, softcore only in softcore. */
+static bool ra_list_done(unsigned id) {
+  return ra_state_known(id) || (!ra_task_hardcore() && ra_state_softcore_only(id));
+}
+
+static int ra_list_length(void) {
+  return (int)ra_patch_count();
+}
+
+static void ra_list_draw(void) {
+  const int width = u8g2_GetDisplayWidth(&u8g2);
+  int dots;
+
+  // progress and challenges change during play: the menu timer redraws the list
+  // about once a second while it shows, see menu_do()
+  menu_timer_enable(true);
+  u8g2_SetFont(&u8g2, font_helvR08_te);
+  dots = u8g2_GetStrWidth(&u8g2, "...");
+  if(!ra_patch_count()) {
+    u8g2_DrawStr(&u8g2, 1, MENU_LINE_Y + MENU_ENTRY_H, "No set loaded");
+    return;
+  }
+  // the four lines from the scroll position on, like the file selector
+  for(int row = 0; row < 4; row++) {
+    ra_patch_item_t it;
+    int i = row + menu_state->scroll;
+    if(!ra_patch_item((unsigned)i, &it)) break;
+    int y = MENU_LINE_Y + MENU_ENTRY_H * (row + 1);
+    bool done = ra_list_done(it.id);
+
+    // right column: the progress while the achievement is open, else its points
+    char right[RA_PATCH_PROGRESS_MAX + 4];
+    if(it.progress[0] && !done) snprintf(right, sizeof(right), "%s", it.progress);
+    else                        snprintf(right, sizeof(right), "%u", it.points);
+    int rw = u8g2_GetStrWidth(&u8g2, right);
+
+    // the title between mark and right column, cut with "..." when too long
+    char title[RA_PATCH_TITLE_MAX + 3];
+    int room = width - FS_ICON_WIDTH - rw - 3;
+    snprintf(title, sizeof(title), "%s", it.title);
+    if(u8g2_GetStrWidth(&u8g2, title) > room) {
+      while(title[0] && u8g2_GetStrWidth(&u8g2, title) > room - dots) title[strlen(title) - 1] = 0;
+      strcat(title, "...");
+    }
+
+    if(it.primed && !done)             u8g2_DrawXBM(&u8g2, 1, y - 8, 8, 8, icn_primed_bits);
+    else if(ra_state_known(it.id))     u8g2_DrawXBM(&u8g2, 1, y - 8, 8, 8, icn_hard_bits);
+    else if(ra_state_softcore_only(it.id)) u8g2_DrawXBM(&u8g2, 1, y - 8, 8, 8, icn_off_bits);
+    u8g2_DrawStr(&u8g2, FS_ICON_WIDTH, y, title);
+    u8g2_DrawStr(&u8g2, width - rw - 1, y, right);
+
+    if(menu_state->selected == i + 1)
+      u8g2_DrawButtonFrame(&u8g2, 0, y, U8G2_BTN_INV, width, 1, 1);
+  }
+}
+
+/* Cuts s so that it plus "..." fits width in the current font, and adds "...".
+   s needs room for three more characters. */
+static void ra_list_ellipsize(char *s, int width) {
+  int dots = u8g2_GetStrWidth(&u8g2, "...");
+  if(u8g2_GetStrWidth(&u8g2, s) <= width) return;
+  while(s[0] && u8g2_GetStrWidth(&u8g2, s) > width - dots) s[strlen(s) - 1] = 0;
+  while(strlen(s) && s[strlen(s) - 1] == ' ') s[strlen(s) - 1] = 0;
+  strcat(s, "...");
+}
+
+/* Breaks text into at most max lines of the display width at spaces, into out,
+   the way menu_wrap_text() breaks a dialog. When text remains, the last line ends
+   with "...". Returns the number of lines. */
+static int ra_list_wrap(const char *text, char out[][80], int max) {
+  const int width = u8g2_GetDisplayWidth(&u8g2);
+  int n = 0;
+  u8g2_SetFont(&u8g2, font_helvR08_te);
+  while(*text && n < max) {
+    size_t take = 0, gap = 0, i;
+    char *line = out[n];
+    while(*text == ' ') text++;
+    if(!*text) break;
+    for(i = 0; text[i] && i < 80 - 4; i++) {
+      line[i] = text[i];
+      line[i + 1] = 0;
+      if(u8g2_GetStrWidth(&u8g2, line) > width) break;
+      if(text[i] == ' ') gap = i;
+      take = i + 1;
+    }
+    if(text[i] && text[i] != ' ' && gap) take = gap;
+    if(!take) take = 1;
+    line[take] = 0;
+    text += take;
+    n++;
+    while(*text == ' ') text++;
+    if(n == max && *text) ra_list_ellipsize(line, width);   // more text than lines
+  }
+  return n;
+}
+
+/* The details of one achievement: its title as the heading, the description in
+   up to three lines, then points and where it stands. Four lines fit the display
+   under a heading. */
+static void ra_list_select(int line) {
+  const int width = u8g2_GetDisplayWidth(&u8g2);
+  ra_patch_item_t it;
+  char head[RA_PATCH_TITLE_MAX + 3], stat[48], desc[3][80], t[4 * 80];
+  const char *state;
+  int n, i;
+
+  if(!ra_patch_item((unsigned)line, &it)) return;
+  // where it stands: done in this mode first, else what is going on
+  if(ra_state_known(it.id))                                state = "hardcore";
+  else if(ra_state_softcore_only(it.id) && !ra_task_hardcore()) state = "softcore";
+  else if(it.primed)                                       state = "challenge on";
+  else if(it.progress[0])                                  state = it.progress;
+  else if(ra_state_softcore_only(it.id))                   state = "softcore only";
+  else                                                     state = "open";
+
+  // the heading in the dialog's bold font, cut to the display
+  u8g2_SetFont(&u8g2, u8g2_font_helvB08_tr);
+  snprintf(head, sizeof(head), "%s", it.title);
+  ra_list_ellipsize(head, width);
+
+  u8g2_SetFont(&u8g2, font_helvR08_te);
+  snprintf(stat, sizeof(stat), "%u points, %s", it.points, state);
+  if(u8g2_GetStrWidth(&u8g2, stat) > width) snprintf(stat, sizeof(stat), "%u pts, %s", it.points, state);
+  n = ra_list_wrap(it.desc, desc, 3);
+  t[0] = 0;
+  for(i = 0; i < n; i++) { strcat(t, desc[i]); strcat(t, "\n"); }
+  strcat(t, stat);
+  menu_draw_dialog_for(head, t, pdMS_TO_TICKS(10000));
+}
+
+static const config_custom_t ra_list = {
+  .label  = "Achievements",
+  .length = ra_list_length,
+  .draw   = ra_list_draw,
+  .select = ra_list_select
+};
+
+/* Opens the list with its first achievement selected. The draw starts the timer
+   that keeps it current. */
+static void menu_ra_list_open(void) {
+  menu_push();
+  menu_state->type     = MENU_TYPE_CUSTOM;
+  menu_state->custom   = &ra_list;
+  menu_state->selected = ra_patch_count() ? 1 : 0;
+  menu_state->scroll   = 0;
+}
+
+// The Account dialog: the account and where it stands, the count, and the
 // most urgent note. Four lines fit the display.
 static void menu_ra_status(void) {
   char t[100], who[24], count[32], note[24];
@@ -1096,7 +1259,11 @@ static void menu_select(void) {
     return;
   }
 
-  // a line of a custom page, e.g. About, is no menu entry: nothing to select
+  // a line of a custom page is no menu entry: the page selects it itself, if at all
+  if(menu_state->type == MENU_TYPE_CUSTOM) {
+    if(menu_state->custom->select) menu_state->custom->select(menu_state->selected - 1);
+    return;
+  }
   if(!entry) return;
   
   menu_debugf("Selected: %s '%s'", config_menuentry_get_type_str(entry), menuentry_get_label(entry));
@@ -1138,6 +1305,9 @@ static void menu_select(void) {
     else if(entry->button->action && entry->button->action->name &&
             !strcmp(entry->button->action->name, "verinfo"))
       menu_version_status();
+    else if(entry->button->action && entry->button->action->name &&
+            !strcmp(entry->button->action->name, "ralist"))
+      menu_ra_list_open();
     else if(entry->button->action)
       sys_run_action(entry->button->action);
     break;
@@ -1209,6 +1379,15 @@ void menu_do(int event) {
     if(cfg) {
       if(menu_state->type == MENU_TYPE_FILESELECTOR)
 	menu_fs_scroll_entry();
+      else if(menu_state->type == MENU_TYPE_CUSTOM && menu_state->custom == &ra_list) {
+	// the achievement list shows live progress: redraw it every 25 ticks, 1 s
+	static int ticks;
+	if(++ticks >= 25) {
+	  ticks = 0;
+	  menu_custom_draw((config_custom_t *)menu_state->custom, menu_state->selected, menu_state->scroll);
+	}
+      } else
+	menu_timer_enable(false);   // nothing here animates, the timer rests
     }
       
     return;

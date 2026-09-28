@@ -23,6 +23,7 @@
 #include <task.h>
 #include <queue.h>
 #include "rc_api_runtime.h"
+#include "rc_runtime_types.h"   // rc_trigger_t and its states, for the challenge indicator
 #include "rcheevos/src/rhash/md5.h"
 #include <ff.h>
 #include "debug.h"
@@ -44,7 +45,6 @@ static const ra_dip_t game_dips[] = { { 'L', 2 }, { 'B', 2 } };
 
 #define RA_PATCH_BODY_MAX   40960        /**< a whole set, e.g. Galaga has about 15.7 KB */
 #define RA_PATCH_MAX        64           /**< achievements kept per set, e.g. Galaga 17 */
-#define RA_PATCH_TITLE_MAX  32           /**< titles are cut to 31 characters, the FPGA banner will show 24 */
 #define RA_PATCH_FILE       "/sd/ra_patch.json"   /**< the server's reply to r=patch, kept on the card */
 #define RA_PATCH_TMP        RA_PATCH_FILE ".new"  /**< a new set while it is written, then it takes the place of the old */
 /** "Warning: Unknown Emulator", which the server adds for clients it does not
@@ -77,11 +77,23 @@ static QueueHandle_t handover;
 /** One achievement of the active set. */
 typedef struct {
   unsigned      id;                        /**< achievement id on the server */
+  unsigned      points;                    /**< its points */
   char          title[RA_PATCH_TITLE_MAX];  /**< its title, cut to fit */
+  const char   *desc;                      /**< its description, in desc_pool */
   unsigned char md5[16];                   /**< md5 of its condition, an unchanged one keeps running */
 } entry_t;
 static entry_t  set[RA_PATCH_MAX];
 static unsigned set_n;
+// the descriptions of the active set, one block sized to the set: Galaga's 17
+// take about 2 KB, a table of 64 fixed 256-byte fields would take 16 KB
+static char    *desc_pool;
+
+/** What rcheevos says about an achievement of the table, same index. */
+typedef struct {
+  char progress[RA_PATCH_PROGRESS_MAX];     /**< measured progress, "" when none */
+  bool primed;                              /**< challenge on */
+} live_t;
+static live_t live[RA_PATCH_MAX];           // written by com_task, read by the menu
 
 // the rich presence script that runs, by its md5. com_task only.
 static unsigned char rp_md5[16];
@@ -107,6 +119,58 @@ unsigned ra_patch_index(unsigned id) {
 const char *ra_patch_title(unsigned id) {
   unsigned i = ra_patch_index(id);
   return i ? set[i - 1].title : "";
+}
+
+bool ra_patch_item(unsigned i, ra_patch_item_t *out) {
+  bool ok = false;
+  // one copy with interrupts off, so an entry is never seen half replaced
+  taskENTER_CRITICAL();
+  if(i < set_n) {
+    out->id     = set[i].id;
+    out->points = set[i].points;
+    memcpy(out->title, set[i].title, sizeof(out->title));
+    snprintf(out->desc, sizeof(out->desc), "%s", set[i].desc ? set[i].desc : "");
+    memcpy(out->progress, live[i].progress, sizeof(out->progress));
+    out->primed = live[i].primed;
+    ok = true;
+  }
+  taskEXIT_CRITICAL();
+  return ok;
+}
+
+void ra_patch_format_progress(const rc_runtime_t *rt, unsigned id, char *buf, size_t size) {
+  const rc_trigger_t *t = rc_runtime_get_achievement(rt, id);
+  uint32_t value;
+  buf[0] = 0;
+  // nothing measured, or not active (disabled, inactive, fired): no progress, as
+  // rcheevos' own formatter decides it
+  if(!t || !t->measured_target || t->state == RC_TRIGGER_STATE_DISABLED ||
+     t->state == RC_TRIGGER_STATE_INACTIVE || t->state == RC_TRIGGER_STATE_TRIGGERED)
+    return;
+  // unknown after a reset, or 0: nothing to show yet (rcheevos would print "0/50")
+  value = t->measured_value;
+  if(value == 0xFFFFFFFFu || value == 0) return;
+  if(value > t->measured_target) value = t->measured_target;
+  if(t->measured_as_percent) {
+    uint32_t percent = (uint32_t)(((unsigned long long)value * 100) / t->measured_target);
+    if(percent) snprintf(buf, size, "%u%%", (unsigned)percent);
+  } else
+    snprintf(buf, size, "%u/%u", (unsigned)value, (unsigned)t->measured_target);
+}
+
+void ra_patch_update_progress(const rc_runtime_t *rt) {
+  unsigned i;
+  for(i = 0; i < set_n; i++) {
+    live_t one;
+    // the progress, "12/50" or a percentage. Primed: only the trigger condition is
+    // missing, the challenge indicator of RetroAchievements.
+    rc_trigger_t *t = rc_runtime_get_achievement(rt, set[i].id);
+    ra_patch_format_progress(rt, set[i].id, one.progress, sizeof(one.progress));
+    one.primed = t && t->state == RC_TRIGGER_STATE_PRIMED;
+    taskENTER_CRITICAL();
+    live[i] = one;
+    taskEXIT_CRITICAL();
+  }
 }
 
 /* The set without the chunked framing, see ra_net_dechunk(). */
@@ -200,35 +264,47 @@ static bool core_item(const rc_api_achievement_definition_t *a) {
   return a->category == RC_ACHIEVEMENT_CATEGORY_CORE && a->id != RA_PATCH_WARNING_ID;
 }
 
-/* Folds one md5 over a tag, an id and up to two strings into sum with xor. */
-static void fold(unsigned char *sum, char tag, uint32_t id, const char *s1, const char *s2) {
+/* Adds one md5 over a tag, two numbers and up to three strings to sum, as a
+   128-bit addition. Addition and not xor: with xor, two equal items cancel out,
+   so a set with one achievement doubled and changed would read as unchanged. */
+static void fold(unsigned char *sum, char tag, uint32_t id, uint32_t num,
+                 const char *s1, const char *s2, const char *s3) {
   md5_state_t md5;
   unsigned char one[16];
-  unsigned k;
+  unsigned k, carry = 0;
   md5_init(&md5);
   md5_append(&md5, (const md5_byte_t *)&tag, 1);
   md5_append(&md5, (const md5_byte_t *)&id, sizeof(id));
+  md5_append(&md5, (const md5_byte_t *)&num, sizeof(num));
   if(s1) md5_append(&md5, (const md5_byte_t *)s1, (int)strlen(s1) + 1);
-  if(s2) md5_append(&md5, (const md5_byte_t *)s2, (int)strlen(s2));
+  if(s2) md5_append(&md5, (const md5_byte_t *)s2, (int)strlen(s2) + 1);
+  if(s3) md5_append(&md5, (const md5_byte_t *)s3, (int)strlen(s3));
   md5_finish(&md5, one);
-  for(k = 0; k < 16; k++) sum[k] ^= one[k];
+  for(k = 0; k < 16; k++) {
+    carry += (unsigned)sum[k] + one[k];
+    sum[k] = (unsigned char)carry;
+    carry >>= 8;
+  }
 }
 
-/* A fingerprint of a parsed set: one md5 per core achievement over id, title and
-   condition, one per leaderboard over id and definition, and one over the rich
-   presence script, all folded together with xor, so the order in the reply does
-   not matter. Two sets with the same fingerprint play the same. */
+/* A fingerprint of a parsed set: one md5 per core achievement over id, points,
+   title, description and condition, one per leaderboard over id, format, title
+   and definition, and one over the rich presence script, all added up, so the
+   order in the reply does not matter. Two sets with the same fingerprint play
+   and show the same. */
 static void fingerprint(const rc_api_fetch_game_data_response_t *r, unsigned char *sum) {
   unsigned i;
   memset(sum, 0, 16);
   for(i = 0; i < r->num_achievements; i++) {
     const rc_api_achievement_definition_t *a = &r->achievements[i];
-    if(core_item(a)) fold(sum, 'a', a->id, a->title, a->definition);
+    if(core_item(a)) fold(sum, 'a', a->id, a->points, a->title, a->description, a->definition);
   }
-  for(i = 0; i < r->num_leaderboards; i++)
-    fold(sum, 'l', r->leaderboards[i].id, r->leaderboards[i].definition, NULL);
+  for(i = 0; i < r->num_leaderboards; i++) {
+    const rc_api_leaderboard_definition_t *l = &r->leaderboards[i];
+    fold(sum, 'l', l->id, (uint32_t)l->format, l->title, NULL, l->definition);
+  }
   if(r->rich_presence_script && *r->rich_presence_script)
-    fold(sum, 'r', 0, r->rich_presence_script, NULL);
+    fold(sum, 'r', 0, 0, NULL, NULL, r->rich_presence_script);
 }
 
 /* Lets rcheevos parse the body, prints why when it is unusable. The caller
@@ -298,6 +374,15 @@ static int activate_richpresence(rc_runtime_t *rt, const char *script) {
 static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_t *r) {
   static entry_t next[RA_PATCH_MAX];   // com_task only, too large for its stack
   unsigned i, j, n = 0, rejected = 0, kept = 0;
+  size_t pool_size = 0;
+  char *pool, *at;
+
+  // one block for all descriptions of the new set, each cut to what the menu shows
+  for(i = 0; i < r->num_achievements; i++)
+    if(core_item(&r->achievements[i]))
+      pool_size += strnlen(r->achievements[i].description ? r->achievements[i].description : "",
+                           RA_PATCH_DESC_MAX - 1) + 1;
+  at = pool = malloc(pool_size ? pool_size : 1);   // pico_malloc stops the firmware when the heap is out
 
   // every achievement of the set once: skip what does not count, stop when the
   // table is full, and hand the condition string of the others to rcheevos.
@@ -329,9 +414,16 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
         continue;
       }
     }
-    // keep id, title and condition md5, snprintf cuts a long title to the table
-    next[n].id = a->id;
+    // keep id, points, title, description and condition md5. snprintf cuts the
+    // title to the table, the description goes into the block.
+    size_t dl = strnlen(a->description ? a->description : "", RA_PATCH_DESC_MAX - 1);
+    next[n].id     = a->id;
+    next[n].points = a->points;
     snprintf(next[n].title, sizeof(next[n].title), "%s", a->title ? a->title : "");
+    memcpy(at, a->description ? a->description : "", dl);
+    at[dl] = 0;
+    next[n].desc = at;
+    at += dl + 1;
     memcpy(next[n].md5, sum, sizeof(sum));
     n++;
   }
@@ -344,11 +436,17 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
   }
 
   // the table goes out in one piece: other tasks read it without a lock, and on
-  // this single core a change with interrupts off cannot be seen half done
+  // this single core a change with interrupts off cannot be seen half done. The
+  // progress starts empty, the next update fills it.
+  char *old_pool;
   taskENTER_CRITICAL();
   memcpy(set, next, n * sizeof(set[0]));
   set_n = n;
+  memset(live, 0, sizeof(live));
+  old_pool  = desc_pool;
+  desc_pool = pool;
   taskEXIT_CRITICAL();
+  free(old_pool);               // no reader can hold it: they copy with interrupts off
 
   // rich presence: the script of this set, an empty one switches it off. A script
   // rcheevos rejects leaves the previous one running, the log says so.
@@ -446,18 +544,20 @@ int ra_patch_from_server(unsigned len) {
 
 void ra_patch_core_reset(void) { reset_due = true; }
 
-bool ra_patch_apply_pending(rc_runtime_t *rt) {
+unsigned ra_patch_apply_pending(rc_runtime_t *rt) {
   rc_api_fetch_game_data_response_t *r;
-  bool reset = reset_due;
+  unsigned what = 0;
   // after a reset of the core: hit counts, leaderboards and rich presence anew
-  if(reset) {
+  if(reset_due) {
     reset_due = false;
     rc_runtime_reset(rt);
     debugf("RA: core reset, achievement state starts over");
+    what |= RA_PATCH_RESET;
   }
   if(handover && xQueueReceive(handover, &r, 0) == pdTRUE) {
     activate_set(rt, r);
     discard(r);             // rcheevos has copied the conditions
+    what |= RA_PATCH_NEW_SET;
   }
-  return reset;
+  return what;
 }

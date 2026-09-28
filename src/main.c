@@ -23,18 +23,21 @@
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
-   as the first byte of the next transfer. The sizes must match ram_mirror_pkg.sv of
-   the game20k FPGA core. */
-#define RAM_MIRROR_HEAD  8
+   as the first byte of the next transfer. The sizes and the layout must match
+   ram_mirror_pkg.sv of the game20k FPGA core. Layout 3: a header of 16 bytes, in it
+   the core's reset count (byte 8) and its diagnostic parameters (byte 9). */
+#define RAM_MIRROR_LAYOUT 0x03                       /* header byte 4               */
+#define RAM_MIRROR_HEAD  16
 #define RAM_MIRROR_DATA  5120                        /* bgram + wram1..3            */
 #define RAM_MIRROR_LOG   1536                        /* oracle log, 512 x 3 bytes   */
 #define RAM_MIRROR_BODY  (RAM_MIRROR_DATA + RAM_MIRROR_LOG)
 #define RAM_MIRROR_FOOT  (RAM_MIRROR_HEAD + RAM_MIRROR_BODY)
-#define RAM_MIRROR_BYTES (RAM_MIRROR_FOOT + 8)       /* 6672 */
+#define RAM_MIRROR_BYTES (RAM_MIRROR_FOOT + 8)       /* 6680 */
 
 static unsigned char ram_mirror_buf[RAM_MIRROR_BYTES];
 static unsigned char ram_mirror_verdict = 0xA5;
 static int ram_mirror_frame = -1;                    /* frame number of the last good snapshot */
+static int ram_mirror_resets = -1;                   /* the core's reset count in it */
 static unsigned char ram_mirror_seen[RAM_MIRROR_DATA / 8];
 
 /* rcheevos evaluates the achievement conditions over each good snapshot. The set
@@ -74,10 +77,12 @@ static uint32_t ra_peek(uint32_t address, uint32_t num_bytes, void *ud) {
 #define BANNER_LEN   24
 #define BANNER_MS    8000
 #define BANNER_QUEUE 4
+#define BANNER_PROGRESS_MS 2500   /* a progress banner is short, the next one may follow soon */
 typedef struct {
   char text[BANNER_LEN];
   bool gold;        /* text gold for hardcore, white for softcore, as on the RA site */
   bool new;         /* mark green: new, goes to the server. Grey: the account has it, or it is queued */
+  unsigned ms;      /* how long it shows */
 } banner_t;
 static banner_t   banner;                  /* the one being sent or shown */
 static banner_t   banner_q[BANNER_QUEUE];  /* the ones waiting, oldest first */
@@ -87,46 +92,75 @@ static bool       banner_pending;          /* text on its way, show follows afte
 static bool       banner_live;             /* show flag on */
 static TickType_t banner_start;            /* when the show flag went on */
 static bool       banner_mode_due;         /* a game started or the mode changed: say which mode counts */
+static banner_t   banner_progress;         /* the latest progress, shown only when no other banner waits */
+static bool       banner_progress_due;
 
-static void banner_show(const char *text, bool gold, bool new) {
-  banner_t b;
+/* Fits a text into a banner: the FPGA font has A-Z, 0-9, space and ! - . : so
+   lower case is raised and anything else becomes a space, a longer text ends at
+   a word where it can, and the rest of the line is spaces. */
+static void banner_fill(banner_t *b, const char *text, bool gold, bool new, unsigned ms) {
   unsigned i = 0;
-  if(banner_n >= BANNER_QUEUE) {
-    debugf("RA: banner '%s' dropped, %u already wait", text, banner_n);
-    return;
-  }
-  // the FPGA font has A-Z, 0-9, space and ! - . : so lower case is raised and
-  // anything else becomes a space. The rest of the line is spaces.
   for(; text[i] && i < BANNER_LEN; i++) {
     char c = text[i];
     if(c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
     else if(!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strchr(" !-.:", c))) c = ' ';
-    b.text[i] = c;
+    b->text[i] = c;
   }
   // a longer text ends at a word, if one ends in the last third of the line,
   // rather than in the middle of one. Titles can have up to 64 characters.
   if(text[i] && text[i] != ' ') {
     unsigned cut = i;
-    while(cut > BANNER_LEN * 2 / 3 && b.text[cut - 1] != ' ') cut--;
+    while(cut > BANNER_LEN * 2 / 3 && b->text[cut - 1] != ' ') cut--;
     if(cut > BANNER_LEN * 2 / 3) i = cut - 1;
   }
-  for(; i < BANNER_LEN; i++) b.text[i] = ' ';
-  b.gold = gold;
-  b.new  = new;
+  for(; i < BANNER_LEN; i++) b->text[i] = ' ';
+  b->gold = gold;
+  b->new  = new;
+  b->ms   = ms;
+}
+
+static void banner_show(const char *text, bool gold, bool new) {
+  banner_t b;
+  if(banner_n >= BANNER_QUEUE) {
+    debugf("RA: banner '%s' dropped, %u already wait", text, banner_n);
+    return;
+  }
+  banner_fill(&b, text, gold, new, BANNER_MS);
   banner_q[banner_n++] = b;
   debugf("RA: banner '%.*s' for %u s (%s text, %s mark)%s", BANNER_LEN, b.text, BANNER_MS / 1000,
          gold ? "gold" : "white", new ? "green" : "grey", banner_n > 1 ? ", waits" : "");
 }
 
-/* One poll's worth of banner work: ends a banner after BANNER_MS, starts the
-   next waiting one, and fills header bytes 6 and 7. Bit 7 show, bit 6 gold text,
-   bit 5 green mark, bits 4..0 the position, byte 7 the character. */
+/* The progress of an achievement as a short banner, "12/50 TITLE". Only the
+   latest counts: it waits until no other banner shows or waits, and a newer one
+   replaces it. RetroAchievements asks that progress shows during play. */
+static void banner_show_progress(const char *progress, const char *title, bool gold) {
+  char text[BANNER_LEN + 1];
+  size_t n = strlen(progress);
+  // the FPGA font has no %, a percentage reads "37 PCT"
+  if(n && progress[n - 1] == '%')
+    snprintf(text, sizeof(text), "%.*s PCT %s", (int)(n - 1), progress, title);
+  else
+    snprintf(text, sizeof(text), "%s %s", progress, title);
+  banner_fill(&banner_progress, text, gold, false, BANNER_PROGRESS_MS);
+  banner_progress_due = true;
+}
+
+/* One poll's worth of banner work: ends a banner after its time, starts the
+   next waiting one, then a waiting progress, and fills header bytes 6 and 7.
+   Bit 7 show, bit 6 gold text, bit 5 green mark, bits 4..0 the position, byte 7
+   the character. */
 static void banner_step(unsigned char *hdr) {
-  if(banner_live && (xTaskGetTickCount() - banner_start) >= pdMS_TO_TICKS(BANNER_MS))
+  if(banner_live && (xTaskGetTickCount() - banner_start) >= pdMS_TO_TICKS(banner.ms))
     banner_live = false;
   if(!banner_live && !banner_pending && banner_n) {
     banner = banner_q[0];
     memmove(banner_q, banner_q + 1, (--banner_n) * sizeof(banner_q[0]));
+    banner_pos     = 0;
+    banner_pending = true;
+  } else if(!banner_live && !banner_pending && banner_progress_due) {
+    banner = banner_progress;
+    banner_progress_due = false;
     banner_pos     = 0;
     banner_pending = true;
   }
@@ -173,16 +207,68 @@ static void banner_login(void) {
     mode_shown = mode;
     banner_mode_due = true;
   }
-  // once the task knows whether there is an account: without one nothing counts
+  // once the task knows whether there is an account: without one nothing counts.
+  // Softcore although the menu asks for hardcore names the reason. The same text
+  // again within a few seconds is left out: a reset from the menu also changes the
+  // core's reset count, both ask for this banner.
   if(banner_mode_due && now != RA_TASK_STARTING) {
+    static const char *last_text;
+    static TickType_t  last_tick;
+    const char *text = mode ? "RA: HARDCORE" :
+                       !ra_task_hardcore_wanted() ? "RA: SOFTCORE" :
+                       (ra_task_hardcore_blocked() & RA_HC_BLOCK_CORE) ? "RA: SOFTCORE TEST CORE" : "RA: SOFTCORE";
     banner_mode_due = false;
-    if(now != RA_TASK_NO_ACCOUNT)
-      banner_show(mode ? "RA: HARDCORE" : "RA: SOFTCORE", mode, true);
+    if(now != RA_TASK_NO_ACCOUNT &&
+       !(text == last_text && (xTaskGetTickCount() - last_tick) < pdMS_TO_TICKS(5000))) {
+      banner_show(text, mode, true);
+      last_text = text;
+      last_tick = xTaskGetTickCount();
+    }
   }
 }
 
+/* Challenges that are on, one bit per position in the set's table. An
+   achievement is primed when all its conditions but the trigger hold, e.g. a
+   stage without losing a ship, and RetroAchievements asks that this shows during
+   play: header byte 5 bit 0 lights a marker next to the picture. */
+static uint64_t ra_primed;
+
+static void ra_primed_set(unsigned id, bool on) {
+  unsigned i = ra_patch_index(id);
+  if(!i || i > 64) return;
+  if(on) ra_primed |=  (1ull << (i - 1));
+  else   ra_primed &= ~(1ull << (i - 1));
+}
+
+/* Unlocked in the mode that counts, those show neither challenge nor progress. */
+static bool ra_done(unsigned id) {
+  return ra_state_known(id) || (!ra_task_hardcore() && ra_state_softcore_only(id));
+}
+
 static void ra_event(const rc_runtime_event_t *ev) {
-  if(ev->type != RC_RUNTIME_EVENT_ACHIEVEMENT_TRIGGERED) return;
+  switch(ev->type) {
+  case RC_RUNTIME_EVENT_ACHIEVEMENT_PRIMED:
+    if(!ra_done(ev->id)) ra_primed_set(ev->id, true);
+    return;
+  case RC_RUNTIME_EVENT_ACHIEVEMENT_UNPRIMED:
+  case RC_RUNTIME_EVENT_ACHIEVEMENT_RESET:
+  case RC_RUNTIME_EVENT_ACHIEVEMENT_PAUSED:
+  case RC_RUNTIME_EVENT_ACHIEVEMENT_DISABLED:
+    ra_primed_set(ev->id, false);
+    return;
+  case RC_RUNTIME_EVENT_ACHIEVEMENT_PROGRESS_UPDATED:
+    if(!ra_done(ev->id)) {
+      char progress[RA_PATCH_PROGRESS_MAX];
+      ra_patch_format_progress(&ra_rt, ev->id, progress, sizeof(progress));
+      if(progress[0]) banner_show_progress(progress, ra_patch_title(ev->id), ra_task_hardcore());
+    }
+    return;
+  case RC_RUNTIME_EVENT_ACHIEVEMENT_TRIGGERED:
+    ra_primed_set(ev->id, false);
+    break;
+  default:
+    return;
+  }
   bool hardcore = ra_task_hardcore();
   if(ra_triggered < 255) ra_triggered++;
   ra_last = (unsigned char)ra_patch_index(ev->id);
@@ -204,13 +290,14 @@ static void ra_event(const rc_runtime_event_t *ev) {
    starting in exactly that clock tears the snapshot, the checksum (0xE6) catches it.
    The header read is full duplex: hdr_tx goes to the FPGA meanwhile. */
 static void ram_mirror_poll(void) {
-  unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0,0,0,0,0,0,0,0 };
+  unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0 };
   /* back channel for the diagnostic bars of the FPGA: the rcheevos state */
   hdr_tx[0] = ra_triggered;
   hdr_tx[1] = (unsigned char)ra_patch_count();
   hdr_tx[2] = (unsigned char)(ra_us & 0xff);
   hdr_tx[3] = (unsigned char)(ra_us >> 8);
   hdr_tx[4] = ra_last;
+  hdr_tx[5] = ra_primed ? 0x01 : 0x00;   /* bit 0: a challenge is on, the marker shows */
 
   // the banner, one character per poll in bytes 6 and 7
   banner_login();
@@ -227,7 +314,17 @@ static void ram_mirror_poll(void) {
      ram_mirror_buf[2] != 'C' || ram_mirror_buf[3] != 'H') {
     mcu_hw_spi_end(); ram_mirror_verdict = 0xE1; return;
   }
-  if(ram_mirror_buf[4] != 0x02) {            /* layout 2: game RAM plus oracle log */
+  if(ram_mirror_buf[4] != RAM_MIRROR_LAYOUT) {
+    /* core and firmware of different releases: said once per layout seen. The banner
+       still reaches an older core, the back channel in bytes 0 to 7 is the same. */
+    static int told = -1;
+    if(told != ram_mirror_buf[4]) {
+      told = ram_mirror_buf[4];
+      debugf("RAM mirror: the core sends layout %u, this firmware reads %u, "
+             "flash core and firmware of the same release", ram_mirror_buf[4], RAM_MIRROR_LAYOUT);
+      banner_show(ram_mirror_buf[4] < RAM_MIRROR_LAYOUT ? "SYS: CORE TOO OLD" : "SYS: FIRMWARE TOO OLD",
+                  false, false);
+    }
     mcu_hw_spi_end(); ram_mirror_verdict = 0xE2; return;
   }
   if(ram_mirror_buf[7] != 0x00) {            /* harvest running, retry next poll */
@@ -288,7 +385,20 @@ static void ram_mirror_poll(void) {
     rc_runtime_init(&ra_rt);
     ra_ready = true;
   }
-  if(ra_patch_apply_pending(&ra_rt)) banner_mode_due = true;   /* a game starts */
+  /* The core counts the ends of its resets, S1 on the Nano as well as the menu's
+     reset (byte 8, taken when the harvest ended). A new count is a new game: rcheevos
+     starts over before it sees this snapshot. The first snapshot only sets the
+     reference. Byte 9, the core's diagnostic parameters, decides whether hardcore
+     is possible at all, before the first frame is evaluated. */
+  int resets = ram_mirror_buf[8];
+  if(resets != ram_mirror_resets) {
+    if(ram_mirror_resets >= 0) ra_patch_core_reset();
+    ram_mirror_resets = resets;
+  }
+  ra_task_core_flags(ram_mirror_buf[9]);
+  unsigned what = ra_patch_apply_pending(&ra_rt);
+  if(what & RA_PATCH_RESET) banner_mode_due = true;          /* a game starts */
+  if(what) ra_primed = 0;          /* after a reset nothing is primed, a new set moves the positions */
   absolute_time_t t0 = get_absolute_time();
   rc_runtime_do_frame(&ra_rt, ra_event, ra_peek, NULL, NULL);
   int64_t dt = absolute_time_diff_us(t0, get_absolute_time());
@@ -302,6 +412,7 @@ static void ram_mirror_poll(void) {
     ra_rp_frames = 0;
     rc_runtime_get_richpresence(&ra_rt, rp, sizeof(rp), ra_peek, NULL, NULL);
     ra_task_set_richpresence(rp);
+    ra_patch_update_progress(&ra_rt);   /* progress and challenges for the menu's list */
   }
 
   ram_mirror_frame   = frame;

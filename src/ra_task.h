@@ -37,6 +37,26 @@ void ra_task_clock_set(void);
  *  core without that value runs in softcore. */
 bool ra_task_hardcore(void);
 
+#define RA_HC_BLOCK_CORE 1u   /**< the core was built with diagnostic parameters (RAM mirror header byte 9) */
+
+/** @brief The reasons that keep hardcore off although the menu asks for it, RA_HC_BLOCK_*. Any task. */
+unsigned ra_task_hardcore_blocked(void);
+
+/** @brief True when the menu asks for hardcore, whether or not a reason keeps it off. Any task. */
+bool ra_task_hardcore_wanted(void);
+
+/** @brief Sets or clears a reason that keeps hardcore off. Any task.
+ *
+ *  A reason that appears switches to softcore at once. When the last one goes,
+ *  hardcore comes back as the mode switch does: at once while the core is in reset,
+ *  otherwise after a reset of the running game. */
+void ra_task_hardcore_block(unsigned reason, bool on);
+
+/** @brief Header byte 9 of the RAM mirror: the core's diagnostic parameters. com_task, each snapshot.
+ *
+ *  Anything but 0 keeps hardcore off (RA_HC_BLOCK_CORE). */
+void ra_task_core_flags(unsigned char flags);
+
 /** @brief A value the Companion sends to the core, from sys_set_val(). Any task.
  *
  *  'R' is the core's reset: when it ends, rcheevos starts over. 'H' is the mode.
