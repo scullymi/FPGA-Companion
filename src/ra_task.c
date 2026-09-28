@@ -31,6 +31,7 @@
 #include "ra_queue.h"
 #include "ra_state.h"
 #include "ra_task.h"
+#include "ra_mac.h"
 
 #define RA_CLOCK_WAIT   60000u        /**< ms without time from NTP before the log says so */
 #define RA_BACKOFF_MIN  10000u        /**< ms, first pause after a failed request */
@@ -70,7 +71,9 @@ static volatile bool     hardcore;         // the mode of session, pings and unl
 static volatile bool     hardcore_due;     // hardcore asked for, it applies when the reset for it ends
 static volatile bool     core_running;     // the core is out of reset, a game may be running
 static volatile bool     hc_wanted;        // the menu's 'H'
-static volatile unsigned hc_block;         // RA_HC_BLOCK_* reasons that keep hardcore off
+// RA_HC_BLOCK_* reasons that keep hardcore off. ROM and SET hold from the start
+// until the ROM image and the achievement set have been checked.
+static volatile unsigned hc_block = RA_HC_BLOCK_ROM | RA_HC_BLOCK_SET;
 static volatile unsigned char core_flags;  // header byte 9 of the RAM mirror, 0 = release build
 static char              rp_text[RA_RP_MAX];   // rich presence from com_task, under a critical section
 static volatile unsigned frames;           // frames rcheevos evaluated, counted by com_task
@@ -95,8 +98,10 @@ static void hc_update(void) {
     return;
   }
   if(hardcore || hardcore_due) return;
-  if(!core_running) {
-    hardcore = true;          // no game runs, the next one starts in hardcore
+  // no game runs, or no achievement has been active in it yet: nothing of it can
+  // count, the mode applies at once
+  if(!core_running || !ra_patch_count()) {
+    hardcore = true;
     return;
   }
   debugf("RA: hardcore, the game is reset");
@@ -548,6 +553,14 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   char what[40];
 
   debugf("RA: client %s", ra_user_agent());
+  // the device key for the tags on the card: without one, no hardcore
+  switch(ra_mac_state()) {
+  case RA_MAC_CREATED: debugf("RA: device key created"); break;
+  case RA_MAC_PRESENT: debugf("RA: device key present"); break;
+  default:
+    debugf("RA: no device key (flash sector not usable), softcore only");
+    ra_task_hardcore_block(RA_HC_BLOCK_KEY, true);
+  }
 
   // 1. the set from the card, for com_task. The achievements run without an
   //    account too, only nothing goes to the server then.

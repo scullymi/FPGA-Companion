@@ -18,6 +18,7 @@
 #include <task.h>
 #endif
 #include "sdc.h"
+#include "ra_patch.h"   // the ROM set is checked against the known files
 #include "menu.h"
 #include "sysctrl.h"
 
@@ -500,6 +501,8 @@ static void image_send_chunk(int image, uint32_t len) {
   UINT bytesread;
   f_read(&fil[MAX_DRIVES+image], buffer, len, &bytesread);
   image_bytes2send[image] -= len;
+  // the ROM set goes into its checksum exactly as it goes to the core
+  if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_data(buffer, len);
   
   // send image payload
   sdc_spi_begin();
@@ -518,6 +521,10 @@ static void image_send_chunk(int image, uint32_t len) {
 
     f_close(&fil[MAX_DRIVES+image]);
     memset(&fil[MAX_DRIVES+image], 0, sizeof(FIL));
+
+    // the whole ROM set is in the core: known file or not, before the image
+    // action resets the core
+    if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_end();
 
     // inform core that the image has "been removed"
     sdc_spi_begin();
@@ -705,6 +712,9 @@ static int sdc_image_inserted(char drive, FSIZE_t size) {
 static void sdc_rom_image_selected(char image, FSIZE_t size) {
   // ignore de-selection of a deselected image
   if(!fil[MAX_DRIVES+image].flag && !size) return;  
+
+  // no ROM set any more: no known ROM
+  if(image == RA_PATCH_ROM_IMAGE && !size) ra_patch_rom_gone();
   
   if(size) sdc_debugf("IMG %d: selected. Size = %llu", image, (unsigned long long)size);
   else     sdc_debugf("IMG %d: deselected", image);
@@ -730,6 +740,7 @@ static bool sdc_image_start_transfer(int image) {
   image_bytes2send[(int)image] = fil[image+MAX_DRIVES].obj.objsize;
   if(sdc_rom_image_get_buffer(image) < 0) {
     sdc_debugf("IMG %d: Core has rejected image", image);
+    if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_gone();
     
     // close the transfer immediately
     f_close(&fil[image+MAX_DRIVES]);
@@ -739,6 +750,8 @@ static bool sdc_image_start_transfer(int image) {
     return false;
   }
 
+  // the ROM set starts to stream: its checksum starts with it
+  if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_start();
   return true;
 }
 

@@ -18,6 +18,7 @@
 #include "../ra_queue.h"
 #include "../ra_state.h"
 #include "../ra_task.h"
+#include "../ra_mac.h"
 #include <string.h>
 #include "pico/time.h"
 
@@ -214,9 +215,14 @@ static void banner_login(void) {
   if(banner_mode_due && now != RA_TASK_STARTING) {
     static const char *last_text;
     static TickType_t  last_tick;
+    unsigned why = ra_task_hardcore_blocked();
     const char *text = mode ? "RA: HARDCORE" :
-                       !ra_task_hardcore_wanted() ? "RA: SOFTCORE" :
-                       (ra_task_hardcore_blocked() & RA_HC_BLOCK_CORE) ? "RA: SOFTCORE TEST CORE" : "RA: SOFTCORE";
+                       !ra_task_hardcore_wanted()   ? "RA: SOFTCORE" :
+                       (why & RA_HC_BLOCK_CORE)     ? "RA: SOFTCORE TEST CORE" :
+                       (why & RA_HC_BLOCK_XML)      ? "RA: SOFTCORE CONFIG.XML" :
+                       (why & RA_HC_BLOCK_KEY)      ? "RA: SOFTCORE KEY ERROR" :
+                       (why & RA_HC_BLOCK_ROM)      ? "RA: SOFTCORE ROM UNKNOWN" :
+                       (why & RA_HC_BLOCK_SET)      ? "RA: SOFTCORE TILL ONLINE" : "RA: SOFTCORE";
     banner_mode_due = false;
     if(now != RA_TASK_NO_ACCOUNT &&
        !(text == last_text && (xTaskGetTickCount() - last_tick) < pdMS_TO_TICKS(5000))) {
@@ -452,6 +458,10 @@ static void com_task(__attribute__((unused)) void *p ) {
 
       UINT br; char c;
       debugf("Loading XML config from file");
+      // a menu of one's own can set the DIP switches without a reset, and it is
+      // what decides the mode: no hardcore with it (the core also takes DIP
+      // switches only while in reset)
+      ra_task_hardcore_block(RA_HC_BLOCK_XML, true);
 
       // read byte by byte. Slow but that doesn't hurt ...
       FRESULT r = f_read(&fil, &c, 1, &br);
@@ -547,6 +557,10 @@ void app_main( void )
 int main( void )
 #endif
 {
+  // the device key for the tags on the card, before anything else runs: making it
+  // the first time erases a flash sector with interrupts off, see ra_mac.c
+  ra_mac_init();
+
   mcu_hw_init();
   telnetd_init();
   

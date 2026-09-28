@@ -37,7 +37,11 @@ void ra_task_clock_set(void);
  *  core without that value runs in softcore. */
 bool ra_task_hardcore(void);
 
-#define RA_HC_BLOCK_CORE 1u   /**< the core was built with diagnostic parameters (RAM mirror header byte 9) */
+#define RA_HC_BLOCK_CORE 1u    /**< the core was built with diagnostic parameters (RAM mirror header byte 9) */
+#define RA_HC_BLOCK_XML  2u    /**< the menu comes from a config.xml on the card, which could set DIP switches without a reset */
+#define RA_HC_BLOCK_ROM  4u    /**< the ROM image is not one of the known files, or not loaded yet */
+#define RA_HC_BLOCK_SET  8u    /**< the achievement set is not proven: the card's copy without a valid tag, and none from the server yet */
+#define RA_HC_BLOCK_KEY  16u   /**< no device key, unlocks cannot be tagged, see ra_mac.c */
 
 /** @brief The reasons that keep hardcore off although the menu asks for it, RA_HC_BLOCK_*. Any task. */
 unsigned ra_task_hardcore_blocked(void);

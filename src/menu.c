@@ -933,9 +933,16 @@ static void menu_ra_status(void) {
   case RA_TASK_RETRYING:   state = "offline";        break;
   default:                 state = "connecting";     break;
   }
-  // the mode in front, it decides how the unlocks count
+  // the mode in front, it decides how the unlocks count. Softcore although the
+  // menu asks for hardcore names the reason instead of the login state.
   char line[40];
-  snprintf(line, sizeof(line), "%s, %s", ra_task_hardcore() ? "hardcore" : "softcore", state);
+  unsigned why = ra_task_hardcore_blocked();
+  if(!ra_task_hardcore() && ra_task_hardcore_wanted() && why)
+    snprintf(line, sizeof(line), "softcore: %s",
+             (why & RA_HC_BLOCK_CORE) ? "test core" : (why & RA_HC_BLOCK_XML) ? "config.xml" :
+             (why & RA_HC_BLOCK_KEY)  ? "key error" : (why & RA_HC_BLOCK_ROM) ? "ROM unknown" : "till online");
+  else
+    snprintf(line, sizeof(line), "%s, %s", ra_task_hardcore() ? "hardcore" : "softcore", state);
   // the counts refer to the active set, without one there is nothing to count
   if(!ra_patch_count())
     snprintf(count, sizeof(count), "no set loaded");

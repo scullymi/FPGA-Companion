@@ -25,11 +25,14 @@
 #include "rc_api_runtime.h"
 #include "rc_runtime_types.h"   // rc_trigger_t and its states, for the challenge indicator
 #include "rcheevos/src/rhash/md5.h"
+#include "mbedtls/sha256.h"
 #include <ff.h>
 #include "debug.h"
 #include "sdc.h"
 #include "ra_net.h"
 #include "ra_patch.h"
+#include "ra_task.h"
+#include "ra_mac.h"
 
 /* The game, fixed for now: Galaga on RetroAchievements, and the hash the server
    knows it by, md5("galaga"), the name of the arcade ROM set. The rest of the
@@ -42,11 +45,26 @@
 // conditions read these settings from the game's RAM, so with other ones they
 // never fire, without a word.
 static const ra_dip_t game_dips[] = { { 'L', 2 }, { 'B', 2 } };
+// The ROM file hardcore allows, as scripts/make_galaga_rom.sh builds it from the MAME
+// set "galaga" (every chip checked against MAME's SHA-1): SHA-256 with the 54xx, and
+// with its 1024 bytes as zeros when namco54.zip is missing. RetroAchievements only
+// knows the game by the set's name, this also proves the content, so a patched ROM
+// (more lives, say) plays in softcore only.
+static const unsigned char rom_known[][32] = {
+  { 0xaa,0xf7,0xa7,0x25,0x6f,0x8c,0x4e,0x97,0xb3,0x1f,0x05,0x3e,0x68,0x8f,0x24,0xcb,
+    0xb3,0x40,0x75,0xa2,0x6a,0xc7,0x1f,0xf0,0x84,0x76,0x51,0xae,0x93,0xb2,0xaf,0x47 },
+  { 0xec,0x21,0xe5,0x4d,0xaa,0x09,0xf7,0x8b,0x2f,0x58,0xab,0x06,0x0f,0x5c,0xdf,0xbd,
+    0x29,0xd5,0x0b,0x29,0x81,0x60,0x41,0xc6,0xca,0xe3,0x82,0x6c,0xb2,0xda,0xbc,0xd5 },
+};
+static mbedtls_sha256_context rom_sha;   // the ROM image while it streams, com_task only
+static bool                   rom_hashing;
 
 #define RA_PATCH_BODY_MAX   40960        /**< a whole set, e.g. Galaga has about 15.7 KB */
 #define RA_PATCH_MAX        64           /**< achievements kept per set, e.g. Galaga 17 */
 #define RA_PATCH_FILE       "/sd/ra_patch.json"   /**< the server's reply to r=patch, kept on the card */
 #define RA_PATCH_TMP        RA_PATCH_FILE ".new"  /**< a new set while it is written, then it takes the place of the old */
+#define RA_PATCH_MAC        "/sd/ra_patch.mac"    /**< "g20k-s1 <tag>": the set file's tag with the device key */
+#define RA_PATCH_MAC_LABEL  "g20k-s1"             /**< what the set's tag is made over, keeps it apart from other tags */
 /** "Warning: Unknown Emulator", which the server adds for clients it does not
    know. Not an achievement of the game. */
 #define RA_PATCH_WARNING_ID 101000001u
@@ -66,6 +84,26 @@ static bool          card_fp_valid;
 // the core was reset, rcheevos starts over before the next frame. Set by any
 // task, cleared by com_task.
 static volatile bool reset_due;
+
+// the set file read from the card carried a tag that checks out: it is the set
+// this Pico received from the server, not one edited on a computer
+static bool card_verified;
+
+/* The data the set's tag is made over: the game id (4 bytes, little endian) and the
+   file as it lies on the card. Returns its length. */
+static char tag_buf[4 + RA_PATCH_BODY_MAX];   // RA task only, too large for its stack
+static unsigned set_tag_data(const char *data, unsigned len) {
+  unsigned id = ra_game_id();
+  tag_buf[0] = (char)id; tag_buf[1] = (char)(id >> 8); tag_buf[2] = (char)(id >> 16); tag_buf[3] = (char)(id >> 24);
+  memcpy(tag_buf + 4, data, len);
+  return 4 + len;
+}
+static bool set_tag(const char *data, unsigned len, char *hex) {
+  return ra_mac_tag(RA_PATCH_MAC_LABEL, tag_buf, set_tag_data(data, len), hex);
+}
+static bool set_check(const char *data, unsigned len, const char *hex) {
+  return ra_mac_check(RA_PATCH_MAC_LABEL, tag_buf, set_tag_data(data, len), hex);
+}
 
 // one parsed set on its way from the RA task to com_task. rcheevos copies what
 // it needs out of the file, so a parsed set does not depend on body[].
@@ -206,6 +244,17 @@ static bool card_read(void) {
     if(size && size < sizeof(body)) r = f_read(&f, body, (UINT)size, &got);
     f_close(&f);
   }
+  // its tag, one line "g20k-s1 <64 hex>"
+  char mac_line[16 + RA_MAC_HEX];
+  bool mac_read = false;
+  { FIL m;
+    UINT mgot = 0;
+    if(f_open(&m, RA_PATCH_MAC, FA_READ) == FR_OK) {
+      mac_read = f_read(&m, mac_line, sizeof(mac_line) - 1, &mgot) == FR_OK;
+      mac_line[mgot] = 0;
+      f_close(&m);
+    }
+  }
   sdc_unlock();
 
   // one log line per failure: no file, empty, too large, and last any other open
@@ -223,6 +272,13 @@ static bool card_read(void) {
   else {
     body[got] = 0;              // a guard only, rcheevos reads body_len bytes
     body_len = got;
+    // the tag over the file as it lies on the card, before anything is changed in body
+    card_verified = false;
+    if(mac_read && !strncmp(mac_line, RA_PATCH_MAC_LABEL " ", strlen(RA_PATCH_MAC_LABEL) + 1)) {
+      char *hex = mac_line + strlen(RA_PATCH_MAC_LABEL) + 1;
+      hex[strcspn(hex, "\r\n")] = 0;
+      card_verified = set_check(body, body_len, hex);
+    }
     if(!strip_chunks()) {       // a file put on the card from outside may still carry the framing
       debugf("RA: set on the card is not a set, no achievements");
       return false;
@@ -234,13 +290,18 @@ static bool card_read(void) {
 
 /* Writes the set to the card: to a second file first, which then takes the
    place of the old one, so a power cut leaves the old set and not half of the
-   new one. card_read() puts a file back that was left under the second name. */
+   new one. card_read() puts a file back that was left under the second name. The
+   tag goes first away and last in: a power cut in between leaves a set without a
+   tag, which only costs hardcore until the server is reached. */
 static bool card_write(void) {
   FIL f;
   UINT put = 0;
   FRESULT r;
+  char hex[RA_MAC_HEX + 1];
+  bool tagged = set_tag(body, body_len, hex);
 
   sdc_lock();
+  f_unlink(RA_PATCH_MAC);         // may not exist
   r = f_open(&f, RA_PATCH_TMP, FA_WRITE | FA_CREATE_ALWAYS);
   if(r == FR_OK) {
     r = f_write(&f, body, body_len, &put);
@@ -251,6 +312,11 @@ static bool card_write(void) {
   if(r == FR_OK) {
     f_unlink(RA_PATCH_FILE);      // may not exist yet
     r = f_rename(RA_PATCH_TMP, RA_PATCH_FILE);
+  }
+  // the tag, when there is a device key to make one
+  if(r == FR_OK && tagged && f_open(&f, RA_PATCH_MAC, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+    bool ok = f_printf(&f, "%s %s\n", RA_PATCH_MAC_LABEL, hex) > 0;
+    if(f_close(&f) != FR_OK || !ok) f_unlink(RA_PATCH_MAC);
   }
   sdc_unlock();
   if(r != FR_OK) debugf("RA: %s not written (error %d), the set is not there offline", RA_PATCH_FILE, (int)r);
@@ -461,6 +527,38 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
   return (int)n;
 }
 
+void ra_patch_rom_start(void) {
+  ra_task_hardcore_block(RA_HC_BLOCK_ROM, true);
+  mbedtls_sha256_init(&rom_sha);
+  rom_hashing = mbedtls_sha256_starts(&rom_sha, 0) == 0;
+}
+
+void ra_patch_rom_data(const void *data, unsigned len) {
+  if(rom_hashing && mbedtls_sha256_update(&rom_sha, data, len) != 0) rom_hashing = false;
+}
+
+void ra_patch_rom_end(void) {
+  unsigned char sum[32];
+  unsigned i;
+  bool known = false;
+  if(rom_hashing && mbedtls_sha256_finish(&rom_sha, sum) == 0)
+    for(i = 0; i < sizeof(rom_known) / sizeof(rom_known[0]); i++)
+      if(!memcmp(sum, rom_known[i], sizeof(sum))) known = true;
+  mbedtls_sha256_free(&rom_sha);
+  rom_hashing = false;
+  if(known)
+    debugf("RA: ROM image is the known file%s", !memcmp(sum, rom_known[1], sizeof(sum)) ? " without the 54xx" : "");
+  else
+    debugf("RA: ROM image unknown (SHA-256 %02x%02x%02x%02x...), softcore only", sum[0], sum[1], sum[2], sum[3]);
+  ra_task_hardcore_block(RA_HC_BLOCK_ROM, !known);
+}
+
+void ra_patch_rom_gone(void) {
+  if(rom_hashing) mbedtls_sha256_free(&rom_sha);
+  rom_hashing = false;
+  ra_task_hardcore_block(RA_HC_BLOCK_ROM, true);
+}
+
 bool ra_patch_init(void) {
   if(!handover) handover = xQueueCreate(1, sizeof(rc_api_fetch_game_data_response_t *));
   return handover != NULL;
@@ -500,8 +598,15 @@ int ra_patch_read_card(void) {
 
   if(!handover || !card_read()) return -1;
   if(!(r = parse_new(&n))) return -1;
-  fingerprint(r, card_fp);
-  card_fp_valid = true;
+  // only a set with a valid tag counts as the one the server sent last: its
+  // fingerprint lets an unchanged server set pass, and hardcore may use it. An
+  // untagged or edited one plays softcore until the server's set replaces it.
+  if(card_verified) {
+    fingerprint(r, card_fp);
+    card_fp_valid = true;
+    ra_task_hardcore_block(RA_HC_BLOCK_SET, false);
+  } else
+    debugf("RA: set on the card has no valid tag, softcore until the server's set arrives");
   hand_over(r);
   return (int)n;
 }
@@ -539,6 +644,8 @@ int ra_patch_from_server(unsigned len) {
   } else
     debugf("RA: set from the server: %u core achievements, only in memory", n);
   hand_over(r);
+  // straight from the server over TLS: this set may count in hardcore
+  ra_task_hardcore_block(RA_HC_BLOCK_SET, false);
   return 1;
 }
 

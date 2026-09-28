@@ -4,9 +4,13 @@
  *  @brief Unlocks on their way to the server.
  *
  *  com_task only puts an unlock into a FreeRTOS queue, which never blocks the game
- *  loop. The RA task writes it to the card at once, as a line "id unixtime user mode",
- *  mode h for hardcore and s for softcore. A line without a mode, as older firmware
- *  wrote them, counts as softcore: a mode that was not recorded is never raised.
+ *  loop. The RA task writes it to the card at once, as a line
+ *  "id unixtime user mode tag", mode h for hardcore and s for softcore, tag the
+ *  HMAC-SHA256 of everything before it with the device key (ra_mac.c). The mode
+ *  counts only with a tag that checks out, so an edited card cannot make an unlock
+ *  hardcore or invent one. A line without a tag, as older firmware wrote them,
+ *  counts as softcore. A line whose tag does not check out is set aside and never
+ *  sent.
  *  Once the server has it, the line is marked done in place: its first digit
  *  becomes '#'. That is a single sector, nothing is rewritten or renamed, so a
  *  power cut can at worst leave a line unmarked, and sending an unlock twice is
@@ -24,16 +28,21 @@
 #include "ra_task.h"
 #include "ra_state.h"
 #include "ra_queue.h"
+#include "ra_mac.h"
 
-#define RA_QUEUE_FILE     "/sd/ra_pending.txt"   /**< one line "id unixtime user mode" per unlock, '#' in front once done */
+#define RA_QUEUE_FILE     "/sd/ra_pending.txt"   /**< one line "id unixtime user mode tag" per unlock, '#' in front once done */
 #define RA_QUEUE_PARKED   "/sd/ra_parked.txt"    /**< unlocks that are not sent: refused for good, or of another account */
-#define RA_QUEUE_LINE_MAX 64                     /**< two numbers, an RA user name (at most 20 characters) and the mode fit */
+#define RA_QUEUE_LINE_MAX 128                    /**< two numbers, an RA user name (at most 20 characters), the mode and a 64-character tag fit */
+#define RA_QUEUE_LABEL    "g20k-q1"              /**< what the tag of a queue line is made over, keeps it apart from other tags */
 #define RA_QUEUE_USER_MAX 32                     /**< longest user name kept */
 #define RA_QUEUE_RAM      8                      /**< unlocks kept in RAM while the card fails */
 #define RA_QUEUE_DONE     '#'                    /**< written over the first digit of a line that is done */
 
 /** What the first line not yet done is. */
-enum { LINE_NONE, LINE_OWN, LINE_OTHER, LINE_BAD };
+enum { LINE_NONE, LINE_OWN, LINE_OTHER, LINE_BAD, LINE_FORGED };
+
+/** How a line parses. */
+enum { PARSE_BAD, PARSE_OK, PARSE_FORGED };
 
 static QueueHandle_t handover;                  // com_task -> RA task
 static char          owner[RA_QUEUE_USER_MAX];  // the account unlocks are kept for
@@ -86,8 +95,14 @@ static FRESULT append_line(const char *path, const char *text) {
 }
 
 static FRESULT append_unlock(const char *path, const ra_unlock_t *u) {
-  char line[RA_QUEUE_LINE_MAX];
-  snprintf(line, sizeof(line), "%u %lu %s %c\n", u->id, u->when, owner, u->hardcore ? 'h' : 's');
+  char line[RA_QUEUE_LINE_MAX], tag[RA_MAC_HEX + 1];
+  int n = snprintf(line, sizeof(line), "%u %lu %s %c", u->id, u->when, owner, u->hardcore ? 'h' : 's');
+  // the tag over everything before it. Without a device key the line has none and
+  // counts as softcore when it is read back.
+  if(n > 0 && n < (int)sizeof(line) && ra_mac_tag(RA_QUEUE_LABEL, line, (size_t)n, tag))
+    snprintf(line + n, sizeof(line) - (size_t)n, " %s\n", tag);
+  else
+    snprintf(line + n, sizeof(line) - (size_t)n, "\n");
   return append_line(path, line);
 }
 
@@ -109,24 +124,40 @@ static FRESULT mark_done(FSIZE_t at) {
   return r;
 }
 
-/* "id unixtime user mode" with its newline, the mode may be missing. A line a
-   power cut left without its end, or anything else, is refused. */
-static bool parse(const char *line, ra_unlock_t *u, char *user) {
+/* "id unixtime user mode tag" with its newline, mode and tag may be missing. A line
+   a power cut left without its end, or anything else, is PARSE_BAD. The mode counts
+   only with a tag that checks out. Without a tag the line is softcore. A tag that
+   does not check out, or one that cannot be checked because there is no device
+   key, makes it PARSE_FORGED. */
+static int parse(const char *line, ra_unlock_t *u, char *user) {
   size_t len = strlen(line);
-  if(len < 2 || line[len - 1] != '\n' || line[0] < '0' || line[0] > '9') return false;
+  if(len < 2 || line[len - 1] != '\n' || line[0] < '0' || line[0] > '9') return PARSE_BAD;
   char *end;
   u->id   = (unsigned)strtoul(line, &end, 10);   // strtoul, sscanf would pull about 47 KB of newlib in
   u->when = strtoul(end, &end, 10);
   while(*end == ' ') end++;
   size_t n = strcspn(end, " \r\n");
-  if(!u->id || !n || n >= RA_QUEUE_USER_MAX) return false;
+  if(!u->id || !n || n >= RA_QUEUE_USER_MAX) return PARSE_BAD;
   memcpy(user, end, n);
   user[n] = 0;
-  // the mode after the user, only an h makes it hardcore
+  // the mode letter after the user
   end += n;
   while(*end == ' ') end++;
-  u->hardcore = *end == 'h';
-  return true;
+  char mode = (*end == 'h' || *end == 's') && (end[1] == ' ' || end[1] == '\r' || end[1] == '\n') ? *end : 0;
+  if(mode) end++;
+  while(*end == ' ') end++;
+  u->hardcore = false;
+  if(*end == '\r' || *end == '\n') return PARSE_OK;   // no tag: softcore
+  // the tag, over the text before the space in front of it
+  size_t text = (size_t)(end - line);
+  while(text && line[text - 1] == ' ') text--;
+  char tag[RA_MAC_HEX + 1];
+  if(strcspn(end, " \r\n") != RA_MAC_HEX) return PARSE_FORGED;
+  memcpy(tag, end, RA_MAC_HEX);
+  tag[RA_MAC_HEX] = 0;
+  if(!ra_mac_check(RA_QUEUE_LABEL, line, text, tag)) return PARSE_FORGED;
+  u->hardcore = mode == 'h';
+  return PARSE_OK;
 }
 
 /* Reads the file. The first line not done goes to head, head_at, head_line and
@@ -149,13 +180,15 @@ static int scan(void) {
       lines = true;
       if(line[0] == RA_QUEUE_DONE) continue;
       ra_unlock_t u = { 0, 0, false };
-      int k = !parse(line, &u, user) ? LINE_BAD : strcasecmp(user, owner) ? LINE_OTHER : LINE_OWN;
+      int p = parse(line, &u, user);
+      int k = p == PARSE_BAD ? LINE_BAD : p == PARSE_FORGED ? LINE_FORGED :
+              strcasecmp(user, owner) ? LINE_OTHER : LINE_OWN;
       // queued counts as unlocked, in the mode it was earned in
       if(k == LINE_OWN) { own++; ra_state_add(u.id, u.hardcore); }
       if(kind == LINE_NONE) {
         kind = k; head = u; head_at = at;
         snprintf(head_line, sizeof(head_line), "%s", line);
-        snprintf(head_user, sizeof(head_user), "%s", k == LINE_BAD ? "" : user);
+        snprintf(head_user, sizeof(head_user), "%s", k == LINE_OWN || k == LINE_OTHER ? user : "");
       }
     }
     if(f_error(&f)) r = FR_DISK_ERR;
@@ -225,11 +258,17 @@ int ra_queue_head(ra_unlock_t *u) {
     head = ram[0];
   } else {
     int k;
-    // what cannot be sent is set aside first: another account's line goes to
-    // the parked file, an unreadable one is only marked done
-    while((k = scan()) == LINE_OTHER || k == LINE_BAD) {
+    // what cannot be sent is set aside first: another account's line, and one whose
+    // tag does not check out, go to the parked file, an unreadable one is only
+    // marked done
+    while((k = scan()) == LINE_OTHER || k == LINE_BAD || k == LINE_FORGED) {
       if(k == LINE_OTHER) {
         debugf("RA: unlock %u of account '%s' set aside to %s", head.id, head_user, RA_QUEUE_PARKED);
+        if(append_line(RA_QUEUE_PARKED, head_line) != FR_OK) return -1;
+      } else if(k == LINE_FORGED) {
+        debugf("RA: unlock %u %s, set aside to %s, not sent", head.id,
+               ra_mac_ready() ? "with a tag that does not check out" : "with a tag, but no device key to check it",
+               RA_QUEUE_PARKED);
         if(append_line(RA_QUEUE_PARKED, head_line) != FR_OK) return -1;
       } else
         debugf("RA: unreadable line in %s set aside", RA_QUEUE_FILE);

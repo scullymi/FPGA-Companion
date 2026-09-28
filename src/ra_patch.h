@@ -19,6 +19,19 @@ typedef struct {
   int  value;   /**< the listentry value the set expects, as the menu keeps it and the core gets it */
 } ra_dip_t;
 
+#define RA_PATCH_ROM_IMAGE 0   /**< the core's image index of the ROM set, "ROM set" in the core's XML */
+
+/** @brief The ROM image starts to stream to the core. com_task, from sdc.c.
+ *
+ *  Hardcore is off until ra_patch_rom_end() has checked the whole file. */
+void ra_patch_rom_start(void);
+/** @brief One block of the ROM image as it goes to the core. com_task, from sdc.c. */
+void ra_patch_rom_data(const void *data, unsigned len);
+/** @brief The whole ROM image went to the core: compare its SHA-256 with the known files. com_task, from sdc.c. */
+void ra_patch_rom_end(void);
+/** @brief The ROM image was deselected or could not be sent: no known ROM. com_task, from sdc.c. */
+void ra_patch_rom_gone(void);
+
 /** @brief The DIP switches the set expects, n of them. NULL when it expects none. */
 const ra_dip_t *ra_game_dips(unsigned *n);
 

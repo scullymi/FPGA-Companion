@@ -118,6 +118,7 @@ add_executable(${PROJECT}
 	../ra_patch.c
 	../ra_net.c
 	../ra_task.c
+	../ra_mac.c
 	../ra_queue.c
 	../ra_state.c
 	# rcheevos: the runtime that evaluates the conditions and the reader for the
