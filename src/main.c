@@ -26,7 +26,8 @@
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
    as the first byte of the next transfer. The sizes and the layout must match
    ram_mirror_pkg.sv of the game20k FPGA core. Layout 3: a header of 16 bytes, in it
-   the core's reset count (byte 8) and its diagnostic parameters (byte 9). */
+   the core's reset count (byte 8), its diagnostic parameters (byte 9) and their
+   complements (bytes 10 and 11). */
 #define RAM_MIRROR_LAYOUT 0x03                       /* header byte 4               */
 #define RAM_MIRROR_HEAD  16
 #define RAM_MIRROR_DATA  5120                        /* bgram + wram1..3            */
@@ -55,8 +56,9 @@ static unsigned       ra_rp_frames;         /* frames since the rich presence te
 
 static uint32_t ra_peek(uint32_t address, uint32_t num_bytes, void *ud) {
   (void)ud;
-  /* outside the mirror there is nothing, say so once instead of reading air */
-  if(address + num_bytes > RAM_MIRROR_DATA) {
+  /* outside the mirror there is nothing, say so once instead of reading air.
+     Compared without a sum, so that an address near 2^32 cannot wrap into range. */
+  if(address >= RAM_MIRROR_DATA || num_bytes > RAM_MIRROR_DATA - address) {
     if(!ra_oob++) debugf("RA: condition reads 0x%lx, outside the mirror", (unsigned long)address);
     return 0;
   }
@@ -222,7 +224,9 @@ static void banner_login(void) {
                        (why & RA_HC_BLOCK_XML)      ? "RA: SOFTCORE CONFIG.XML" :
                        (why & RA_HC_BLOCK_KEY)      ? "RA: SOFTCORE KEY ERROR" :
                        (why & RA_HC_BLOCK_ROM)      ? "RA: SOFTCORE ROM UNKNOWN" :
-                       (why & RA_HC_BLOCK_SET)      ? "RA: SOFTCORE TILL ONLINE" : "RA: SOFTCORE";
+                       // without a login the set never comes, the login banner says why
+                       (why & RA_HC_BLOCK_SET) && now != RA_TASK_REJECTED ? "RA: SOFTCORE TILL ONLINE" :
+                       "RA: SOFTCORE";
     banner_mode_due = false;
     if(now != RA_TASK_NO_ACCOUNT &&
        !(text == last_text && (xTaskGetTickCount() - last_tick) < pdMS_TO_TICKS(5000))) {
@@ -251,8 +255,68 @@ static bool ra_done(unsigned id) {
   return ra_state_known(id) || (!ra_task_hardcore() && ra_state_softcore_only(id));
 }
 
+/* Leaderboards: an attempt starts, ends without a result, or is finished with a
+   value. Only hardcore counts, the server takes every entry as hardcore: in
+   softcore a result only goes to the log. A banner when an attempt starts and one
+   with the result, no live tracker, the value is the score the game shows anyway.
+   RetroAchievements allows leaderboard popups to be off, not the submission. */
+static void ra_lboard_event(const rc_runtime_event_t *ev) {
+  ra_patch_lboard_t lb;
+  char text[64], value[24];   // banner_show() cuts to the banner, at a word where it can
+  bool hardcore = ra_task_hardcore();
+  if(!ra_patch_lboard(ev->id, &lb)) return;
+  switch(ev->type) {
+  case RC_RUNTIME_EVENT_LBOARD_STARTED:
+    debugf("RA: leaderboard %u started: %s", (unsigned)ev->id, lb.title);
+    if(hardcore) {
+      snprintf(text, sizeof(text), "RA: LB %s", lb.title);
+      banner_show(text, true, false);
+    }
+    break;
+  case RC_RUNTIME_EVENT_LBOARD_CANCELED:
+    debugf("RA: leaderboard %u attempt ended without a result", (unsigned)ev->id);
+    break;
+  case RC_RUNTIME_EVENT_LBOARD_TRIGGERED:
+    rc_runtime_format_lboard_value(value, sizeof(value), ev->value, lb.format);
+    if(!hardcore) {
+      debugf("RA: leaderboard %u: %s, not submitted in softcore", (unsigned)ev->id, value);
+      break;
+    }
+    debugf("RA: leaderboard %u: %s, goes to the server", (unsigned)ev->id, value);
+    snprintf(text, sizeof(text), "RA: LB RESULT %s", value);
+    banner_show(text, true, true);
+    ra_task_lboard(ev->id, ev->value);
+    break;
+  default:
+    break;   // UPDATED comes with every change of the value, DISABLED needs address checks this firmware does not make
+  }
+}
+
+/* The server's answer to a leaderboard entry: the rank of the account's best
+   value. Rank 0 means the server did not record it, e.g. while it does not know
+   this client for hardcore. */
+static void banner_lboard(void) {
+  static unsigned seen;
+  ra_lboard_result_t r;
+  char text[BANNER_LEN + 1];
+  if(!ra_task_lboard_result(&seen, &r)) return;
+  if(!r.rank) {
+    banner_show("RA: LB NOT RECORDED", false, false);
+    return;
+  }
+  snprintf(text, sizeof(text), "RA: RANK %u OF %u", r.rank, r.entries);
+  banner_show(text, true, r.best == r.score);   // green mark when this entry is the new best
+}
+
 static void ra_event(const rc_runtime_event_t *ev) {
   switch(ev->type) {
+  case RC_RUNTIME_EVENT_LBOARD_STARTED:
+  case RC_RUNTIME_EVENT_LBOARD_CANCELED:
+  case RC_RUNTIME_EVENT_LBOARD_UPDATED:
+  case RC_RUNTIME_EVENT_LBOARD_TRIGGERED:
+  case RC_RUNTIME_EVENT_LBOARD_DISABLED:
+    ra_lboard_event(ev);
+    return;
   case RC_RUNTIME_EVENT_ACHIEVEMENT_PRIMED:
     if(!ra_done(ev->id)) ra_primed_set(ev->id, true);
     return;
@@ -307,6 +371,7 @@ static void ram_mirror_poll(void) {
 
   // the banner, one character per poll in bytes 6 and 7
   banner_login();
+  banner_lboard();
   banner_step(hdr_tx);
 
   mcu_hw_spi_begin();
@@ -396,12 +461,18 @@ static void ram_mirror_poll(void) {
      starts over before it sees this snapshot. The first snapshot only sets the
      reference. Byte 9, the core's diagnostic parameters, decides whether hardcore
      is possible at all, before the first frame is evaluated. */
-  int resets = ram_mirror_buf[8];
-  if(resets != ram_mirror_resets) {
-    if(ram_mirror_resets >= 0) ra_patch_core_reset();
-    ram_mirror_resets = resets;
+  /* Bytes 10 and 11 carry the complements of 8 and 9: the checksum covers only the
+     body, and a wrong bit here would reset rcheevos or block hardcore for nothing.
+     A pair that does not match is left out for this snapshot. */
+  if(ram_mirror_buf[10] == (unsigned char)~ram_mirror_buf[8] &&
+     ram_mirror_buf[11] == (unsigned char)~ram_mirror_buf[9]) {
+    int resets = ram_mirror_buf[8];
+    if(resets != ram_mirror_resets) {
+      if(ram_mirror_resets >= 0) ra_patch_core_reset();
+      ram_mirror_resets = resets;
+    }
+    ra_task_core_flags(ram_mirror_buf[9]);
   }
-  ra_task_core_flags(ram_mirror_buf[9]);
   unsigned what = ra_patch_apply_pending(&ra_rt);
   if(what & RA_PATCH_RESET) banner_mode_due = true;          /* a game starts */
   if(what) ra_primed = 0;          /* after a reset nothing is primed, a new set moves the positions */
@@ -497,6 +568,12 @@ static void com_task(__attribute__((unused)) void *p ) {
     // initialize on-screen-display and menu system
     osd_init();    
     menu_init();
+
+    // the achievement set from the card, before the game starts: a set with a
+    // valid tag lets it start in hardcore, instead of being reset once the RA task
+    // has read it. rcheevos takes it with the first snapshot.
+    ra_patch_init();
+    ra_patch_read_card();
 
     // open disk images, either defaults set in sdc_init or
     // user configure ones from the ini file. This will also

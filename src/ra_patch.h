@@ -38,7 +38,10 @@ const ra_dip_t *ra_game_dips(unsigned *n);
 /** @brief Sets up the handover of a parsed set to com_task. Once, before the RA task runs. False when it failed. */
 bool ra_patch_init(void);
 
-/** @brief Reads the set from the card, parses it and hands it to com_task. RA task only.
+/** @brief Reads the set from the card, parses it and hands it to com_task. Once, by com_task before the game starts.
+ *
+ *  Before the RA task runs, so the two never share the set buffer. A set with a
+ *  valid tag lifts RA_HC_BLOCK_SET right away, and the game can start in hardcore.
  *
  *  Returns the number of core achievements in the file, which com_task will try
  *  to activate, or -1 when there is no usable set. */
@@ -99,6 +102,19 @@ void ra_patch_format_progress(const rc_runtime_t *rt, unsigned id, char *buf, si
  *
  *  About once a second is enough, the menu shows what it read last. */
 void ra_patch_update_progress(const rc_runtime_t *rt);
+
+#define RA_PATCH_LB_MAX 8   /**< leaderboards kept per set, e.g. Galaga 1 */
+
+/** @brief One leaderboard of the active set. */
+typedef struct {
+  unsigned id;                          /**< leaderboard id on the server */
+  int      format;                      /**< how its value reads, for rc_runtime_format_lboard_value() */
+  bool     lower_is_better;             /**< e.g. a time */
+  char     title[RA_PATCH_TITLE_MAX];    /**< title, cut to fit */
+} ra_patch_lboard_t;
+
+/** @brief Copies the leaderboard with this id to out. Any task. False when the set has none such. */
+bool ra_patch_lboard(unsigned id, ra_patch_lboard_t *out);
 
 /** @brief Number of core achievements in the active set. */
 unsigned    ra_patch_count(void);

@@ -8,9 +8,11 @@
  *  "id unixtime user mode tag", mode h for hardcore and s for softcore, tag the
  *  HMAC-SHA256 of everything before it with the device key (ra_mac.c). The mode
  *  counts only with a tag that checks out, so an edited card cannot make an unlock
- *  hardcore or invent one. A line without a tag, as older firmware wrote them,
- *  counts as softcore. A line whose tag does not check out is set aside and never
- *  sent.
+ *  hardcore. A line without a tag, as older firmware wrote them, counts as softcore,
+ *  so the card can at most add softcore unlocks. A line whose tag does not check
+ *  out is set aside and never sent. Without a device key, tagged lines wait. Older
+ *  firmware reads lines of 63 characters, a tagged line is longer: going back to it
+ *  loses what is still queued.
  *  Once the server has it, the line is marked done in place: its first digit
  *  becomes '#'. That is a single sector, nothing is rewritten or renamed, so a
  *  power cut can at worst leave a line unmarked, and sending an unlock twice is
@@ -262,6 +264,14 @@ int ra_queue_head(ra_unlock_t *u) {
     // tag does not check out, go to the parked file, an unreadable one is only
     // marked done
     while((k = scan()) == LINE_OTHER || k == LINE_BAD || k == LINE_FORGED) {
+      // without a device key a tag cannot be checked: the line waits instead of
+      // being set aside, a key may come back
+      if(k == LINE_FORGED && !ra_mac_ready()) {
+        static bool told;
+        if(!told) debugf("RA: tagged unlocks wait, there is no device key to check them");
+        told = true;
+        return 0;
+      }
       if(k == LINE_OTHER) {
         debugf("RA: unlock %u of account '%s' set aside to %s", head.id, head_user, RA_QUEUE_PARKED);
         if(append_line(RA_QUEUE_PARKED, head_line) != FR_OK) return -1;

@@ -36,7 +36,10 @@
 #define RA_CLOCK_WAIT   60000u        /**< ms without time from NTP before the log says so */
 #define RA_BACKOFF_MIN  10000u        /**< ms, first pause after a failed request */
 #define RA_BACKOFF_MAX  600000u       /**< ms, the pause doubles up to this */
-#define RA_EVENTS       (RA_QUEUE_HANDOVER + 2)   /**< queue set: the unlocks, the clock, the end of a request */
+#define RA_LB_QUEUE     4             /**< leaderboard results com_task can hand over before the RA task takes them */
+#define RA_LB_RAM       4             /**< leaderboard results kept until the server has them */
+#define RA_LB_MAX_AGE   (14u * 24u * 3600u)   /**< s, older results the server would not take with their time */
+#define RA_EVENTS       (RA_QUEUE_HANDOVER + 2 + RA_LB_QUEUE)   /**< queue set: unlocks, the clock, the end of a request, leaderboards */
 #define RA_TASK_STACK   2048          /**< words, a TLS handshake leaves about 5 KB of it free */
 #define RA_PING_FIRST   30000u        /**< ms from the session start to the first ping, as rc_client */
 #define RA_PING_EVERY   120000u       /**< ms between pings, the server keeps the session meanwhile */
@@ -81,8 +84,22 @@ static char              path_buf[RA_PATH_MAX];  // path of session and ping req
 static bool              live;             // logged in: session and pings are due
 static TickType_t        next_ping;        // when the next ping, or the next try of the session, is due
 
+/** A leaderboard result on its way to the server. */
+typedef struct {
+  unsigned   id;       /**< leaderboard id */
+  int32_t    score;    /**< the value */
+  TickType_t tick;     /**< when it was reached, for seconds_since_completion */
+} lb_entry_t;
+static QueueHandle_t      lb_queue;                          // com_task -> RA task
+static StaticQueue_t      lb_queue_ctl;
+static uint8_t            lb_queue_mem[RA_LB_QUEUE * sizeof(lb_entry_t)];
+static lb_entry_t         lb_ram[RA_LB_RAM];                 // waiting for the server, oldest first
+static unsigned           lb_n;
+static ra_lboard_result_t lb_result;                         // the server's latest answer
+static volatile unsigned  lb_seq;                            // counts answers, see ra_task_lboard_result()
+
 ra_task_state_t ra_task_state(void) { return state; }
-bool ra_task_hardcore(void) { return hardcore; }
+bool ra_task_hardcore(void) { return hardcore && hc_wanted && !hc_block; }
 
 unsigned ra_task_hardcore_blocked(void) { return hc_block; }
 bool ra_task_hardcore_wanted(void) { return hc_wanted; }
@@ -92,35 +109,47 @@ bool ra_task_hardcore_wanted(void) { return hc_wanted; }
    the start, otherwise the running game is reset first and the mode applies when
    the reset ends: a game that started in softcore never continues in hardcore. */
 static void hc_update(void) {
+  bool to_soft = false, reset = false;
+  // menu_task, com_task and the RA task all get here: the decision is made with
+  // interrupts off, so no two of them can each take half of it. Log and reset
+  // come after, outside.
+  taskENTER_CRITICAL();
   if(!hc_wanted || hc_block) {
-    if(hardcore || hardcore_due) debugf("RA: softcore from now on");
+    to_soft = hardcore || hardcore_due;
     hardcore = hardcore_due = false;
-    return;
+  } else if(!hardcore && !hardcore_due) {
+    if(!core_running)
+      hardcore = true;          // no game runs, the next one starts in hardcore
+    else {
+      hardcore_due = true;      // a running game is reset first, see the R=0 path
+      reset = true;
+    }
   }
-  if(hardcore || hardcore_due) return;
-  // no game runs, or no achievement has been active in it yet: nothing of it can
-  // count, the mode applies at once
-  if(!core_running || !ra_patch_count()) {
-    hardcore = true;
-    return;
+  taskEXIT_CRITICAL();
+  if(to_soft) debugf("RA: softcore from now on");
+  if(reset) {
+    debugf("RA: hardcore, the game is reset");
+    sys_set_val('R', 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    sys_set_val('R', 0);
   }
-  debugf("RA: hardcore, the game is reset");
-  hardcore_due = true;
-  sys_set_val('R', 1);
-  vTaskDelay(pdMS_TO_TICKS(10));
-  sys_set_val('R', 0);
 }
 
 void ra_task_hardcore_block(unsigned reason, bool on) {
-  unsigned before = hc_block;
-  hc_block = on ? (before | reason) : (before & ~reason);
-  if(hc_block != before) hc_update();
+  unsigned before, after;
+  taskENTER_CRITICAL();
+  before = hc_block;
+  after = hc_block = on ? (before | reason) : (before & ~reason);
+  taskEXIT_CRITICAL();
+  if(after != before) hc_update();
 }
 
 void ra_task_core_flags(unsigned char flags) {
-  if(flags == core_flags) return;
+  // set on every snapshot, not only on a change: a bit lost to another task's
+  // update would otherwise never come back
+  if(flags != core_flags && flags)
+    debugf("RA: the core was built for diagnostics (flags 0x%02x), no hardcore", flags);
   core_flags = flags;
-  if(flags) debugf("RA: the core was built for diagnostics (flags 0x%02x), no hardcore", flags);
   ra_task_hardcore_block(RA_HC_BLOCK_CORE, flags != 0);
 }
 
@@ -133,11 +162,13 @@ void ra_task_core_value(char id, int value) {
     // com_task runs above this task and must not evaluate a frame in hardcore
     // with the hit counts of the game before.
     ra_patch_core_reset();
-    if(hardcore_due) {
-      hardcore_due = false;
-      hardcore = true;
-      debugf("RA: hardcore from this game on");
-    }
+    bool on;
+    taskENTER_CRITICAL();
+    on = hardcore_due && hc_wanted && !hc_block;   // a reason may have come up meanwhile
+    hardcore_due = false;
+    if(on) hardcore = true;
+    taskEXIT_CRITICAL();
+    if(on) debugf("RA: hardcore from this game on");
   } else if(id == 'H') {
     hc_wanted = value != 0;
     hc_update();
@@ -158,10 +189,44 @@ void ra_task_clock_set(void) {
   if(clock_sem) xSemaphoreGive(clock_sem);  // the task checks time() itself when it wakes
 }
 
-/* Handles one event of the queue set: an unlock goes to the card, the clock only
-   wakes the task. Also called by ra_net_get() while a request runs. */
+void ra_task_lboard(unsigned id, int32_t score) {
+  lb_entry_t e = { id, score, xTaskGetTickCount() };
+  if(!lb_queue || xQueueSend(lb_queue, &e, 0) != pdTRUE)
+    debugf("RA: leaderboard %u result lost, the RA task does not take it", id);
+}
+
+bool ra_task_lboard_result(unsigned *seen, ra_lboard_result_t *out) {
+  bool newer;
+  taskENTER_CRITICAL();
+  newer = lb_seq != *seen;
+  if(newer) { *out = lb_result; *seen = lb_seq; }
+  taskEXIT_CRITICAL();
+  return newer;
+}
+
+/* Takes a leaderboard result from com_task into the RAM list. Without an account
+   it is dropped, as unlocks are. When the list is full the oldest goes. */
+static void lb_take(void) {
+  lb_entry_t e;
+  if(!lb_queue || xQueueReceive(lb_queue, &e, 0) != pdTRUE) return;
+  if(!account) {
+    debugf("RA: leaderboard %u result not kept, no account", e.id);
+    return;
+  }
+  if(lb_n == RA_LB_RAM) {
+    debugf("RA: leaderboard %u result dropped, %u newer ones wait", lb_ram[0].id, (unsigned)RA_LB_RAM);
+    memmove(lb_ram, lb_ram + 1, (--lb_n) * sizeof(lb_ram[0]));
+  }
+  lb_ram[lb_n++] = e;
+  debugf("RA: leaderboard %u result %ld kept in RAM until the server has it", e.id, (long)e.score);
+}
+
+/* Handles one event of the queue set: an unlock goes to the card, a leaderboard
+   result into RAM, the clock only wakes the task. Also called by ra_net_get()
+   while a request runs. */
 static void on_event(QueueSetMemberHandle_t m) {
   if(m == unlocks)        ra_queue_take(account);
+  else if(m == lb_queue)  lb_take();
   else if(m == clock_sem) xSemaphoreTake(clock_sem, 0);
 }
 
@@ -452,6 +517,66 @@ static submit_t submit(const ra_unlock_t *u) {
   return result;
 }
 
+/* Submits a leaderboard result with r=submitlbentry. The request has no mode, the
+   server takes every entry as hardcore, which is why com_task hands over only
+   hardcore results. A refusal in a normal reply drops it, as rc_client does. */
+static submit_t submit_lboard(const lb_entry_t *e) {
+  static rc_api_submit_lboard_entry_response_t response;   // about 300 bytes, the stack is for TLS
+  rc_api_submit_lboard_entry_request_t params;
+  rc_api_request_t request;
+  rc_api_server_response_t server;
+  ra_reply_t reply;
+  submit_t result;
+  uint32_t age = (uint32_t)((xTaskGetTickCount() - e->tick) / configTICK_RATE_HZ);
+
+  if(age > RA_LB_MAX_AGE) {
+    debugf("RA: leaderboard %u result older than 14 days, dropped", e->id);
+    return SUBMIT_PARK;
+  }
+  memset(&params, 0, sizeof(params));
+  params.username                 = user;
+  params.api_token                = token;
+  params.leaderboard_id           = e->id;
+  params.score                    = e->score;
+  params.game_hash                = ra_game_hash();
+  params.seconds_since_completion = age;
+  if(rc_api_init_submit_lboard_entry_request(&request, &params) != RC_OK) return SUBMIT_RETRY;
+  int n = snprintf(path_buf, sizeof(path_buf), "/dorequest.php?%s", request.post_data);
+  rc_api_destroy_request(&request);
+  if(n < 0 || n >= (int)sizeof(path_buf)) return SUBMIT_RETRY;
+
+  if(ra_net_get(path_buf, reply_buf, sizeof(reply_buf), &reply) != 0 ||
+     reply.result != 0 || reply.status != 200)
+    return SUBMIT_RETRY;
+  if(reply.truncated) {
+    debugf("RA: leaderboard %u: submitted, reply cut short", e->id);
+    return SUBMIT_DONE;
+  }
+  server_reply(&server, &reply);
+  memset(&response, 0, sizeof(response));
+  int rv = rc_api_process_submit_lboard_entry_server_response(&response, &server);
+  if(rv == RC_OK && response.response.succeeded) {
+    debugf("RA: leaderboard %u: %ld submitted, best %ld, rank %u of %u", e->id, (long)response.submitted_score,
+           (long)response.best_score, (unsigned)response.new_rank, (unsigned)response.num_entries);
+    taskENTER_CRITICAL();
+    lb_result.id      = e->id;
+    lb_result.score   = e->score;
+    lb_result.best    = response.best_score;
+    lb_result.rank    = response.new_rank;
+    lb_result.entries = response.num_entries;
+    lb_seq++;
+    taskEXIT_CRITICAL();
+    result = SUBMIT_DONE;
+  } else if(rv == RC_OK) {
+    debugf("RA: leaderboard %u refused (%s), dropped", e->id,
+           response.response.error_message ? response.response.error_message : "no reason given");
+    result = SUBMIT_PARK;
+  } else
+    result = SUBMIT_RETRY;
+  rc_api_destroy_submit_lboard_entry_response(&response);
+  return result;
+}
+
 /* Asks the server for one of the account's lists with r=unlocks, h=1 the
    hardcore one and h=0 the softcore one. A reply that did not fit into the
    buffer is not used, its list would be incomplete. The caller destroys
@@ -555,16 +680,18 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   debugf("RA: client %s", ra_user_agent());
   // the device key for the tags on the card: without one, no hardcore
   switch(ra_mac_state()) {
-  case RA_MAC_CREATED: debugf("RA: device key created"); break;
-  case RA_MAC_PRESENT: debugf("RA: device key present"); break;
+  case RA_MAC_CREATED:  debugf("RA: device key created"); break;
+  case RA_MAC_PRESENT:  debugf("RA: device key present"); break;
+  case RA_MAC_REPLACED: debugf("RA: device key made anew, its flash sector held other data. "
+                               "Unlocks tagged with an earlier key are set aside"); break;
   default:
-    debugf("RA: no device key (flash sector not usable), softcore only");
+    debugf("RA: no device key (%s), softcore only", ra_mac_error());
     ra_task_hardcore_block(RA_HC_BLOCK_KEY, true);
   }
 
-  // 1. the set from the card, for com_task. The achievements run without an
-  //    account too, only nothing goes to the server then.
-  ra_patch_read_card();
+  // 1. the set from the card: com_task has read it before the game started, see
+  //    main.c. The achievements run without an account too, only nothing goes to
+  //    the server then.
 
   // 2. without an account there is nothing to do on the server, and unlocks are
   //    not kept: a guest's would later count for the owner
@@ -643,6 +770,17 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     }
     // both fetched, by whatever path: a retry time from an earlier failure is void
     if(!state_failed && !set_failed) retry_set = false;
+    // leaderboard results first: they live in RAM only, the unlocks are on the card
+    if(lb_n) {
+      submit_t r = submit_lboard(&lb_ram[0]);
+      if(r != SUBMIT_RETRY) {
+        memmove(lb_ram, lb_ram + 1, (--lb_n) * sizeof(lb_ram[0]));
+        backoff = RA_BACKOFF_MIN;
+        continue;
+      }
+      wait_to_retry(&backoff, "leaderboard result not submitted");
+      continue;
+    }
     int h = ra_queue_head(&u);
     if(h == 0) {
       TickType_t now = xTaskGetTickCount();
@@ -711,9 +849,11 @@ void ra_task_start(void) {
   events    = xQueueCreateSet(RA_EVENTS);
   clock_sem = xSemaphoreCreateBinary();
   unlocks   = ra_queue_init();
-  if(!events || !clock_sem || !unlocks || !ra_patch_init() ||
+  // static storage: the FreeRTOS heap is nearly full once FTP runs
+  lb_queue  = xQueueCreateStatic(RA_LB_QUEUE, sizeof(lb_entry_t), lb_queue_mem, &lb_queue_ctl);
+  if(!events || !clock_sem || !unlocks || !lb_queue || !ra_patch_init() ||
      xQueueAddToSet(unlocks, events) != pdPASS || xQueueAddToSet(clock_sem, events) != pdPASS ||
-     !ra_net_init(events, on_event)) {
+     xQueueAddToSet(lb_queue, events) != pdPASS || !ra_net_init(events, on_event)) {
     debugf("RA: events could not be set up");
     return;
   }

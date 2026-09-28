@@ -20,6 +20,7 @@
 #include "pico/stdlib.h"
 #include "pico/rand.h"
 #include "pico/unique_id.h"
+#include "pico/bootrom.h"
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 #include "mbedtls/md.h"
@@ -39,11 +40,13 @@ typedef struct {
 
 static uint8_t        key[32];
 static ra_mac_state_t state = RA_MAC_NONE;
+static const char    *why = "";   // which check refused the sector, for the log
 
 extern char __flash_binary_end;   // end of the firmware in flash, from the linker script
 
 ra_mac_state_t ra_mac_state(void) { return state; }
-bool ra_mac_ready(void) { return state == RA_MAC_CREATED || state == RA_MAC_PRESENT; }
+const char *ra_mac_error(void) { return why; }
+bool ra_mac_ready(void) { return state == RA_MAC_CREATED || state == RA_MAC_PRESENT || state == RA_MAC_REPLACED; }
 
 static void record_check(const record_t *r, uint8_t *out) {
   mbedtls_sha256((const unsigned char *)r, sizeof(r->magic) + sizeof(r->key), out, 0);
@@ -56,19 +59,37 @@ ra_mac_state_t ra_mac_init(void) {
   uint8_t check[32];
   size_t i;
 
-  // the sector must lie behind the firmware, a larger build would write into itself
-  if((uintptr_t)&__flash_binary_end > XIP_BASE + RA_MAC_OFFSET) return state = RA_MAC_ERROR;
+  bool erased = true;
 
-  // a record: take its key if it checks out, otherwise leave it alone
+  // the sector must lie behind the firmware, a larger build would write into itself
+  if((uintptr_t)&__flash_binary_end > XIP_BASE + RA_MAC_OFFSET) {
+    why = "the firmware reaches into its sector";
+    return state = RA_MAC_ERROR;
+  }
+#if PICO_RP2350
+  // with a partition table the firmware runs from a mapped window, and this
+  // address would not reach the sector: only the plain layout is used. The
+  // bootrom translates bits 23:12 only and keeps the rest of the address, so
+  // an untranslated window gives the runtime address back unchanged.
+  intptr_t storage = rom_flash_runtime_to_storage_addr(XIP_BASE + RA_MAC_OFFSET);
+  if(storage >= 0 && (uintptr_t)storage != XIP_BASE + RA_MAC_OFFSET) {
+    why = "a partition table maps the flash elsewhere";
+    return state = RA_MAC_ERROR;
+  }
+#endif
+
+  // a record: take its key if it checks out
   if(!memcmp(stored->magic, RA_MAC_MAGIC, sizeof(stored->magic))) {
     record_check(stored, check);
-    if(mbedtls_ct_memcmp(check, stored->check, sizeof(check)) != 0) return state = RA_MAC_ERROR;
-    memcpy(key, stored->key, sizeof(key));
-    return state = RA_MAC_PRESENT;
+    if(mbedtls_ct_memcmp(check, stored->check, sizeof(check)) == 0) {
+      memcpy(key, stored->key, sizeof(key));
+      return state = RA_MAC_PRESENT;
+    }
   }
-  // anything but an erased sector is not ours to overwrite
+  // no valid record: erased, torn by a power cut, or another firmware's data.
+  // The sector is this firmware's, it gets a new key.
   for(i = 0; i < sizeof(record_t); i++)
-    if(((const uint8_t *)stored)[i] != 0xFF) return state = RA_MAC_ERROR;
+    if(((const uint8_t *)stored)[i] != 0xFF) erased = false;
 
   // a new key: two draws of pico_rand (fed by the RP2350's TRNG), the board id and
   // the time, all through SHA-256
@@ -97,8 +118,9 @@ ra_mac_state_t ra_mac_init(void) {
   // read back through XIP: only a record that arrived whole counts
   bool ok = !memcmp(stored, page, sizeof(record_t));
   if(ok) memcpy(key, r->key, sizeof(key));
+  else why = "writing the sector failed";
   memset(page, 0, sizeof(page));
-  return state = ok ? RA_MAC_CREATED : RA_MAC_ERROR;
+  return state = !ok ? RA_MAC_ERROR : erased ? RA_MAC_CREATED : RA_MAC_REPLACED;
 }
 
 /* HMAC-SHA256 over label, a newline and the data. */

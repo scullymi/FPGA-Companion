@@ -937,6 +937,9 @@ static void menu_ra_status(void) {
   // menu asks for hardcore names the reason instead of the login state.
   char line[40];
   unsigned why = ra_task_hardcore_blocked();
+  // SET without a login: the login state says more than "till online"
+  if((why & ~RA_HC_BLOCK_SET) == 0 && (ra_task_state() == RA_TASK_REJECTED || ra_task_state() == RA_TASK_NO_ACCOUNT))
+    why = 0;
   if(!ra_task_hardcore() && ra_task_hardcore_wanted() && why)
     snprintf(line, sizeof(line), "softcore: %s",
              (why & RA_HC_BLOCK_CORE) ? "test core" : (why & RA_HC_BLOCK_XML) ? "config.xml" :

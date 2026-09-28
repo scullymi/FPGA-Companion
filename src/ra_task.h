@@ -6,6 +6,7 @@
 #define RA_TASK_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #define RA_CLOCK_VALID 1735689600u   /**< 2025-01-01, an earlier time() means NTP has not set the clock yet */
 #define RA_RP_MAX      256           /**< rich presence text with its NUL, as rc_client keeps it */
@@ -73,6 +74,26 @@ void ra_task_core_value(char id, int value);
  *
  *  The next ping sends it. Longer texts are cut to RA_RP_MAX - 1 characters. */
 void ra_task_set_richpresence(const char *text);
+
+/** @brief What the server answered to a leaderboard entry, for the banner. */
+typedef struct {
+  unsigned id;        /**< leaderboard id */
+  int32_t  score;     /**< the value submitted */
+  int32_t  best;      /**< the account's best value on this leaderboard */
+  unsigned rank;      /**< the rank of that best value, 0 when the server did not record it */
+  unsigned entries;   /**< entries on the leaderboard */
+} ra_lboard_result_t;
+
+/** @brief Hands a leaderboard result to the RA task, which submits it. com_task only, never blocks.
+ *
+ *  Only in hardcore: RetroAchievements takes leaderboard entries as hardcore ones.
+ *  Kept in RAM until the server has it, as rc_client does. */
+void ra_task_lboard(unsigned id, int32_t score);
+
+/** @brief The server's answer to the latest leaderboard entry. Any task.
+ *
+ *  True and out filled when there is one newer than *seen, which is then updated. */
+bool ra_task_lboard_result(unsigned *seen, ra_lboard_result_t *out);
 
 /** @brief Counts one frame rcheevos evaluated. com_task only.
  *

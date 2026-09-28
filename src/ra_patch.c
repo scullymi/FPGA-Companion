@@ -133,6 +133,14 @@ typedef struct {
 } live_t;
 static live_t live[RA_PATCH_MAX];           // written by com_task, read by the menu
 
+/** One leaderboard of the active set. */
+typedef struct {
+  ra_patch_lboard_t info;                   /**< what other tasks may read */
+  unsigned char     md5[16];                /**< md5 of its definition, an unchanged one keeps running */
+} lb_entry_t;
+static lb_entry_t lb_set[RA_PATCH_LB_MAX];
+static unsigned   lb_n;
+
 // the rich presence script that runs, by its md5. com_task only.
 static unsigned char rp_md5[16];
 static bool          rp_on;
@@ -157,6 +165,16 @@ unsigned ra_patch_index(unsigned id) {
 const char *ra_patch_title(unsigned id) {
   unsigned i = ra_patch_index(id);
   return i ? set[i - 1].title : "";
+}
+
+bool ra_patch_lboard(unsigned id, ra_patch_lboard_t *out) {
+  bool ok = false;
+  unsigned i;
+  taskENTER_CRITICAL();
+  for(i = 0; i < lb_n; i++)
+    if(lb_set[i].info.id == id) { *out = lb_set[i].info; ok = true; break; }
+  taskEXIT_CRITICAL();
+  return ok;
 }
 
 bool ra_patch_item(unsigned i, ra_patch_item_t *out) {
@@ -433,6 +451,54 @@ static int activate_richpresence(rc_runtime_t *rt, const char *script) {
   return rv;
 }
 
+/* Activates the set's leaderboards, the same way as the achievements: one whose
+   definition did not change keeps running, rcheevos would restart an attempt when
+   given the same definition again. Hidden ones run too, hidden only concerns lists.
+   RetroAchievements asks that leaderboards work and cannot be switched off in
+   hardcore. Returns the number that run. */
+static unsigned activate_lboards(rc_runtime_t *rt, const rc_api_fetch_game_data_response_t *r,
+                                 unsigned *kept, unsigned *rejected) {
+  static lb_entry_t next[RA_PATCH_LB_MAX];   // com_task only
+  unsigned i, j, n = 0;
+  *kept = *rejected = 0;
+  for(i = 0; i < r->num_leaderboards; i++) {
+    const rc_api_leaderboard_definition_t *l = &r->leaderboards[i];
+    unsigned char sum[16];
+    if(n >= RA_PATCH_LB_MAX) {
+      debugf("RA: more than %u leaderboards, the rest is ignored", (unsigned)RA_PATCH_LB_MAX);
+      break;
+    }
+    md5_of(l->definition ? l->definition : "", sum);
+    for(j = 0; j < lb_n && !(lb_set[j].info.id == l->id && !memcmp(lb_set[j].md5, sum, sizeof(sum))); j++) ;
+    if(j < lb_n)
+      (*kept)++;
+    else {
+      int rv = rc_runtime_activate_lboard(rt, l->id, l->definition, NULL, 0);
+      if(rv != RC_OK) {
+        debugf("RA: leaderboard %u (%s) rejected, code %d", (unsigned)l->id, l->title ? l->title : "", rv);
+        (*rejected)++;
+        continue;
+      }
+    }
+    next[n].info.id              = l->id;
+    next[n].info.format          = l->format;
+    next[n].info.lower_is_better = l->lower_is_better != 0;
+    snprintf(next[n].info.title, sizeof(next[n].info.title), "%s", l->title ? l->title : "");
+    memcpy(next[n].md5, sum, sizeof(sum));
+    n++;
+  }
+  // what the previous set had and this one does not leaves rcheevos too
+  for(i = 0; i < lb_n; i++) {
+    for(j = 0; j < n && next[j].info.id != lb_set[i].info.id; j++) ;
+    if(j == n) rc_runtime_deactivate_lboard(rt, lb_set[i].info.id);
+  }
+  taskENTER_CRITICAL();
+  memcpy(lb_set, next, n * sizeof(lb_set[0]));
+  lb_n = n;
+  taskEXIT_CRITICAL();
+  return n;
+}
+
 /* Activates the core achievements and fills the title table. A condition that
    rcheevos rejects is reported, it would otherwise never fire in silence. An
    achievement whose condition did not change keeps running with its hit counts:
@@ -514,16 +580,20 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
   taskEXIT_CRITICAL();
   free(old_pool);               // no reader can hold it: they copy with interrupts off
 
+  // the leaderboards
+  unsigned lb_kept, lb_rejected;
+  unsigned lbs = activate_lboards(rt, r, &lb_kept, &lb_rejected);
+
   // rich presence: the script of this set, an empty one switches it off. A script
   // rcheevos rejects leaves the previous one running, the log says so.
   int rp = activate_richpresence(rt, r->rich_presence_script);
   if(rp != RC_OK)
     debugf("RA: rich presence script rejected, code %d", rp);
 
-  // leaderboards come with the set but are not evaluated, the log counts them
-  debugf("RA: set for '%s': %u achievements active (%u kept running), %u rejected, rich presence %s, %u leaderboards ignored",
-         r->title ? r->title : "?", n, kept, rejected,
-         rp != RC_OK ? "rejected" : rp_on ? "on" : "none", (unsigned)r->num_leaderboards);
+  debugf("RA: set for '%s': %u achievements active (%u kept running), %u rejected, "
+         "%u leaderboards active (%u kept running), %u rejected, rich presence %s",
+         r->title ? r->title : "?", n, kept, rejected, lbs, lb_kept, lb_rejected,
+         rp != RC_OK ? "rejected" : rp_on ? "on" : "none");
   return (int)n;
 }
 
