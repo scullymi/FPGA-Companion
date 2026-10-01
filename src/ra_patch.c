@@ -788,7 +788,10 @@ bool ra_patch_pick_other_board(const char *name) {
   bool taken = false;
   taskENTER_CRITICAL();   // the settle may change the target meanwhile, see ra_patch_settle()
   if(restart_committed)
-    taken = true;         // the restart is under way: nothing streams to a core that goes
+    // the switch is under way: a game of another board comes too late and is
+    // dropped. Any other file goes on to sdc_image_open(), which waits for the card
+    // lock: it streams only if the switch fails, else the Pico restarts first
+    taken = g && board && g->board != board;
   else if(g && board && g->board != board) {
     restart_to = g;       // the newest pick wins
     pick_seq++;           // also over a stream that started before it, see the settle

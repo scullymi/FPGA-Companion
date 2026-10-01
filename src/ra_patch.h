@@ -103,10 +103,10 @@ const ra_game_t *ra_patch_restart_to(void);
  *  game of another board than the running core's. Menu task.
  *
  *  That game becomes ra_patch_restart_to(), in place of a pending one, and nothing
- *  streams to this core. True as well, and nothing changes, while a restart is
- *  committed: no file streams to a core that is about to go. False, and nothing
- *  changes, when the board is not known or the file is no table game's or one of
- *  this board. */
+ *  streams to this core. While a restart is committed it is dropped instead, the
+ *  switch under way comes first. False, and nothing changes, when the board is not
+ *  known or the file is no table game's or one of this board: it streams as usual,
+ *  during a committed restart only if that switch fails. */
 bool ra_patch_pick_other_board(const char *name);
 
 /** @brief Fixes the target g right before the marker is written, under the card lock. com_task.
