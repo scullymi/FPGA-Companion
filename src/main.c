@@ -230,9 +230,17 @@ static void banner_login(void) {
     banner_mode_due = false;
     if(now != RA_TASK_NO_ACCOUNT &&
        !(text == last_text && (xTaskGetTickCount() - last_tick) < pdMS_TO_TICKS(5000))) {
+      char warn[RA_PATCH_TITLE_MAX], line[4 + RA_PATCH_TITLE_MAX];
       banner_show(text, mode, true);
       last_text = text;
       last_tick = xTaskGetTickCount();
+      // in hardcore the server's warning follows, as rc_client shows it. While
+      // RetroAchievements has not approved this client, it keeps the unlocks as
+      // casual, and the player sees that next to the mode the device plays in.
+      if(mode && ra_patch_warning(warn, sizeof(warn))) {
+        snprintf(line, sizeof(line), "RA: %s", warn);
+        banner_show(line, false, false);
+      }
     }
   }
 }
@@ -256,10 +264,11 @@ static bool ra_done(unsigned id) {
 }
 
 /* Leaderboards: an attempt starts, ends without a result, or is finished with a
-   value. Only hardcore counts, the server takes every entry as hardcore: in
-   softcore a result only goes to the log. A banner when an attempt starts and one
-   with the result, no live tracker, the value is the score the game shows anyway.
-   RetroAchievements allows leaderboard popups to be off, not the submission. */
+   value. Only hardcore counts, the server keeps an entry as a hardcore one and
+   only from a client it has approved: in softcore a result only goes to the
+   log. A banner when an attempt starts and one with the result, no live
+   tracker, the value is the score the game shows anyway. RetroAchievements
+   allows leaderboard popups to be off, not the submission. */
 static void ra_lboard_event(const rc_runtime_event_t *ev) {
   ra_patch_lboard_t lb;
   char text[64], value[24];   // banner_show() cuts to the banner, at a word where it can
@@ -293,14 +302,16 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 }
 
 /* The server's answer to a leaderboard entry: the rank of the account's best
-   value. Rank 0 means the server did not record it, e.g. while it does not know
-   this client for hardcore. */
+   value. It did not record the entry when the rank is 0, or when the best is 0
+   for a result that is not. A client RetroAchievements has not approved gets
+   success, the account's earlier best or 0, and the rank of that value, so
+   with the server's warning a best of 0 means the same for a result of 0. */
 static void banner_lboard(void) {
   static unsigned seen;
   ra_lboard_result_t r;
   char text[BANNER_LEN + 1];
   if(!ra_task_lboard_result(&seen, &r)) return;
-  if(!r.rank) {
+  if(!r.rank || (r.best == 0 && (r.score != 0 || ra_patch_warning(NULL, 0)))) {
     banner_show("RA: LB NOT RECORDED", false, false);
     return;
   }

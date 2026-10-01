@@ -65,8 +65,9 @@ static bool                   rom_hashing;
 #define RA_PATCH_TMP        RA_PATCH_FILE ".new"  /**< a new set while it is written, then it takes the place of the old */
 #define RA_PATCH_MAC        "/sd/ra_patch.mac"    /**< "g20k-s1 <tag>": the set file's tag with the device key */
 #define RA_PATCH_MAC_LABEL  "g20k-s1"             /**< what the set's tag is made over, keeps it apart from other tags */
-/** "Warning: Unknown Emulator", which the server adds for clients it does not
-   know. Not an achievement of the game. */
+/** The first id of the server's warnings, e.g. "Warning: Unknown Emulator", which
+   it adds as an achievement for a client it has not approved for hardcore. Not
+   an achievement of the game, rc_client treats every id from here on as one. */
 #define RA_PATCH_WARNING_ID 101000001u
 
 // the set as it was read from the card or received from the server, for
@@ -76,10 +77,15 @@ static unsigned body_len;
 
 // what the set on the card amounts to, to tell whether the server's is a new
 // one: id, title and condition of every core achievement, the rich presence
-// script and the leaderboards. The rest of the reply may change from request to
-// request.
+// script, the leaderboards and the server's warning. The rest of the reply may
+// change from request to request.
 static unsigned char card_fp[16];
 static bool          card_fp_valid;
+
+// the title of the server's warning in the set parsed last, without "Warning: ",
+// "" when it had none. Written by com_task (card) and the RA task (server), read
+// by any task, always with interrupts off.
+static char warning[RA_PATCH_TITLE_MAX];
 
 // the core was reset, rcheevos starts over before the next frame. Set by any
 // task, cleared by com_task.
@@ -175,6 +181,15 @@ bool ra_patch_lboard(unsigned id, ra_patch_lboard_t *out) {
     if(lb_set[i].info.id == id) { *out = lb_set[i].info; ok = true; break; }
   taskEXIT_CRITICAL();
   return ok;
+}
+
+bool ra_patch_warning(char *out, size_t size) {
+  bool on;
+  taskENTER_CRITICAL();
+  on = warning[0] != 0;
+  if(out && size) snprintf(out, size, "%s", warning);
+  taskEXIT_CRITICAL();
+  return on;
 }
 
 bool ra_patch_item(unsigned i, ra_patch_item_t *out) {
@@ -342,10 +357,35 @@ static bool card_write(void) {
 }
 
 /* Only the official achievements count. The set also holds unofficial ones
-   (category 5, not finished or under review) and the server's pseudo
-   achievement RA_PATCH_WARNING_ID, both are left out. */
+   (category 5, not finished or under review) and the server's warning from
+   RA_PATCH_WARNING_ID on, both are left out. */
 static bool core_item(const rc_api_achievement_definition_t *a) {
-  return a->category == RC_ACHIEVEMENT_CATEGORY_CORE && a->id != RA_PATCH_WARNING_ID;
+  return a->category == RC_ACHIEVEMENT_CATEGORY_CORE && a->id < RA_PATCH_WARNING_ID;
+}
+
+/* Notes the server's warning about this client from a parsed set, see
+   ra_patch_warning(). The server marks it as unlocked in casual at the session
+   start, so that it shows in hardcore only, and com_task shows it that way. */
+static void note_warning(const rc_api_fetch_game_data_response_t *r) {
+  const rc_api_achievement_definition_t *w = NULL;
+  const char *t = "";
+  bool changed;
+  unsigned i;
+  for(i = 0; i < r->num_achievements && !w; i++)
+    if(r->achievements[i].id >= RA_PATCH_WARNING_ID) w = &r->achievements[i];
+  if(w) {
+    t = w->title ? w->title : "";
+    if(!strncmp(t, "Warning: ", 9)) t += 9;
+    if(!*t) t = "Warning";            // one without a title still counts
+  }
+  taskENTER_CRITICAL();
+  changed = strncmp(warning, t, sizeof(warning) - 1) != 0;
+  snprintf(warning, sizeof(warning), "%s", t);
+  taskEXIT_CRITICAL();
+  if(changed && w)
+    debugf("RA: server warning '%s': %s", t, w->description ? w->description : "");
+  else if(changed)
+    debugf("RA: no server warning any more");
 }
 
 /* Adds one md5 over a tag, two numbers and up to three strings to sum, as a
@@ -373,15 +413,17 @@ static void fold(unsigned char *sum, char tag, uint32_t id, uint32_t num,
 
 /* A fingerprint of a parsed set: one md5 per core achievement over id, points,
    title, description and condition, one per leaderboard over id, format, title
-   and definition, and one over the rich presence script, all added up, so the
-   order in the reply does not matter. Two sets with the same fingerprint play
-   and show the same. */
+   and definition, one over the rich presence script and one over the title of
+   the server's warning, all added up, so the order in the reply does not
+   matter. Two sets with the same fingerprint play and show the same, and a
+   warning that comes or goes reaches the card. */
 static void fingerprint(const rc_api_fetch_game_data_response_t *r, unsigned char *sum) {
   unsigned i;
   memset(sum, 0, 16);
   for(i = 0; i < r->num_achievements; i++) {
     const rc_api_achievement_definition_t *a = &r->achievements[i];
     if(core_item(a)) fold(sum, 'a', a->id, a->points, a->title, a->description, a->definition);
+    else if(a->id >= RA_PATCH_WARNING_ID) fold(sum, 'w', a->id, 0, a->title, NULL, NULL);
   }
   for(i = 0; i < r->num_leaderboards; i++) {
     const rc_api_leaderboard_definition_t *l = &r->leaderboards[i];
@@ -668,6 +710,7 @@ int ra_patch_read_card(void) {
 
   if(!handover || !card_read()) return -1;
   if(!(r = parse_new(&n))) return -1;
+  note_warning(r);          // until the server's set arrives, the card's says it
   // only a set with a valid tag counts as the one the server sent last: its
   // fingerprint lets an unchanged server set pass, and hardcore may use it. An
   // untagged or edited one plays softcore until the server's set replaces it.
@@ -698,6 +741,7 @@ int ra_patch_from_server(unsigned len) {
     return -1;
   }
   if(!(r = parse_new(&n))) return -1;
+  note_warning(r);
   // the same achievements as on the card: nothing to write, nothing to hand
   // over. The set that runs came from the card at start.
   fingerprint(r, sum);

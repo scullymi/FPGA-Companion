@@ -80,13 +80,14 @@ typedef struct {
   unsigned id;        /**< leaderboard id */
   int32_t  score;     /**< the value submitted */
   int32_t  best;      /**< the account's best value on this leaderboard */
-  unsigned rank;      /**< the rank of that best value, 0 when the server did not record it */
+  unsigned rank;      /**< the rank of that best value, also for an entry the server did not keep, see banner_lboard() in main.c */
   unsigned entries;   /**< entries on the leaderboard */
 } ra_lboard_result_t;
 
 /** @brief Hands a leaderboard result to the RA task, which submits it. com_task only, never blocks.
  *
- *  Only in hardcore: RetroAchievements takes leaderboard entries as hardcore ones.
+ *  Only in hardcore: RetroAchievements keeps leaderboard entries as hardcore ones,
+ *  and only from a client it has approved.
  *  Kept in RAM until the server has it, as rc_client does. */
 void ra_task_lboard(unsigned id, int32_t score);
 

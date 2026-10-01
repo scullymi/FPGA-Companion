@@ -955,14 +955,16 @@ static void menu_ra_status(void) {
     snprintf(count, sizeof(count), "%u of %u unlocked", ra_state_count(), ra_patch_count());
 
   // the note: a DIP switch the set does not expect comes first, its conditions
-  // would never fire, then what still waits for the server. A switch this core
+  // would never fire, then what still waits for the server, then in hardcore
+  // the server's warning, e.g. "Unknown Emulator": until RetroAchievements
+  // approves this client, it keeps the unlocks as casual. A switch this core
   // does not have cannot be wrong.
   const ra_dip_t *dip = ra_game_dips(&n);
   for(i = 0; dip && i < n; i++)
     if(menu_variable_exists(dip[i].id) && menu_variable_get(dip[i].id) != dip[i].value) break;
   if(dip && i < n)            snprintf(note, sizeof(note), "DIP not default!");
   else if(ra_queue_pending()) snprintf(note, sizeof(note), "%u to send", ra_queue_pending());
-  else                        note[0] = 0;
+  else if(!ra_task_hardcore() || !ra_patch_warning(note, sizeof(note))) note[0] = 0;
 
   snprintf(t, sizeof(t), "%s\n%s\n%s\n%s", who, line, count, note);
   menu_draw_dialog_for("Account", t, pdMS_TO_TICKS(8000));

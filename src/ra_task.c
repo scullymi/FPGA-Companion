@@ -518,8 +518,9 @@ static submit_t submit(const ra_unlock_t *u) {
 }
 
 /* Submits a leaderboard result with r=submitlbentry. The request has no mode, the
-   server takes every entry as hardcore, which is why com_task hands over only
-   hardcore results. A refusal in a normal reply drops it, as rc_client does. */
+   server keeps an entry as a hardcore one and only from a client it has approved,
+   which is why com_task hands over only hardcore results. A refusal in a normal
+   reply drops it, as rc_client does. */
 static submit_t submit_lboard(const lb_entry_t *e) {
   static rc_api_submit_lboard_entry_response_t response;   // about 300 bytes, the stack is for TLS
   rc_api_submit_lboard_entry_request_t params;

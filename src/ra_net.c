@@ -42,7 +42,7 @@ static ra_reply_t *out;
 /* RetroAchievements knows a client by its User-Agent, so it names this firmware
    truthfully and never another emulator. Version and platform come from the
    build (CMakeLists.txt), the rcheevos version from rcheevos itself.
-   example: "game20k/v1.0.0 (Raspberry Pi Pico) rcheevos/1.0.0" */
+   example: "game20k/v0.1.1 (Tang Nano 20K) rcheevos/12.5" */
 const char *ra_user_agent(void) {
   return "game20k/v" GAME20K_VERSION " (" GAME20K_PLATFORM ") rcheevos/" RCHEEVOS_VERSION_STRING;
 }
