@@ -371,11 +371,17 @@ static bool core_switch(void) {
 
 static void restart_step(void) {
   static TickType_t start;
+  static const ra_game_t *shown;     /* the target the message and the wait are for */
   const ra_game_t *g = ra_patch_restart_to();
-  if(!g) return;
+  if(!g) {                           /* none, or the ROM picked last took it back */
+    start = 0;
+    shown = NULL;
+    return;
+  }
   TickType_t now = xTaskGetTickCount();
-  if(!start) {
+  if(!start || g != shown) {         /* a new target: its message, and the wait starts over */
     start = now ? now : 1;
+    shown = g;
     menu_notify(MENU_EVENT_RA_RESTART);
     return;
   }
@@ -386,6 +392,7 @@ static void restart_step(void) {
   if((ra_queue_in_transit() || ra_task_lboard_pending()) && since < pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS))
     return;
   if(g->board != ram_mirror_board && buttons_held()) return;
+  if(!ra_patch_restart_commit(g)) return;   /* a pick changed the target in this moment */
   if(ra_queue_in_transit() || ra_task_lboard_pending())
     debugf("RA: restart with %u unlocks and %u leaderboard results not yet out",
            ra_queue_in_transit(), ra_task_lboard_pending());
@@ -402,6 +409,7 @@ static void restart_step(void) {
   sdc_unlock();
   debugf("Core switch: the core did not reload, its bitstream does not know Z");
   start = 0;
+  shown = NULL;
   ra_patch_restart_cancel();
   menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
 }

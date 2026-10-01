@@ -57,6 +57,7 @@ static bool             settled;                       // ra_patch_settle() ran
 static bool             table_wrong;                   // the server's id differs from the table's: RA_HC_BLOCK_GAME stays
 static bool             foreign_rom;                   // the ROM in the core is another game's than the boot's, see ra_patch_settle()
 static const ra_game_t *volatile restart_to;           // the game a restart starts, see ra_patch_restart_to()
+static volatile bool   restart_committed;             // restart_step() wrote the marker: the target stays until the Pico restarts
 static bool             set_off;                       // ra_patch_apply_pending() took the set out of rcheevos for that
 static volatile bool    set_again;                     // com_task asks the RA task to read the card set once more
 
@@ -757,14 +758,31 @@ void ra_patch_rom_gone(void) {
 bool ra_patch_rom_pending(void) { return rom_pending; }
 bool ra_patch_foreign_rom(void) { return foreign_rom; }
 const ra_game_t *ra_patch_restart_to(void) { return restart_to; }
-void ra_patch_restart_cancel(void) { restart_to = NULL; }
+
+void ra_patch_restart_cancel(void) {
+  taskENTER_CRITICAL();
+  restart_to        = NULL;
+  restart_committed = false;
+  taskEXIT_CRITICAL();
+}
+
+bool ra_patch_restart_commit(const ra_game_t *g) {
+  bool fixed;
+  taskENTER_CRITICAL();   // a pick in the menu task must not slip in between
+  fixed = g && restart_to == g;
+  if(fixed) restart_committed = true;
+  taskEXIT_CRITICAL();
+  return fixed;
+}
 
 bool ra_patch_pick_other_board(const char *name) {
   const ra_game_t *g = ra_games_by_file(name);
   bool taken = false;
-  taskENTER_CRITICAL();   // the settle may set a restart of its own meanwhile, see ra_patch_settle()
-  if(g && board && g->board != board && !restart_to) {
-    restart_to = g;
+  taskENTER_CRITICAL();   // the settle may change the target meanwhile, see ra_patch_settle()
+  if(restart_committed)
+    taken = true;         // the restart is under way: nothing streams to a core that goes
+  else if(g && board && g->board != board) {
+    restart_to = g;       // the newest pick wins
     taken = true;
   }
   taskEXIT_CRITICAL();
@@ -952,17 +970,22 @@ void ra_patch_settle(void) {
     else if(same && foreign_rom && game_hash[0])
       debugf("RA: the game's ROM is back, its set is read again");
     foreign_rom = !same;
-    // a known ROM of another game of this board, proven by its digest: a
-    // restart of the Pico makes it the boot's game with its own set, see
-    // restart_step() in main.c. Only when a game was decided at the start, else
-    // the identity was never set up and the log line above says what to do.
-    if(!same && ident.game && ident.rom_ok && ident.board_ok && game_hash[0]) {
-      bool taken = false;
-      taskENTER_CRITICAL();   // the menu may have picked a game of another board meanwhile
-      if(!restart_to) { restart_to = ident.game; taken = true; }
-      taskEXIT_CRITICAL();
-      if(taken) debugf("RA: the ROM is now %s, a game of this board: restart for its achievements", ident.game->set);
-    }
+    // the newest pick wins: a known ROM of another game of this board, proven by
+    // its digest, becomes the target of a restart of the Pico, which makes it the
+    // boot's game with its own set (restart_step() in main.c). The boot's own ROM,
+    // or any other file, takes a pending target back. Only when a game was decided
+    // at the start, else the identity was never set up and the log line above says
+    // what to do.
+    const ra_game_t *to = !same && ident.game && ident.rom_ok && ident.board_ok && game_hash[0] ? ident.game : NULL;
+    const ra_game_t *was;
+    taskENTER_CRITICAL();   // the menu may pick a game of another board meanwhile
+    was = restart_to;
+    if(!restart_committed) restart_to = to;
+    taskEXIT_CRITICAL();
+    if(to && to != was)
+      debugf("RA: the ROM is now %s, a game of this board: restart for its achievements", to->set);
+    else if(!to && was)
+      debugf("RA: no restart for %s, the ROM picked last plays here", was->set);
     return;
   }
   settled     = true;

@@ -88,18 +88,28 @@ bool ra_patch_foreign_rom(void);
  *  is a known ROM of another game of the same board, e.g. Puck Man in the Pac-Man
  *  core. That game's set, session and card folder come only with a start, so
  *  main.c restarts the Pico into it. Or set by ra_patch_pick_other_board() for a
- *  game of another board: main.c switches the core first. */
+ *  game of another board: main.c switches the core first. The newest pick wins:
+ *  a later pick replaces the target, the boot's own ROM or any other file that
+ *  streams takes it back, until ra_patch_restart_commit() fixes it. */
 const ra_game_t *ra_patch_restart_to(void);
 
 /** @brief A ROM file picked in the menu: true when it is the card file of a table
  *  game of another board than the running core's. Menu task.
  *
- *  That game becomes ra_patch_restart_to() and nothing streams to this core.
- *  False, and nothing changes, when the board is not known, a restart is under
- *  way, or the file is no table game's or one of this board. */
+ *  That game becomes ra_patch_restart_to(), in place of a pending one, and nothing
+ *  streams to this core. True as well, and nothing changes, while a restart is
+ *  committed: no file streams to a core that is about to go. False, and nothing
+ *  changes, when the board is not known or the file is no table game's or one of
+ *  this board. */
 bool ra_patch_pick_other_board(const char *name);
 
-/** @brief Drops the restart target: the core switch did not happen. Any task. */
+/** @brief Fixes the target g for the restart that follows at once. com_task.
+ *
+ *  False when the target is no longer g: a pick changed it in this moment, and the
+ *  restart starts over with the new one. */
+bool ra_patch_restart_commit(const ra_game_t *g);
+
+/** @brief Drops the restart target and its commit: the core switch did not happen. Any task. */
 void ra_patch_restart_cancel(void);
 
 
