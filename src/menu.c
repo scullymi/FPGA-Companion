@@ -1579,12 +1579,9 @@ static void menu_task(__attribute__((unused)) void *parms) {
       menu_draw_dialog_for("Core switch", "This bitstream cannot load\nanother core. The game goes on.",
                            pdMS_TO_TICKS(5000));
     } else
-    if(cmd == MENU_EVENT_NETWORK_GOT_IP) {
-      char message[32];
-      snprintf(message, sizeof(message), "IP: %s", network_ipaddr);
-      menu_draw_dialog_for("Network", message, pdMS_TO_TICKS(5000));
-    } else if(cmd == MENU_EVENT_NETWORK_DISCONNECTED) {
-      menu_draw_dialog_for("Network", "disconnected", pdMS_TO_TICKS(3000));
+    if(cmd == MENU_EVENT_NETWORK_GOT_IP || cmd == MENU_EVENT_NETWORK_DISCONNECTED) {
+      // game20k: no popup. Address and WiFi name are under Status, and the popup
+      // came after every restart of the Pico, a game switch among them
     } else
   if(cmd == MENU_EVENT_USB_MOUNTED) {
       menu_debugf("USB mount event");
