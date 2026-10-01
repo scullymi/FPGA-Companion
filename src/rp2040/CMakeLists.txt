@@ -116,6 +116,7 @@ add_executable(${PROJECT}
 	../ps2helper.c
 	../ftpd.c
 	../telnetd.c
+	../ra_games.c
 	../ra_patch.c
 	../ra_net.c
 	../ra_task.c

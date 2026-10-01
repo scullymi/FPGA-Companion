@@ -24,27 +24,34 @@
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
-   as the first byte of the next transfer. The sizes and the layout must match
-   ram_mirror_pkg.sv of the game20k FPGA core. Layout 3: a header of 16 bytes, in it
-   the core's reset count (byte 8), its diagnostic parameters (byte 9) and their
-   complements (bytes 10 and 11). */
-#define RAM_MIRROR_LAYOUT 0x03                       /* header byte 4               */
-#define RAM_MIRROR_HEAD  16
-#define RAM_MIRROR_DATA  5120                        /* bgram + wram1..3            */
-#define RAM_MIRROR_LOG   1536                        /* oracle log, 512 x 3 bytes   */
-#define RAM_MIRROR_BODY  (RAM_MIRROR_DATA + RAM_MIRROR_LOG)
-#define RAM_MIRROR_FOOT  (RAM_MIRROR_HEAD + RAM_MIRROR_BODY)
-#define RAM_MIRROR_BYTES (RAM_MIRROR_FOOT + 8)       /* 6680 */
+   as the first byte of the next transfer. The seven constants are the same for every
+   game and must match ram_mirror_pkg.sv of the game20k FPGA platform. Layout 4: a
+   header of 16 bytes, in it the core's reset count (byte 8), its diagnostic
+   parameters (byte 9) and their complements (bytes 10 and 11), the board id of the
+   core (byte 12, its complement in 13) and the game RAM in the mirror in units of
+   RAM_MIRROR_PAGE bytes (byte 14, its complement in 15). Each core sends its own
+   length, the buffers here hold the largest one. */
+#define RAM_MIRROR_LAYOUT    0x04                    /* header byte 4 */
+#define RAM_MIRROR_HEAD      16
+#define RAM_MIRROR_DATA_MAX  22528                   /* largest game RAM a core may announce */
+#define RAM_MIRROR_LOG       1536                    /* oracle log, 512 x 3 bytes */
+#define RAM_MIRROR_TAIL      8                       /* footer: frame, flags, checksum, log count */
+#define RAM_MIRROR_BYTES_MAX (RAM_MIRROR_HEAD + RAM_MIRROR_DATA_MAX + RAM_MIRROR_LOG + RAM_MIRROR_TAIL)
+#define RAM_MIRROR_PAGE      128                     /* unit of header byte 14, 176 pages at most */
 
-static unsigned char ram_mirror_buf[RAM_MIRROR_BYTES];
+static unsigned char ram_mirror_buf[RAM_MIRROR_BYTES_MAX];
 static unsigned char ram_mirror_verdict = 0xA5;
 static int ram_mirror_frame = -1;                    /* frame number of the last good snapshot */
 static int ram_mirror_resets = -1;                   /* the core's reset count in it */
-static unsigned char ram_mirror_seen[RAM_MIRROR_DATA / 8];
+static unsigned char ram_mirror_seen[RAM_MIRROR_DATA_MAX / 8];
+/* the running core's game RAM in the mirror, byte 14 x RAM_MIRROR_PAGE, 0 until a
+   valid header was read; com_task only */
+static unsigned      ram_mirror_data;
+static unsigned char ram_mirror_board;               /* its board id, byte 12, adopted with the length */
 
 /* rcheevos evaluates the achievement conditions over each good snapshot. The set
-   is defined on the flat layout of the mirror (bgram 2048, then wram1..3 of 1024
-   each), so an address is the offset in the snapshot. */
+   is defined on the flat layout the core sends, per game (Galaga: bgram 2048, then
+   wram1..3 of 1024 each), so an address is the offset in the snapshot. */
 static rc_runtime_t   ra_rt;
 static bool           ra_ready;
 static unsigned char  ra_triggered;         /* achievements triggered, saturating */
@@ -56,9 +63,10 @@ static unsigned       ra_rp_frames;         /* frames since the rich presence te
 
 static uint32_t ra_peek(uint32_t address, uint32_t num_bytes, void *ud) {
   (void)ud;
-  /* outside the mirror there is nothing, say so once instead of reading air.
-     Compared without a sum, so that an address near 2^32 cannot wrap into range. */
-  if(address >= RAM_MIRROR_DATA || num_bytes > RAM_MIRROR_DATA - address) {
+  /* outside the running core's game RAM there is nothing, say so once instead of
+     reading air, or stale bytes of a bigger game in the buffer. Compared without a
+     sum, so that an address near 2^32 cannot wrap into range. */
+  if(address >= ram_mirror_data || num_bytes > ram_mirror_data - address) {
     if(!ra_oob++) debugf("RA: condition reads 0x%lx, outside the mirror", (unsigned long)address);
     return 0;
   }
@@ -200,6 +208,8 @@ static void banner_login(void) {
       banner_show("RA: LOGIN REJECTED", false, false);
     else if(now == RA_TASK_NO_TIME)
       banner_show("RA: NO TIME SERVER", false, false);
+    else if(now == RA_TASK_NO_GAME)
+      banner_show("RA: NO GAME", false, false);
     else if(now == RA_TASK_RETRYING && !offline_told) {
       // no server: achievements still count, their unlocks wait on the card
       offline_told = true;
@@ -223,6 +233,8 @@ static void banner_login(void) {
                        (why & RA_HC_BLOCK_CORE)     ? "RA: SOFTCORE TEST CORE" :
                        (why & RA_HC_BLOCK_XML)      ? "RA: SOFTCORE CONFIG.XML" :
                        (why & RA_HC_BLOCK_KEY)      ? "RA: SOFTCORE KEY ERROR" :
+                       // a wrong game also explains an unknown ROM, so it comes first
+                       (why & RA_HC_BLOCK_GAME)     ? "RA: SOFTCORE WRONG GAME" :
                        (why & RA_HC_BLOCK_ROM)      ? "RA: SOFTCORE ROM UNKNOWN" :
                        // without a login the set never comes, the login banner says why
                        (why & RA_HC_BLOCK_SET) && now != RA_TASK_REJECTED ? "RA: SOFTCORE TILL ONLINE" :
@@ -364,12 +376,89 @@ static void ra_event(const rc_runtime_event_t *ev) {
   ra_queue_add(ev->id, hardcore);
 }
 
+/* Reads the header of one transfer, full duplex: hdr_tx goes to the FPGA meanwhile.
+   Shared by the probe at boot and the poll. Returns 0 with SPI still open and the
+   header in ram_mirror_buf, or the verdict with SPI ended: 0xE1 magic, 0xE2 layout
+   (core and firmware of different releases, said once per layout seen; the banner
+   still reaches an older core, the back channel in bytes 0 to 7 is the same), 0xE3
+   bytes 12 to 15 (said once per refused pair seen). Those carry the board id and
+   the length with a complement each: a pair that does not match, a board of 0 or
+   255 (the stuck patterns 00 and FF fail here) or a length outside 1..176 pages is
+   refused and no body is read. The first valid pair is adopted, together with the
+   board id for the game's identity, and a later pair that differs is refused too:
+   the FPGA cannot change without a reconfiguration, which reboots the Pico as well. */
+static unsigned char ram_mirror_header(const unsigned char *hdr_tx) {
+  mcu_hw_spi_begin();
+  mcu_hw_spi_tx_u08(SPI_TARGET_RAM);
+  mcu_hw_spi_tx_u08(ram_mirror_verdict);     /* verdict on the previous transfer */
+  mcu_hw_spi_txrx_block(hdr_tx, ram_mirror_buf, RAM_MIRROR_HEAD);
+
+  if(ram_mirror_buf[0] != 'R' || ram_mirror_buf[1] != 'A' ||
+     ram_mirror_buf[2] != 'C' || ram_mirror_buf[3] != 'H') {
+    mcu_hw_spi_end(); return ram_mirror_verdict = 0xE1;
+  }
+  if(ram_mirror_buf[4] != RAM_MIRROR_LAYOUT) {
+    static int told = -1;
+    if(told != ram_mirror_buf[4]) {
+      told = ram_mirror_buf[4];
+      debugf("RAM mirror: the core sends layout %u, this firmware reads %u, "
+             "flash core and firmware of the same release", ram_mirror_buf[4], RAM_MIRROR_LAYOUT);
+      banner_show(ram_mirror_buf[4] < RAM_MIRROR_LAYOUT ? "SYS: CORE TOO OLD" : "SYS: FIRMWARE TOO OLD",
+                  false, false);
+    }
+    mcu_hw_spi_end(); return ram_mirror_verdict = 0xE2;
+  }
+  unsigned char board = ram_mirror_buf[12], pages = ram_mirror_buf[14];
+  unsigned      data  = (unsigned)pages * RAM_MIRROR_PAGE;
+  bool valid = ram_mirror_buf[13] == (unsigned char)~board && ram_mirror_buf[15] == (unsigned char)~pages &&
+               board != 0 && board != 255 && pages >= 1 && pages <= RAM_MIRROR_DATA_MAX / RAM_MIRROR_PAGE;
+  if(valid && !ram_mirror_data) {
+    ram_mirror_data  = data;
+    ram_mirror_board = board;
+    ra_patch_board(board);                 /* whichever of probe or poll sees it first feeds the identity */
+    debugf("RAM mirror: layout %u, board %u, %u data bytes", RAM_MIRROR_LAYOUT, board, data);
+  } else if(!valid || data != ram_mirror_data || board != ram_mirror_board) {
+    /* once per distinct refused value, as the layout branch above does. A flag of
+       its own for "nothing said yet": 00 00 00 00 and FF FF FF FF are values this
+       branch refuses, so neither can serve as the sentinel */
+    static bool     told_any;
+    static uint32_t told;
+    uint32_t cur = (uint32_t)ram_mirror_buf[12] << 24 | (uint32_t)ram_mirror_buf[13] << 16 |
+                   (uint32_t)ram_mirror_buf[14] << 8  | ram_mirror_buf[15];
+    if(!told_any || told != cur) {
+      told_any = true;
+      told = cur;
+      debugf("RAM mirror: header bytes 12..15 %02x %02x %02x %02x %s, snapshot refused",
+             ram_mirror_buf[12], ram_mirror_buf[13], ram_mirror_buf[14], ram_mirror_buf[15],
+             valid ? "differ from the adopted board and length" : "invalid");
+    }
+    mcu_hw_spi_end(); return ram_mirror_verdict = 0xE3;
+  }
+  return 0;
+}
+
+/* The board id before the game starts: the header only, up to 50 tries 10 ms apart
+   (half a second), at boot before the card's defaults are mounted. ram_spi answers
+   the header from constants while the core is still in reset. On failure (a layout
+   3 core, no answer) the board stays 0, the poll adopts the first valid header it
+   sees later, and the game's identity is decided as "board unknown". hdr_tx all
+   zero: byte 5 is taken only when two transfers agree, and zero is its boot value. */
+static void ram_mirror_probe(void) {
+  unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0 };
+  for(int i = 0; i < 50 && !ram_mirror_data; i++) {
+    if(i) vTaskDelay(pdMS_TO_TICKS(10));
+    if(ram_mirror_header(hdr_tx) == 0) mcu_hw_spi_end();   /* the header is all the probe wants */
+  }
+  if(!ram_mirror_data)
+    debugf("RAM mirror: no valid layout %u header in 50 tries, the board is unknown", RAM_MIRROR_LAYOUT);
+}
+
 /* Read the header first. Byte 7 set means a harvest was running when the transfer
    started: the shadow is half old, half new, so skip it and retry on the next poll.
    That is normal, the verdict stays. From the verdict byte on, the FPGA starts no
    new harvest until chip select rises, so a clear byte 7 holds to the end. A harvest
    starting in exactly that clock tears the snapshot, the checksum (0xE6) catches it.
-   The header read is full duplex: hdr_tx goes to the FPGA meanwhile. */
+   Every offset in the body comes from the length the header announced. */
 static void ram_mirror_poll(void) {
   unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0 };
   /* back channel for the diagnostic bars of the FPGA: the rcheevos state */
@@ -385,30 +474,10 @@ static void ram_mirror_poll(void) {
   banner_lboard();
   banner_step(hdr_tx);
 
-  mcu_hw_spi_begin();
-  mcu_hw_spi_tx_u08(SPI_TARGET_RAM);
-  mcu_hw_spi_tx_u08(ram_mirror_verdict);     /* verdict on the previous transfer */
-  mcu_hw_spi_txrx_block(hdr_tx, ram_mirror_buf, RAM_MIRROR_HEAD);
-
-  /* Verdict: 0xA5 ok, otherwise the failed check. 0xE1 magic, 0xE2 layout,
-     0xE4 frame number, 0xE6 checksum, 0xE7 log overflow, 0xE8 and 0xE9 see below. */
-  if(ram_mirror_buf[0] != 'R' || ram_mirror_buf[1] != 'A' ||
-     ram_mirror_buf[2] != 'C' || ram_mirror_buf[3] != 'H') {
-    mcu_hw_spi_end(); ram_mirror_verdict = 0xE1; return;
-  }
-  if(ram_mirror_buf[4] != RAM_MIRROR_LAYOUT) {
-    /* core and firmware of different releases: said once per layout seen. The banner
-       still reaches an older core, the back channel in bytes 0 to 7 is the same. */
-    static int told = -1;
-    if(told != ram_mirror_buf[4]) {
-      told = ram_mirror_buf[4];
-      debugf("RAM mirror: the core sends layout %u, this firmware reads %u, "
-             "flash core and firmware of the same release", ram_mirror_buf[4], RAM_MIRROR_LAYOUT);
-      banner_show(ram_mirror_buf[4] < RAM_MIRROR_LAYOUT ? "SYS: CORE TOO OLD" : "SYS: FIRMWARE TOO OLD",
-                  false, false);
-    }
-    mcu_hw_spi_end(); ram_mirror_verdict = 0xE2; return;
-  }
+  /* Verdict: 0xA5 ok, otherwise the failed check. 0xE1 magic, 0xE2 layout, 0xE3
+     board and length, 0xE4 frame number, 0xE6 checksum, 0xE7 log overflow, 0xE8
+     and 0xE9 see below. */
+  if(ram_mirror_header(hdr_tx)) return;      /* SPI ended, verdict set */
   if(ram_mirror_buf[7] != 0x00) {            /* harvest running, retry next poll */
     mcu_hw_spi_end(); return;
   }
@@ -418,17 +487,17 @@ static void ram_mirror_poll(void) {
     mcu_hw_spi_end(); return;
   }
 
-  mcu_hw_spi_rx_block(ram_mirror_buf + RAM_MIRROR_HEAD,
-                      RAM_MIRROR_BYTES - RAM_MIRROR_HEAD);
+  const unsigned d = ram_mirror_data;        /* this core's game RAM, checked by the header */
+  mcu_hw_spi_rx_block(ram_mirror_buf + RAM_MIRROR_HEAD, d + RAM_MIRROR_LOG + RAM_MIRROR_TAIL);
   mcu_hw_spi_end();
 
   /* Same checksum the FPGA forms when it fills the FIFO, over game RAM and oracle
      log. Rotate before XOR so that the byte order counts. */
   unsigned short sum = 0;
-  for(unsigned int i = RAM_MIRROR_HEAD; i < RAM_MIRROR_FOOT; i++)
+  for(unsigned int i = RAM_MIRROR_HEAD; i < RAM_MIRROR_HEAD + d + RAM_MIRROR_LOG; i++)
     sum = (unsigned short)(((sum << 1) | (sum >> 15)) ^ ram_mirror_buf[i]);
 
-  const unsigned char *ftr  = ram_mirror_buf + RAM_MIRROR_FOOT;
+  const unsigned char *ftr  = ram_mirror_buf + RAM_MIRROR_HEAD + d + RAM_MIRROR_LOG;
   unsigned short       want = (unsigned short)(ftr[4] | (ftr[5] << 8));
 
   /* Checksum before the underrun bit: the bit only says the FIFO ran empty, the
@@ -447,13 +516,13 @@ static void ram_mirror_poll(void) {
   unsigned int n = (unsigned int)ftr[6] | (((unsigned int)ftr[7] & 3u) << 8);
   if(n > RAM_MIRROR_LOG / 3) n = RAM_MIRROR_LOG / 3;
 
-  for(unsigned int i = 0; i < sizeof(ram_mirror_seen); i++) ram_mirror_seen[i] = 0;
+  for(unsigned int i = 0; i < (d + 7) / 8; i++) ram_mirror_seen[i] = 0;   /* one bit per byte of this game's RAM */
 
   unsigned short bad = 0;
   for(int i = (int)n - 1; i >= 0; i--) {
-    const unsigned char *e = ram_mirror_buf + RAM_MIRROR_HEAD + RAM_MIRROR_DATA + 3 * i;
+    const unsigned char *e = ram_mirror_buf + RAM_MIRROR_HEAD + d + 3 * i;
     unsigned short flat = (unsigned short)(e[0] | (e[1] << 8));
-    if(flat >= RAM_MIRROR_DATA) continue;                  /* cannot happen, guards the index */
+    if(flat >= d) continue;                                /* cannot happen, guards the index */
     if(ram_mirror_seen[flat >> 3] & (1u << (flat & 7))) continue;
     ram_mirror_seen[flat >> 3] |= (unsigned char)(1u << (flat & 7));
     if(ram_mirror_buf[RAM_MIRROR_HEAD + flat] != e[2]) bad++;
@@ -532,8 +601,8 @@ static void com_task(__attribute__((unused)) void *p ) {
     // try to load the global config
     inifile_config_read();
     
-    // try to load a config .xml from sd card. If the core has identified itself,
-    // then e.g. atarist.xml will be read. otherwise config.xml
+    // try to load a config .xml from sd card. sys_get_config_name() always
+    // returns /sd/config.xml here: the core id byte stays 0 (game20k)
     FIL fil;
     if(f_open(&fil, sys_get_config_name(), FA_OPEN_EXISTING | FA_READ) == FR_OK) {
       config_init();
@@ -580,16 +649,23 @@ static void com_task(__attribute__((unused)) void *p ) {
     osd_init();    
     menu_init();
 
-    // the achievement set from the card, before the game starts: a set with a
-    // valid tag lets it start in hardcore, instead of being reset once the RA task
-    // has read it. rcheevos takes it with the first snapshot.
-    ra_patch_init();
-    ra_patch_read_card();
+    // game20k: the board id of the core from the RAM mirror header, before the
+    // ROM streams: it decides with the ROM which game this is. Then the handover
+    // of the achievement set; the set itself is read in ra_patch_settle() once
+    // board and ROM are known, so a set with a valid tag lets the game start in
+    // hardcore. rcheevos takes it with the first snapshot.
+    ram_mirror_probe();
+    if(!ra_patch_init()) debugf("RA: set handover could not be set up, no achievements");
 
     // open disk images, either defaults set in sdc_init or
     // user configure ones from the ini file. This will also
     // start rom image transfers if specified in the ini file
     sdc_mount_defaults();
+
+    // game20k: no image0 in the ini, or the core rejected it (the transfer is
+    // closed then): the game is decided now, before the ready action, from the
+    // board alone. With a stream running, its last chunk settles.
+    if(!sdc_image_upload_in_progress()) ra_patch_settle();
 
     // finally run the ready action. This will usually get the core out of reset
     // On setups not using core configs, just release FPGA from reset
@@ -602,21 +678,35 @@ static void com_task(__attribute__((unused)) void *p ) {
       debugf("Image upload in progress, delaying ready action");
 
     ftpd_init();
-    
+
     // finally prepare for wifi communication
     at_wifi_init();
 
-    // RetroAchievements talks to the server in a task of its own,
-    // so this loop never waits for it
-    ra_task_start();
-
     debugf("Entering main loop");
-  
+
+    // game20k: the RA task starts from the loop once the game is settled, and
+    // before that pass's poll, so the first snapshot and any unlock find the
+    // task and its handover queue. A stream ejected in the OSD settles on the
+    // next pass with "no ROM"; a file picked in the OSD holds the settle back
+    // (rom_pending) until its stream ends; a stream that stalls settles after
+    // 15 s at the latest, with what is known by then.
+    bool ra_started = false;
+    TickType_t loop_start = xTaskGetTickCount();
     for(;;) {
       mcu_hw_irq_ack();  // (re-)enable interrupt
       /* wake at least every 20 ms to poll the RAM mirror, not only on an interrupt */
       if(ulTaskNotifyTake( pdTRUE, pdMS_TO_TICKS(20) ))
         sys_handle_interrupts(sys_irq_ctrl(0xff), false);
+      if(!ra_patch_settled() &&
+         ((!sdc_image_upload_in_progress() && !ra_patch_rom_pending()) ||
+          (xTaskGetTickCount() - loop_start) >= pdMS_TO_TICKS(15000)))
+        ra_patch_settle();
+      if(!ra_started && ra_patch_settled()) {
+        // RetroAchievements talks to the server in a task of its own,
+        // so this loop never waits for it
+        ra_task_start();
+        ra_started = true;
+      }
       ram_mirror_poll();
     }
   }

@@ -98,9 +98,10 @@ static bool disk_path_mounted(const char *path)
 }
 
 /* In hardcore mode the files that decide what counts cannot be changed over
- * FTP: the RetroAchievements files ra_* and config.ini in the card's root.
- * FAT names are compared without case, and the short 8.3 names of these files
- * start with the same letters. Reading stays possible. */
+ * FTP: the RetroAchievements files ra_* and config.ini in the card's root, and
+ * the folder ra with the per-game files below it (game20k). FAT names are
+ * compared without case, and the short 8.3 names of these files start with the
+ * same letters. Reading stays possible. */
 static bool protected_path(const char *path)
 {
     size_t n;
@@ -111,6 +112,14 @@ static bool protected_path(const char *path)
     for (const char *c = path; *c; c++)
         if ((unsigned char)*c < 0x20 || *c == '\\')
             return true;
+    /* game20k: the first component is the folder ra, alone or with anything
+     * below it. FatFs drops trailing dots and spaces of each component, so
+     * "ra." is ra. */
+    n = strcspn(path, "/");
+    while (n && (path[n - 1] == '.' || path[n - 1] == ' '))
+        n--;
+    if (n == 2 && !strncasecmp(path, "ra", 2))
+        return true;
     if (strchr(path, '/'))
         return false;
     /* FatFs drops trailing dots and spaces, "config.ini." is config.ini */

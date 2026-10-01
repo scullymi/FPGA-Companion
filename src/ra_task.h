@@ -19,7 +19,8 @@ typedef enum {
   RA_TASK_NO_TIME,      /**< a minute without time from NTP, still waiting for it */
   RA_TASK_RETRYING,     /**< the server or the login failed, the next try waits for its pause */
   RA_TASK_LOGGED_IN,    /**< the account is in */
-  RA_TASK_REJECTED      /**< the server refused the account, no new try until the next start */
+  RA_TASK_REJECTED,     /**< the server refused the account, no new try until the next start */
+  RA_TASK_NO_GAME       /**< nothing to talk to the server about: no ROM on an unknown board, a wrong board, a board still unknown when the server answered, or a hash the server does not know */
 } ra_task_state_t;
 
 /** @brief The task's state. Any task, it is a single word. */
@@ -30,6 +31,12 @@ void ra_task_start(void);
 
 /** @brief Tells the task that the clock is set. From sntp_set_system_time(). */
 void ra_task_clock_set(void);
+
+/** @brief Wakes the task so it looks around: e.g. for a card set asked for again, ra_patch_set_again(). Any task.
+ *
+ *  Through the clock's semaphore, the task checks time() itself, so an extra wake
+ *  costs nothing. Nothing happens before ra_task_start(). */
+void ra_task_wake(void);
 
 /** @brief True when unlocks count as hardcore. Any task.
  *
@@ -43,6 +50,7 @@ bool ra_task_hardcore(void);
 #define RA_HC_BLOCK_ROM  4u    /**< the ROM image is not one of the known files, or not loaded yet */
 #define RA_HC_BLOCK_SET  8u    /**< the achievement set is not proven: the card's copy without a valid tag, and none from the server yet */
 #define RA_HC_BLOCK_KEY  16u   /**< no device key, unlocks cannot be tagged, see ra_mac.c */
+#define RA_HC_BLOCK_GAME 32u   /**< the ROM in the core is not this game's in one of four ways: the board is unknown, the ROM's game does not belong to this board, the ROM was changed to another game after the start, or the server's id differs from the table's */
 
 /** @brief The reasons that keep hardcore off although the menu asks for it, RA_HC_BLOCK_*. Any task. */
 unsigned ra_task_hardcore_blocked(void);

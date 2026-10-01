@@ -522,8 +522,8 @@ static void image_send_chunk(int image, uint32_t len) {
     f_close(&fil[MAX_DRIVES+image]);
     memset(&fil[MAX_DRIVES+image], 0, sizeof(FIL));
 
-    // the whole ROM set is in the core: known file or not, before the image
-    // action resets the core
+    // the whole ROM set is in the core: rom_end hands the digest to the game
+    // table and settles the game, before the image action resets the core
     if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_end();
 
     // inform core that the image has "been removed"
@@ -714,7 +714,7 @@ static void sdc_rom_image_selected(char image, FSIZE_t size) {
   if(!fil[MAX_DRIVES+image].flag && !size) return;  
 
   // no ROM set any more: no known ROM
-  if(image == RA_PATCH_ROM_IMAGE && !size) ra_patch_rom_gone();
+  if(image == RA_PATCH_ROM_IMAGE && !size) ra_patch_rom_gone(false);
   
   if(size) sdc_debugf("IMG %d: selected. Size = %llu", image, (unsigned long long)size);
   else     sdc_debugf("IMG %d: deselected", image);
@@ -740,7 +740,7 @@ static bool sdc_image_start_transfer(int image) {
   image_bytes2send[(int)image] = fil[image+MAX_DRIVES].obj.objsize;
   if(sdc_rom_image_get_buffer(image) < 0) {
     sdc_debugf("IMG %d: Core has rejected image", image);
-    if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_gone();
+    if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_gone(false);
     
     // close the transfer immediately
     f_close(&fil[image+MAX_DRIVES]);
@@ -750,8 +750,10 @@ static bool sdc_image_start_transfer(int image) {
     return false;
   }
 
-  // the ROM set starts to stream: its checksum starts with it
-  if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_start();
+  // the ROM set starts to stream: its checksum starts with it. game20k: the name
+  // goes along for RetroAchievements' arcade rule, it was set when the file was
+  // opened, under the same lock
+  if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_start(image_name[MAX_DRIVES+image]);
   return true;
 }
 
@@ -778,6 +780,14 @@ int sdc_image_open(int drive, char *name) {
     sdc_debugf("%s %d: closing file '%s'", (drive < MAX_DRIVES)?"DRV":"IMG",
 	       (drive < MAX_DRIVES)?drive:(drive-MAX_DRIVES),
 	       image_name[drive]?image_name[drive]:"<unknown>");
+    // game20k: the ROM set goes before it went whole (ejected or replaced in the
+    // OSD): no known ROM, nothing left to send. Before the FIL is cleared, so an
+    // eject settles by "no ROM" and not by the stale name; with a name following,
+    // the settle waits for the new stream
+    if(drive == MAX_DRIVES + RA_PATCH_ROM_IMAGE) {
+      ra_patch_rom_gone(name != NULL);
+      image_bytes2send[RA_PATCH_ROM_IMAGE] = 0;
+    }
     f_close(&fil[drive]);
     memset(&fil[drive], 0, sizeof(FIL));
   }
@@ -889,6 +899,8 @@ int sdc_image_open(int drive, char *name) {
     sdc_lock();
     if(f_open(&fil[drive], fname, FA_OPEN_EXISTING | FA_READ) != 0) {
       sdc_debugf("IMG %d: file open failed", image);
+      // game20k: no stream follows, the settle held back at the close goes ahead
+      if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_gone(false);
       sdc_unlock();
       return -1;
     }
@@ -907,7 +919,12 @@ int sdc_image_open(int drive, char *name) {
     // We transfer one image at a time. So if one is already
     // and being active, the we won't activate a second one, yet 
     if(!active) sdc_image_start_transfer(image);
-    else        sdc_debugf("IMG %d: Delaying additional rom download", image);
+    else {
+      sdc_debugf("IMG %d: Delaying additional rom download", image);
+      // game20k: the stream starts later from sdc_check_for_pending_image_uploads,
+      // the other image's stream holds the settle back meanwhile
+      if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_gone(false);
+    }
     
     sdc_unlock();
   } else

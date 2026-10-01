@@ -10,7 +10,9 @@
 
 #define RA_STATE_MAX 64   /**< ids kept per list, hardcore and softcore each */
 
-/** @brief Reads the state of this account from the card. RA task only, once at its start. */
+/** @brief Reads the state of this account and game from the card. RA task only, once after the game is known.
+ *
+ *  Does nothing but log while ra_game_id() is 0. Replaces both lists. */
 void ra_state_load(const char *user);
 
 /** @brief Replaces one list with the server's. RA task only.

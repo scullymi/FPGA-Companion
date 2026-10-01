@@ -74,9 +74,10 @@ static volatile bool     hardcore;         // the mode of session, pings and unl
 static volatile bool     hardcore_due;     // hardcore asked for, it applies when the reset for it ends
 static volatile bool     core_running;     // the core is out of reset, a game may be running
 static volatile bool     hc_wanted;        // the menu's 'H'
-// RA_HC_BLOCK_* reasons that keep hardcore off. ROM and SET hold from the start
-// until the ROM image and the achievement set have been checked.
-static volatile unsigned hc_block = RA_HC_BLOCK_ROM | RA_HC_BLOCK_SET;
+// RA_HC_BLOCK_* reasons that keep hardcore off. ROM, SET and GAME hold from the
+// start until ra_patch_settle() has checked ROM image and board and the
+// achievement set has been checked: nothing is granted before the game is known.
+static volatile unsigned hc_block = RA_HC_BLOCK_ROM | RA_HC_BLOCK_SET | RA_HC_BLOCK_GAME;
 static volatile unsigned char core_flags;  // header byte 9 of the RAM mirror, 0 = release build
 static char              rp_text[RA_RP_MAX];   // rich presence from com_task, under a critical section
 static volatile unsigned frames;           // frames rcheevos evaluated, counted by com_task
@@ -84,7 +85,9 @@ static char              path_buf[RA_PATH_MAX];  // path of session and ping req
 static bool              live;             // logged in: session and pings are due
 static TickType_t        next_ping;        // when the next ping, or the next try of the session, is due
 
-/** A leaderboard result on its way to the server. */
+/** A leaderboard result on its way to the server. It lives in RAM for this boot
+    only, and the game's identity cannot change within a boot, so the running
+    game's hash is the hash it was earned under. */
 typedef struct {
   unsigned   id;       /**< leaderboard id */
   int32_t    score;    /**< the value */
@@ -97,6 +100,18 @@ static lb_entry_t         lb_ram[RA_LB_RAM];                 // waiting for the 
 static unsigned           lb_n;
 static ra_lboard_result_t lb_result;                         // the server's latest answer
 static volatile unsigned  lb_seq;                            // counts answers, see ra_task_lboard_result()
+
+#define RA_REFUSE_MAX 3   /**< refusals of a queued unlock of another game before it is parked, see refusals() */
+#define RA_REFUSE_MEM 8   /**< such lines counted at once, beyond that a line is parked at its first refusal */
+/** A queued unlock of another game the server refused, counted per boot. */
+typedef struct {
+  unsigned id;                          /**< achievement id */
+  char     hash[RA_GAMES_HASH_LEN + 1]; /**< the game it was earned under */
+  unsigned n;                           /**< refusals so far, 0 for a free slot */
+} refusal_t;
+static refusal_t refused[RA_REFUSE_MEM];
+static bool      set_in_flight;         // fetch_set() has the server's reply on its way into ra_patch's body[]
+static volatile bool set_reread_failed; // a card set asked for again was not there: the server is asked once more
 
 ra_task_state_t ra_task_state(void) { return state; }
 bool ra_task_hardcore(void) { return hardcore && hc_wanted && !hc_block; }
@@ -185,8 +200,12 @@ void ra_task_set_richpresence(const char *text) {
   taskEXIT_CRITICAL();
 }
 
+void ra_task_wake(void) {
+  if(clock_sem) xSemaphoreGive(clock_sem);  // the task looks around itself when it wakes
+}
+
 void ra_task_clock_set(void) {
-  if(clock_sem) xSemaphoreGive(clock_sem);  // the task checks time() itself when it wakes
+  ra_task_wake();                           // the task checks time() itself
 }
 
 void ra_task_lboard(unsigned id, int32_t score) {
@@ -222,12 +241,16 @@ static void lb_take(void) {
 }
 
 /* Handles one event of the queue set: an unlock goes to the card, a leaderboard
-   result into RAM, the clock only wakes the task. Also called by ra_net_get()
-   while a request runs. */
+   result into RAM, the clock (or a plain wake-up) only wakes the task. Also called
+   by ra_net_get() while a request runs. A card set com_task asked for again is read
+   here, whatever the task was waiting for, except while fetch_set() has the
+   server's reply on its way into the same buffer. When the card does not give it,
+   the logged-in loop asks the server once more. */
 static void on_event(QueueSetMemberHandle_t m) {
   if(m == unlocks)        ra_queue_take(account);
   else if(m == lb_queue)  lb_take();
   else if(m == clock_sem) xSemaphoreTake(clock_sem, 0);
+  if(!set_in_flight && !ra_patch_set_again()) set_reread_failed = true;
 }
 
 /* Waits up to ticks for the next event and handles it. false when the time ran out. */
@@ -287,6 +310,8 @@ static bool check_server(void) {
   if(rc_api_process_resolve_hash_server_response(&response, &server) == RC_OK &&
      response.response.succeeded) {
     debugf("RA: server reached, hash %s is game %u", ra_game_hash(), (unsigned)response.game_id);
+    // the table's id is checked against the server's, a fallback identity gets its id here
+    ra_patch_resolved((unsigned)response.game_id);
     ok = true;
   }
   rc_api_destroy_resolve_hash_response(&response);
@@ -453,10 +478,50 @@ static void keep_alive(void) {
   }
 }
 
-/* Sends one unlock with r=awardachievement. It is parked only when the server
-   refuses it in a normal reply and the id is no longer in the active set, so a
-   bad token or a server error never costs a real unlock. Any other refusal moves
-   it behind the others, so it cannot hold them up. */
+/* Counts a refusal of a queued unlock of another game and returns the count. A
+   small table by id and hash. The count stays at the limit until the card has
+   taken the line, parked or confirmed, then refusals_forget() frees the slot: a
+   park that fails on the card leaves the line at the head and its count at the
+   limit, so the next refusal parks it again at once. With more than RA_REFUSE_MEM
+   such lines at once the table is full, and a line it does not know is then parked
+   at its first refusal (the count returned is the limit) instead of being counted:
+   the queue is FIFO, so an entry given up for it would come back only after every
+   other line, after another eviction, and nothing would ever be parked. */
+static unsigned refusals(const ra_unlock_t *u) {
+  unsigned i, free_slot = RA_REFUSE_MEM;
+  for(i = 0; i < RA_REFUSE_MEM; i++) {
+    if(!refused[i].n) { if(free_slot == RA_REFUSE_MEM) free_slot = i; continue; }
+    if(refused[i].id == u->id && !strcmp(refused[i].hash, u->hash)) {
+      if(refused[i].n < RA_REFUSE_MAX) refused[i].n++;   // saturates, see refusals_forget()
+      return refused[i].n;
+    }
+  }
+  if(free_slot == RA_REFUSE_MEM) {
+    debugf("RA: more than %u refused unlocks of other games at once, unlock %u is parked at its first refusal",
+           (unsigned)RA_REFUSE_MEM, u->id);
+    return RA_REFUSE_MAX;
+  }
+  refused[free_slot].id = u->id;
+  snprintf(refused[free_slot].hash, sizeof(refused[free_slot].hash), "%s", u->hash);
+  refused[free_slot].n = 1;
+  return 1;
+}
+
+/* Frees the count of a line once the card has taken it: parked, or confirmed by
+   the server after all. Nothing to do for a line the table does not hold. */
+static void refusals_forget(const ra_unlock_t *u) {
+  unsigned i;
+  for(i = 0; i < RA_REFUSE_MEM; i++)
+    if(refused[i].n && refused[i].id == u->id && !strcmp(refused[i].hash, u->hash)) { refused[i].n = 0; return; }
+}
+
+/* Sends one unlock with r=awardachievement, under the hash it was earned with.
+   An unlock of the running game is parked only when the server refuses it in a
+   normal reply and the id is no longer in the active set, so a bad token or a
+   server error never costs a real unlock. One of another game cannot be judged
+   against this game's set: it moves behind the others until that game is booted
+   next, and is parked after RA_REFUSE_MAX refusals so its backoff cannot hold up
+   the running game's unlocks for good. "User already has" counts as done. */
 static submit_t submit(const ra_unlock_t *u) {
   rc_api_award_achievement_request_t params;
   rc_api_request_t request;
@@ -472,7 +537,7 @@ static submit_t submit(const ra_unlock_t *u) {
   params.api_token      = token;
   params.achievement_id = u->id;
   params.hardcore       = u->hardcore;
-  params.game_hash      = ra_game_hash();
+  params.game_hash      = u->hash;
   if(u->when && now >= u->when) params.seconds_since_unlock = now - u->when;
   if(rc_api_init_award_achievement_request(&request, &params) != RC_OK) return SUBMIT_RETRY;
   int n = snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
@@ -504,9 +569,13 @@ static submit_t submit(const ra_unlock_t *u) {
              (unsigned)response.achievements_remaining);
     result = SUBMIT_DONE;
   } else if(rv == RC_OK) {
+    bool own = ra_queue_own(u->hash);
     // the set belongs to com_task, it is only read here
-    if(ra_patch_count() && !ra_patch_index(u->id)) {
+    if(own && ra_patch_count() && !ra_patch_index(u->id)) {
       debugf("RA: unlock %u refused (%s), not in the set any more, parked", u->id, why);
+      result = SUBMIT_PARK;
+    } else if(!own && refusals(u) >= RA_REFUSE_MAX) {
+      debugf("RA: unlock %u of game %s refused (%s), parked", u->id, u->hash, why);
       result = SUBMIT_PARK;
     } else {
       debugf("RA: unlock %u refused (%s), moved behind the others", u->id, why);
@@ -626,6 +695,7 @@ static bool fetch_set(void) {
   ra_reply_t reply;
   unsigned cap;
   char *buf = ra_patch_body(&cap);
+  bool ok;
 
   memset(&params, 0, sizeof(params));
   params.username  = user;
@@ -635,13 +705,17 @@ static bool fetch_set(void) {
   snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
   rc_api_destroy_request(&request);
 
+  // the buffer is taken from here on: a card set asked for again waits, see on_event()
+  set_in_flight = true;
   if(ra_net_get(path, buf, cap, &reply) != 0 || reply.result != 0 || reply.status != 200)
-    return false;
-  if(reply.truncated) {
+    ok = false;
+  else if(reply.truncated) {
     debugf("RA: set from the server is larger than %u bytes, not used", cap - 1);
-    return true;
-  }
-  return ra_patch_from_server(reply.len) >= 0;
+    ok = true;
+  } else
+    ok = ra_patch_from_server(reply.len) >= 0;
+  set_in_flight = false;
+  return ok;
 }
 
 /* Both lists from the server, or none: the state never mixes a new list with
@@ -690,9 +764,9 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     ra_task_hardcore_block(RA_HC_BLOCK_KEY, true);
   }
 
-  // 1. the set from the card: com_task has read it before the game started, see
-  //    main.c. The achievements run without an account too, only nothing goes to
-  //    the server then.
+  // 1. the set from the card: com_task has read it in ra_patch_settle() before
+  //    this task was started, see main.c. The achievements run without an account
+  //    too, only nothing goes to the server then.
 
   // 2. without an account there is nothing to do on the server, and unlocks are
   //    not kept: a guest's would later count for the owner
@@ -704,8 +778,21 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     state = RA_TASK_NO_ACCOUNT;
     sleep_forever();
   }
-  ra_state_load(user);      // before the queue, its lines count as unlocked too
+  // the state before the queue, its lines count as unlocked too. A fallback
+  // identity (the server resolves the id) has no state file yet: its queue is
+  // opened now, so the owner exists before an unlock can be written, and scanned
+  // again after the state is loaded, see step 4.
+  bool fallback = ra_game_id() == 0;
+  if(!fallback) ra_state_load(user);
   ra_queue_open(user);
+
+  // nothing to talk to the server about: no ROM on an unknown board, or a game
+  // that does not belong to this board. Queued lines of other games stay on the card.
+  if(!ra_game_hash()[0]) {
+    debugf("RA: no game, nothing to ask the server");
+    state = RA_TASK_NO_GAME;
+    sleep_forever();
+  }
 
   // 3. certificates are checked against the clock, so wait until NTP has set it.
   //    Without a time server this can take forever, so say it once in the log.
@@ -728,6 +815,18 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     state = RA_TASK_RETRYING;
     wait_to_retry(&backoff, "server not reached");
     state = RA_TASK_CONNECTING;
+  }
+  // a fallback identity has its id now, or none: the server does not know the
+  // hash, or it names a game of another board. With an id the state file can be
+  // read, and the queue is scanned once more because ra_state_load replaces the
+  // lists and would drop what the first scan counted as unlocked.
+  if(fallback) {
+    if(!ra_game_id()) {
+      state = RA_TASK_NO_GAME;
+      sleep_forever();
+    }
+    ra_state_load(user);
+    ra_queue_open(user);
   }
 
   // 5. log in. A rejected account stays rejected until the next start.
@@ -759,6 +858,10 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   for(;;) {
     ra_unlock_t u;
     keep_alive();
+    // a card set asked for again (the boot's ROM is back after another game's
+    // file) was not on the card, or had no valid tag: the server's set once more,
+    // ra_patch_from_server() writes and hands it over anew
+    if(set_reread_failed) { set_reread_failed = false; set_due = true; retry_set = false; }
     if(state_due) {
       state_due = false;
       state_failed = !fetch_state();
@@ -768,6 +871,8 @@ static void ra_task_main(__attribute__((unused)) void *p) {
       set_due = false;
       set_failed = !fetch_set();
       if(!set_failed) backoff = RA_BACKOFF_MIN;
+      // a card set asked for while the fetch had the buffer; not there: once more
+      if(!ra_patch_set_again()) { set_due = true; retry_set = false; }
     }
     // both fetched, by whatever path: a retry time from an earlier failure is void
     if(!state_failed && !set_failed) retry_set = false;
@@ -830,6 +935,7 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     else {
       backoff = RA_BACKOFF_MIN;
       state_stale = true;             // DONE or PARK: the server's lists may differ now
+      if(!ra_queue_own(u.hash)) refusals_forget(&u);   // the card took the line, its count is free
       continue;
     }
     // a pause also after a refusal, so a queue of refused unlocks cannot hammer the server

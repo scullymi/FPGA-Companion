@@ -741,12 +741,14 @@ static void menu_net_status(void) {
   menu_draw_dialog_for("Network", t, pdMS_TO_TICKS(8000));
 }
 
-// The Version dialog: what this firmware tells RetroAchievements, split over three
+// The Version dialog: what this firmware tells RetroAchievements, split over four
 // lines. The version is the git describe of the game20k repository, handed in by its
-// build script, so between releases it carries the distance to the last tag.
+// build script, so between releases it carries the distance to the last tag. The
+// fourth line is the core's board id and what the ROM file is (game20k).
 static void menu_version_status(void) {
-  char t[96];
-  snprintf(t, sizeof(t), "game20k v%s\n%s\nrcheevos %s", GAME20K_VERSION, GAME20K_PLATFORM, RCHEEVOS_VERSION_STRING);
+  char t[128];
+  snprintf(t, sizeof(t), "game20k v%s\n%s\nrcheevos %s\nboard %u, %s", GAME20K_VERSION, GAME20K_PLATFORM,
+           RCHEEVOS_VERSION_STRING, ra_game_board(), ra_game_rom_label());
   menu_draw_dialog_for("Version", t, pdMS_TO_TICKS(8000));
 }
 
@@ -931,10 +933,12 @@ static void menu_ra_status(void) {
   case RA_TASK_NO_ACCOUNT: state = "no account";     break;
   case RA_TASK_NO_TIME:    state = "no time server"; break;
   case RA_TASK_RETRYING:   state = "offline";        break;
+  case RA_TASK_NO_GAME:    state = "no game";        break;
   default:                 state = "connecting";     break;
   }
   // the mode in front, it decides how the unlocks count. Softcore although the
-  // menu asks for hardcore names the reason instead of the login state.
+  // menu asks for hardcore names the reason instead of the login state. A wrong
+  // game comes before an unknown ROM, it also explains one (game20k).
   char line[40];
   unsigned why = ra_task_hardcore_blocked();
   // SET without a login: the login state says more than "till online"
@@ -943,7 +947,8 @@ static void menu_ra_status(void) {
   if(!ra_task_hardcore() && ra_task_hardcore_wanted() && why)
     snprintf(line, sizeof(line), "softcore: %s",
              (why & RA_HC_BLOCK_CORE) ? "test core" : (why & RA_HC_BLOCK_XML) ? "config.xml" :
-             (why & RA_HC_BLOCK_KEY)  ? "key error" : (why & RA_HC_BLOCK_ROM) ? "ROM unknown" : "till online");
+             (why & RA_HC_BLOCK_KEY)  ? "key error" : (why & RA_HC_BLOCK_GAME) ? "wrong game" :
+             (why & RA_HC_BLOCK_ROM)  ? "ROM unknown" : "till online");
   else
     snprintf(line, sizeof(line), "%s, %s", ra_task_hardcore() ? "hardcore" : "softcore", state);
   // the counts refer to the active set, without one there is nothing to count
@@ -967,7 +972,9 @@ static void menu_ra_status(void) {
   else if(!ra_task_hardcore() || !ra_patch_warning(note, sizeof(note))) note[0] = 0;
 
   snprintf(t, sizeof(t), "%s\n%s\n%s\n%s", who, line, count, note);
-  menu_draw_dialog_for("Account", t, pdMS_TO_TICKS(8000));
+  // the game's title as the heading, the four lines are taken (game20k).
+  // "Account" while no table game is known.
+  menu_draw_dialog_for(ra_game_title() ? ra_game_title() : "Account", t, pdMS_TO_TICKS(8000));
 }
 
 static void menu_draw(const config_menu_t *menu, int selected, int scroll) {

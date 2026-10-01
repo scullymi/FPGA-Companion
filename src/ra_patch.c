@@ -4,12 +4,18 @@
  *  @brief The achievement set of the current game.
  *
  *  The conditions belong to RetroAchievements and are not compiled into the
- *  firmware. The set lies on the card as RA_PATCH_FILE, the server's reply to
+ *  firmware. The set lies on the card in the game's folder, /sd/ra/ plus the
+ *  game's id, with the file names of ra_games.h, as the server's reply to
  *  r=patch, and rcheevos' own parser reads it (rc_api_runtime.c). Nothing here
  *  interprets the JSON. Titles are copied into a small table, the parsed
- *  conditions live inside rcheevos. The RA task fetches the set from the
- *  server once per session and writes it to the card when it changed, so it
- *  is there offline too.
+ *  conditions live inside rcheevos. The RA task fetches the set from the server
+ *  once per session and writes it to the card when it changed, so it is there
+ *  offline too.
+ *
+ *  Which game: decided once per boot by ra_patch_settle() from the board id of
+ *  the core (RAM mirror header), the SHA-256 of the ROM image and the image's
+ *  name, with the rules of ra_games_select(). The card set is read right there,
+ *  in com_task, before the RA task exists.
  *
  *  Two tasks share the work: the RA task reads and parses, so the game loop
  *  never waits for the card, and hands the parsed set over a queue of one to
@@ -34,44 +40,51 @@
 #include "ra_task.h"
 #include "ra_mac.h"
 
-/* The game, fixed for now: Galaga on RetroAchievements, and the hash the server
-   knows it by, md5("galaga"), the name of the arcade ROM set. The rest of the
-   code asks ra_game_id() and ra_game_hash(), so the game's identity is set only
-   here. */
-#define RA_PATCH_GAME_ID    12138u                               /**< id on the server */
-#define RA_PATCH_GAME_HASH  "b8140b5e33c53b0f7dd3cc368951a4dd"   /**< md5 of the ROM set name */
-// the switches the set expects: 3 lives (list 'L' value 2) and bonus at 20K/70K
-// (list 'B' value 2), the listentry values of the core's XML. Most of the
-// conditions read these settings from the game's RAM, so with other ones they
-// never fire, without a word.
-static const ra_dip_t game_dips[] = { { 'L', 2 }, { 'B', 2 } };
-// The ROM file hardcore allows, as scripts/make_galaga_rom.sh builds it from the MAME
-// set "galaga" (every chip checked against MAME's SHA-1): SHA-256 with the 54xx, and
-// with its 1024 bytes as zeros when namco54.zip is missing. RetroAchievements only
-// knows the game by the set's name, this also proves the content, so a patched ROM
-// (more lives, say) plays in softcore only.
-static const unsigned char rom_known[][32] = {
-  { 0xaa,0xf7,0xa7,0x25,0x6f,0x8c,0x4e,0x97,0xb3,0x1f,0x05,0x3e,0x68,0x8f,0x24,0xcb,
-    0xb3,0x40,0x75,0xa2,0x6a,0xc7,0x1f,0xf0,0x84,0x76,0x51,0xae,0x93,0xb2,0xaf,0x47 },
-  { 0xec,0x21,0xe5,0x4d,0xaa,0x09,0xf7,0x8b,0x2f,0x58,0xab,0x06,0x0f,0x5c,0xdf,0xbd,
-    0x29,0xd5,0x0b,0x29,0x81,0x60,0x41,0xc6,0xca,0xe3,0x82,0x6c,0xb2,0xda,0xbc,0xd5 },
-};
-static mbedtls_sha256_context rom_sha;   // the ROM image while it streams, com_task only
+/* The identity of this boot's game, written once by ra_patch_settle() in com_task
+   and read by every task through the accessors. The game table (ra_games.c) names
+   the games, this only says which one runs. */
+static const ra_game_t *game;                          // the table entry, NULL for a fallback identity or no game
+static unsigned         game_id;                       // its id, 0 for a fallback identity, a wrong board or no game
+static char             game_hash[RA_GAMES_HASH_LEN + 1];   // what the server is asked with, "" when there is no game
+static volatile unsigned resolved_id;                  // fallback identity: the id the server gave, 0 until then
+static const char      *rom_label = "";                // what the ROM file is, for the Version dialog
+static volatile unsigned char board;                   // header byte 12, 0 until a valid header was read
+static bool             settled;                       // ra_patch_settle() ran
+static bool             table_wrong;                   // the server's id differs from the table's: RA_HC_BLOCK_GAME stays
+static bool             foreign_rom;                   // the ROM in the core is another game's than the boot's, see ra_patch_settle()
+static bool             set_off;                       // ra_patch_apply_pending() took the set out of rcheevos for that
+static volatile bool    set_again;                     // com_task asks the RA task to read the card set once more
+
+/* What the ROM stream leaves behind for settle. rom_start and rom_gone may run in
+   menu_task, rom_data and rom_end in com_task, settle in com_task. The stream orders
+   start, end and settle on the normal paths; the 15 s timeout settle of the main
+   loop is not ordered by it, so rom_start and rom_gone publish their stores with
+   interrupts off and settle takes its inputs the same way, whole or not at all. */
+static mbedtls_sha256_context rom_sha;                 // the ROM image while it streams
 static bool                   rom_hashing;
+static volatile bool          rom_pending;             // rom_start ran, rom_end or rom_gone did not yet: the main loop holds its settle back
+static unsigned char          rom_sum[32];             // its SHA-256 once the stream ended
+static bool                   rom_sum_valid;
+static char                   rom_name_hash[RA_GAMES_HASH_LEN + 1];   // md5 of the image's name (arcade rule), "" when nothing streamed
 
 #define RA_PATCH_BODY_MAX   40960        /**< a whole set, e.g. Galaga has about 15.7 KB */
 #define RA_PATCH_MAX        64           /**< achievements kept per set, e.g. Galaga 17 */
-#define RA_PATCH_FILE       "/sd/ra_patch.json"   /**< the server's reply to r=patch, kept on the card */
-#define RA_PATCH_TMP        RA_PATCH_FILE ".new"  /**< a new set while it is written, then it takes the place of the old */
-#define RA_PATCH_MAC        "/sd/ra_patch.mac"    /**< "g20k-s1 <tag>": the set file's tag with the device key */
-#define RA_PATCH_MAC_LABEL  "g20k-s1"             /**< what the set's tag is made over, keeps it apart from other tags */
+#define RA_PATCH_MAC_LABEL  "g20k-s1"    /**< what the set's tag is made over, keeps it apart from other tags */
+
+// the set's files in the game's folder, "/sd/ra/<id>/...", filled by set_paths()
+// once the id is known
+static char set_path[RA_GAMES_PATH_MAX];   // the set
+static char set_tmp[RA_GAMES_PATH_MAX];    // a new set while it is written
+static char set_mac[RA_GAMES_PATH_MAX];    // its tag
 /** The first id of the server's warnings, e.g. "Warning: Unknown Emulator", which
    it adds as an achievement for a client it has not fully approved for hardcore.
    Not an achievement of the game, rc_client treats every id from here on as one. */
 #define RA_PATCH_WARNING_ID 101000001u
 
 // the set as it was read from the card or received from the server, for
-// rcheevos' parser. Static, 40 KB would not fit on a task's stack. RA task only.
+// rcheevos' parser. Static, 40 KB would not fit on a task's stack. com_task uses
+// it in settle (read_card, move_file) before the RA task is started, from then on
+// RA task only.
 static char     body[RA_PATCH_BODY_MAX];
 static unsigned body_len;
 
@@ -151,11 +164,25 @@ static unsigned   lb_n;
 static unsigned char rp_md5[16];
 static bool          rp_on;
 
-const char *ra_game_hash(void) { return RA_PATCH_GAME_HASH; }
-unsigned    ra_game_id(void)   { return RA_PATCH_GAME_ID; }
+const char   *ra_game_hash(void)      { return game_hash; }
+unsigned      ra_game_id(void)        { return game_id ? game_id : resolved_id; }
+const char   *ra_game_title(void)     { return game ? game->title : NULL; }
+unsigned char ra_game_board(void)     { return board; }
+const char   *ra_game_rom_label(void) { return rom_label; }
+// the switches of the game that is played: a table entry on the wrong board is
+// not played, so its switches do not matter either
 const ra_dip_t *ra_game_dips(unsigned *n) {
-  *n = sizeof(game_dips) / sizeof(game_dips[0]);
-  return game_dips;
+  *n = game && game_id ? game->dip_n : 0;
+  return *n ? game->dips : NULL;
+}
+
+/* The set's three paths for the current id. False when there is no id yet: a
+   fallback identity has no folder until the server resolved it. */
+static bool set_paths(void) {
+  unsigned id = ra_game_id();
+  return ra_games_path(id, RA_GAMES_SET_FILE, set_path, sizeof(set_path)) &&
+         ra_games_path(id, RA_GAMES_SET_TMP,  set_tmp,  sizeof(set_tmp)) &&
+         ra_games_path(id, RA_GAMES_SET_MAC,  set_mac,  sizeof(set_mac));
 }
 
 unsigned ra_patch_count(void) { return set_n; }
@@ -256,6 +283,7 @@ static bool card_read(void) {
   FSIZE_t size = 0;
   FRESULT r;
 
+  if(!set_paths()) return false;   // no id: no folder to read from
   // the card is shared with other tasks, only the file access runs under the lock
   sdc_lock();
   // a second file left behind by card_write(). Alone, it is all there is, so it
@@ -264,13 +292,13 @@ static bool card_read(void) {
   // (A power cut inside FatFs' rename itself could leave both names on one
   // cluster chain, that case is not told apart here.)
   { FILINFO fi;
-    bool    tmp  = f_stat(RA_PATCH_TMP, &fi) == FR_OK;
+    bool    tmp  = f_stat(set_tmp, &fi) == FR_OK;
     FSIZE_t size = tmp ? fi.fsize : 0;
-    bool    old  = f_stat(RA_PATCH_FILE, &fi) == FR_OK;
-    if(tmp && !old && size) f_rename(RA_PATCH_TMP, RA_PATCH_FILE);
-    else if(tmp)            f_unlink(RA_PATCH_TMP);
+    bool    old  = f_stat(set_path, &fi) == FR_OK;
+    if(tmp && !old && size) f_rename(set_tmp, set_path);
+    else if(tmp)            f_unlink(set_tmp);
   }
-  r = f_open(&f, RA_PATCH_FILE, FA_READ);
+  r = f_open(&f, set_path, FA_READ);
   if(r == FR_OK) {
     size = f_size(&f);
     // read only a set that fits whole, one byte stays free for the final NUL
@@ -282,7 +310,7 @@ static bool card_read(void) {
   bool mac_read = false;
   { FIL m;
     UINT mgot = 0;
-    if(f_open(&m, RA_PATCH_MAC, FA_READ) == FR_OK) {
+    if(f_open(&m, set_mac, FA_READ) == FR_OK) {
       mac_read = f_read(&m, mac_line, sizeof(mac_line) - 1, &mgot) == FR_OK;
       mac_line[mgot] = 0;
       f_close(&m);
@@ -293,7 +321,7 @@ static bool card_read(void) {
   // one log line per failure: no file, empty, too large, and last any other open
   // or read error (FatFs returns the whole file with FR_OK, got != size only guards)
   if(r == FR_NO_FILE || r == FR_NO_PATH)
-    debugf("RA: no set on the card (%s), no achievements", RA_PATCH_FILE);
+    debugf("RA: no set on the card (%s), no achievements", set_path);
   else if(r == FR_OK && !size)
     debugf("RA: set on the card is empty, no achievements");
   else if(size >= sizeof(body))
@@ -333,9 +361,13 @@ static bool card_write(void) {
   char hex[RA_MAC_HEX + 1];
   bool tagged = set_tag(body, body_len, hex);
 
+  if(!set_paths()) return false;   // no id: nowhere to write to
   sdc_lock();
-  f_unlink(RA_PATCH_MAC);         // may not exist
-  r = f_open(&f, RA_PATCH_TMP, FA_WRITE | FA_CREATE_ALWAYS);
+  // the game's folder, cheap when it exists: a fallback identity's folder is made
+  // when the server resolved the id, this defends against a failed attempt then
+  r = ra_games_mkdir(ra_game_id());
+  if(r == FR_OK) f_unlink(set_mac);   // may not exist
+  if(r == FR_OK) r = f_open(&f, set_tmp, FA_WRITE | FA_CREATE_ALWAYS);
   if(r == FR_OK) {
     r = f_write(&f, body, body_len, &put);
     FRESULT c = f_close(&f);      // f_close writes the last sector, its result counts
@@ -343,16 +375,16 @@ static bool card_write(void) {
     if(r == FR_OK && put != body_len) r = FR_DISK_ERR;
   }
   if(r == FR_OK) {
-    f_unlink(RA_PATCH_FILE);      // may not exist yet
-    r = f_rename(RA_PATCH_TMP, RA_PATCH_FILE);
+    f_unlink(set_path);           // may not exist yet
+    r = f_rename(set_tmp, set_path);
   }
   // the tag, when there is a device key to make one
-  if(r == FR_OK && tagged && f_open(&f, RA_PATCH_MAC, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+  if(r == FR_OK && tagged && f_open(&f, set_mac, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
     bool ok = f_printf(&f, "%s %s\n", RA_PATCH_MAC_LABEL, hex) > 0;
-    if(f_close(&f) != FR_OK || !ok) f_unlink(RA_PATCH_MAC);
+    if(f_close(&f) != FR_OK || !ok) f_unlink(set_mac);
   }
   sdc_unlock();
-  if(r != FR_OK) debugf("RA: %s not written (error %d), the set is not there offline", RA_PATCH_FILE, (int)r);
+  if(r != FR_OK) debugf("RA: %s not written (error %d), the set is not there offline", set_path, (int)r);
   return r == FR_OK;
 }
 
@@ -639,8 +671,20 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
   return (int)n;
 }
 
-void ra_patch_rom_start(void) {
+void ra_patch_rom_start(const char *name) {
+  char hex[RA_GAMES_HASH_LEN + 1];
+  rom_pending = true;
   ra_task_hardcore_block(RA_HC_BLOCK_ROM, true);
+  // the name's hash right away, not the name: a long name (up to 255 characters)
+  // would not fit a small buffer, and the hash is all the arcade rule needs. Made
+  // in a local and published whole: the 15 s timeout settle in com_task can read
+  // rom_name_hash while menu_task is in here
+  if(name) ra_games_name_hash(name, hex);
+  else     hex[0] = 0;
+  taskENTER_CRITICAL();
+  memcpy(rom_name_hash, hex, sizeof(rom_name_hash));
+  rom_sum_valid = false;
+  taskEXIT_CRITICAL();
   mbedtls_sha256_init(&rom_sha);
   rom_hashing = mbedtls_sha256_starts(&rom_sha, 0) == 0;
 }
@@ -650,26 +694,42 @@ void ra_patch_rom_data(const void *data, unsigned len) {
 }
 
 void ra_patch_rom_end(void) {
-  unsigned char sum[32];
-  unsigned i;
-  bool known = false;
-  if(rom_hashing && mbedtls_sha256_finish(&rom_sha, sum) == 0)
-    for(i = 0; i < sizeof(rom_known) / sizeof(rom_known[0]); i++)
-      if(!memcmp(sum, rom_known[i], sizeof(sum))) known = true;
+  rom_sum_valid = rom_hashing && mbedtls_sha256_finish(&rom_sha, rom_sum) == 0;
   mbedtls_sha256_free(&rom_sha);
   rom_hashing = false;
-  if(known)
-    debugf("RA: ROM image is the known file%s", !memcmp(sum, rom_known[1], sizeof(sum)) ? " without the 54xx" : "");
+  rom_pending = false;
+  if(rom_sum_valid)
+    debugf("RA: ROM image SHA-256 %02x%02x%02x%02x...", rom_sum[0], rom_sum[1], rom_sum[2], rom_sum[3]);
   else
-    debugf("RA: ROM image unknown (SHA-256 %02x%02x%02x%02x...), softcore only", sum[0], sum[1], sum[2], sum[3]);
-  ra_task_hardcore_block(RA_HC_BLOCK_ROM, !known);
+    debugf("RA: hashing the ROM image failed, it counts as unknown");
+  // the core still waits in reset here: the bits settle applies hold from the first frame
+  ra_patch_settle();
 }
 
-void ra_patch_rom_gone(void) {
+void ra_patch_rom_gone(bool another_follows) {
+  // no FatFs and no settle here: this runs under sdc_lock (a rejected image,
+  // sdc_image_start_transfer) or in menu_task (a file ejected or replaced in the
+  // OSD, sdc_image_open). Only the ROM block bit moves, and without a name the next
+  // settle applies its "no ROM" rule.
   if(rom_hashing) mbedtls_sha256_free(&rom_sha);
   rom_hashing = false;
+  // published whole, as rom_start does: the 15 s timeout settle in com_task may
+  // read these while menu_task is in here. rom_pending stays up for a file that
+  // replaces this one in the OSD, so the main loop does not settle by "no ROM"
+  // between the close of this image and the start of the new stream
+  taskENTER_CRITICAL();
+  rom_pending      = another_follows;
+  rom_sum_valid    = false;
+  rom_name_hash[0] = 0;
+  taskEXIT_CRITICAL();
   ra_task_hardcore_block(RA_HC_BLOCK_ROM, true);
 }
+
+bool ra_patch_rom_pending(void) { return rom_pending; }
+bool ra_patch_foreign_rom(void) { return foreign_rom; }
+
+void ra_patch_board(unsigned char b) { board = b; }
+bool ra_patch_settled(void) { return settled; }
 
 bool ra_patch_init(void) {
   if(!handover) handover = xQueueCreate(1, sizeof(rc_api_fetch_game_data_response_t *));
@@ -704,12 +764,19 @@ static void hand_over(rc_api_fetch_game_data_response_t *r) {
   xQueueSend(handover, &r, 0);
 }
 
-int ra_patch_read_card(void) {
+/* Reads the set from the card, parses it and hands it to com_task. From settle in
+   com_task before the RA task runs, and from the RA task itself when the set is
+   read once more (ra_patch_set_again), so the two never share body[]. True when
+   a set with a valid tag went over. Otherwise the card does not hold the set the
+   server sent last, so the fingerprint is dropped: the next set from the server
+   is written and handed over again instead of passing as unchanged. */
+static bool read_card(void) {
   rc_api_fetch_game_data_response_t *r;
   unsigned n;
 
-  if(!handover || !card_read()) return -1;
-  if(!(r = parse_new(&n))) return -1;
+  card_fp_valid = false;
+  if(!handover || !card_read()) return false;
+  if(!(r = parse_new(&n))) return false;
   note_warning(r);          // until the server's set arrives, the card's says it
   // only a set with a valid tag counts as the one the server sent last: its
   // fingerprint lets an unchanged server set pass, and hardcore may use it. An
@@ -721,7 +788,197 @@ int ra_patch_read_card(void) {
   } else
     debugf("RA: set on the card has no valid tag, softcore until the server's set arrives");
   hand_over(r);
-  return (int)n;
+  debugf("RA: set from the card: %u core achievements", n);
+  return card_verified;
+}
+
+/* Copies the file at from to the file at to, through body[], and removes from.
+   Copy and not rename: FatFs' rename registers the new entry before it removes
+   the old one, and a power cut in between leaves two names on one cluster chain,
+   which a later unlink of one name would free under the other. A copy never
+   shares clusters, and a torn copy heals on the next boot: the root file is still
+   there, FA_CREATE_ALWAYS overwrites the folder's file, and the root file goes
+   only after a complete write. Under sdc_lock, before the RA task exists, so
+   body[] is free. */
+static void move_file(const char *from, const char *to) {
+  FIL f;
+  UINT n = 0, put = 0;
+  FSIZE_t size;
+  FRESULT r = f_open(&f, from, FA_READ);
+  // f_stat found the name: a folder of that name (FR_NO_FILE) or a card error
+  if(r != FR_OK) { debugf("RA: %s not opened (error %d), not moved", from, (int)r); return; }
+  size = f_size(&f);
+  // a file that does not fit could never be read as a set either, it stays where
+  // it is and the log says so on every boot
+  if(size >= sizeof(body)) {
+    f_close(&f);
+    debugf("RA: %s is %lu bytes, too large to move, left in place", from, (unsigned long)size);
+    return;
+  }
+  r = f_read(&f, body, (UINT)size, &n);
+  f_close(&f);
+  if(r != FR_OK || n != size) { debugf("RA: %s not read (error %d), not moved", from, (int)r); return; }
+  r = f_open(&f, to, FA_WRITE | FA_CREATE_ALWAYS);
+  if(r == FR_OK) {
+    r = f_write(&f, body, n, &put);
+    FRESULT c = f_close(&f);      // f_close writes the last sector, its result counts
+    if(r == FR_OK) r = c;
+    if(r == FR_OK && put != n) r = FR_DISK_ERR;
+  }
+  if(r != FR_OK) { debugf("RA: %s not written (error %d), %s stays", to, (int)r, from); return; }
+  // the copy is whole: the original goes. A root file that stays (read-only
+  // attribute, write error) is copied again on the next boot, which is harmless
+  r = f_unlink(from);
+  if(r == FR_OK) debugf("RA: %s moved to %s", from, to);
+  else           debugf("RA: %s copied to %s, not removed (error %d)", from, to, (int)r);
+}
+
+/* The card files of the firmware before this one lie in the root and belong to
+   Galaga (RA_GAMES_V1_ID), the only game it knew. They go into Galaga's folder
+   on every boot they are found, whatever core runs: the set's tag covers id and
+   content and not the name, so a card that had hardcore keeps it. Order mac,
+   json, unlocked: a power cut after the mac reads as "no set" next boot, which
+   is harmless, and the json follows. A root file is copied whenever it is there,
+   over a folder copy too: a torn copy (a power cut leaves the folder's entry with
+   size 0) is made whole this way, and after a downgrade and upgrade the root
+   files, which the old firmware wrote last, win over the folder's. When nothing
+   is left this costs three f_stat calls per boot. */
+static void migrate_card(void) {
+  static const struct { const char *root; const char *name; } files[] = {
+    { "/sd/ra_patch.mac",    RA_GAMES_SET_MAC },
+    { "/sd/ra_patch.json",   RA_GAMES_SET_FILE },
+    { "/sd/ra_unlocked.txt", RA_GAMES_STATE_FILE },
+  };
+  char to[RA_GAMES_PATH_MAX];
+  FILINFO fi;
+  bool folder = false;
+  unsigned i;
+
+  sdc_lock();
+  f_unlink("/sd/ra_patch.json.new");   // a partial write of the old firmware, worthless
+  for(i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+    if(f_stat(files[i].root, &fi) != FR_OK) continue;
+    if(!folder && ra_games_mkdir(RA_GAMES_V1_ID) != FR_OK) {
+      debugf("RA: no folder for the card files of game %u, %s stays", RA_GAMES_V1_ID, files[i].root);
+      break;
+    }
+    folder = true;
+    ra_games_path(RA_GAMES_V1_ID, files[i].name, to, sizeof(to));
+    move_file(files[i].root, to);
+  }
+  sdc_unlock();
+}
+
+void ra_patch_settle(void) {
+  ra_ident_t ident;
+  unsigned char sum[32];
+  char name_hash[RA_GAMES_HASH_LEN + 1];
+  bool sum_valid, streaming;
+  // the inputs whole: rom_start in menu_task may be writing them when the 15 s
+  // timeout of the main loop brings com_task here
+  taskENTER_CRITICAL();
+  memcpy(sum, rom_sum, sizeof(sum));
+  memcpy(name_hash, rom_name_hash, sizeof(name_hash));
+  sum_valid = rom_sum_valid;
+  streaming = rom_pending;
+  taskEXIT_CRITICAL();
+  ra_games_select(board, sum_valid ? sum : NULL, name_hash[0] ? name_hash : NULL, streaming, &ident);
+
+  if(settled) {
+    // a ROM picked in the OSD after the start: identity, session and card files
+    // stay, the two block bits and the label of the Version dialog follow the new
+    // file. A file of another game switches the set off, ra_patch_apply_pending()
+    // takes it out of rcheevos, until the boot's ROM is back in the core.
+    bool same = ident.game == game && !strcmp(ident.hash, game_hash);
+    rom_label = ident.rom_label;
+    ra_task_hardcore_block(RA_HC_BLOCK_ROM,  !(same && ident.rom_ok));
+    ra_task_hardcore_block(RA_HC_BLOCK_GAME, !ident.board_ok || !same || table_wrong);
+    const char *what = ident.game ? ident.game->set : ident.hash[0] ? "a file the table does not know" : "gone";
+    if(!same && !foreign_rom && !game_hash[0])
+      // no game at the start (board unknown, or a table game on the wrong board):
+      // the identity is fixed for the boot, nothing can come back
+      debugf("RA: the ROM is now %s, but no game was decided at the start: reboot with this ROM to play it", what);
+    else if(!same && !foreign_rom)
+      debugf("RA: the ROM is now %s, not the game's: achievements off until it is back", what);
+    else if(same && foreign_rom && game_hash[0])
+      debugf("RA: the game's ROM is back, its set is read again");
+    foreign_rom = !same;
+    return;
+  }
+  settled     = true;
+  game        = ident.game;
+  game_id     = ident.id;
+  resolved_id = 0;
+  rom_label   = ident.rom_label;
+  snprintf(game_hash, sizeof(game_hash), "%s", ident.hash);
+  debugf("RA: board %u, ROM %s: game %s, id %u, hash %s", board, rom_label,
+         game ? game->set : ident.hash[0] ? "unknown to the table" : "none",
+         game_id, game_hash[0] ? game_hash : "none");
+  if(game && !ident.board_ok)
+    debugf("RA: %s runs on board %u, not on this one: not played", game->title, game->board);
+  ra_task_hardcore_block(RA_HC_BLOCK_ROM,  !ident.rom_ok);
+  ra_task_hardcore_block(RA_HC_BLOCK_GAME, !ident.board_ok);
+  migrate_card();
+  // the card set, only with an id: a fallback identity has no folder until the
+  // server resolved the hash, and it is softcore anyway, the server's set comes
+  // after the login
+  if(game_id) {
+    sdc_lock();
+    FRESULT r = ra_games_mkdir(game_id);
+    sdc_unlock();
+    if(r != FR_OK) debugf("RA: folder for game %u not made (error %d)", game_id, (int)r);
+    read_card();
+  }
+}
+
+void ra_patch_resolved(unsigned server_id) {
+  const ra_game_t *g;
+  FRESULT r;
+  if(game_id) {
+    // a table entry: the table is wrong, softcore until a developer fixes it, its
+    // id is kept so the card files and the session stay consistent
+    if(server_id != game_id) {
+      debugf("RA: table says %u, server says %u, softcore until the table is fixed", game_id, server_id);
+      table_wrong = true;
+      ra_task_hardcore_block(RA_HC_BLOCK_GAME, true);
+    }
+    return;
+  }
+  if(!server_id) {
+    debugf("RA: the server does not know hash %s, no achievements", game_hash);
+    return;
+  }
+  // a fallback identity: a table game of another board is not played, its set
+  // would fire on unrelated bytes. On a board the table knows, only one of its
+  // own games is: the board's ROMs are table games, so a name the table does not
+  // know is a renamed or foreign file, and a set the table does not know would
+  // fire on this board's RAM the same way. A board without a table entry, a new
+  // core with a new ROM, plays whatever the server says, once its header was
+  // read: board 0 is no board, a set adopted then would run against whatever
+  // core answers later. What is stored gets its folder made, so card_write and
+  // ra_state_save find it.
+  unsigned char b = board;   // read once, the poll may adopt a header meanwhile
+  g = ra_games_by_id(server_id);
+  if(!b) {
+    debugf("RA: the server says game %u, but the board is unknown (no RAM mirror header yet): not played",
+           server_id);
+    return;
+  }
+  if(g && g->board != b) {
+    debugf("RA: the server says game %u (%s), which runs on board %u, not %u: not played",
+           server_id, g->title, g->board, b);
+    return;
+  }
+  if(!g && ra_games_by_board(b)) {
+    debugf("RA: the server says game %u, which the table does not know on board %u: not played",
+           server_id, b);
+    return;
+  }
+  resolved_id = server_id;
+  sdc_lock();
+  r = ra_games_mkdir(server_id);
+  sdc_unlock();
+  debugf("RA: the server knows the ROM as game %u%s", server_id, r == FR_OK ? "" : ", its card folder could not be made");
 }
 
 char *ra_patch_body(unsigned *cap) {
@@ -765,6 +1022,12 @@ int ra_patch_from_server(unsigned len) {
 
 void ra_patch_core_reset(void) { reset_due = true; }
 
+bool ra_patch_set_again(void) {
+  if(!set_again) return true;
+  set_again = false;
+  return read_card();
+}
+
 unsigned ra_patch_apply_pending(rc_runtime_t *rt) {
   rc_api_fetch_game_data_response_t *r;
   unsigned what = 0;
@@ -775,7 +1038,27 @@ unsigned ra_patch_apply_pending(rc_runtime_t *rt) {
     debugf("RA: core reset, achievement state starts over");
     what |= RA_PATCH_RESET;
   }
-  if(handover && xQueueReceive(handover, &r, 0) == pdTRUE) {
+  // the ROM in the core is another game's: the set leaves rcheevos, an empty set
+  // through activate_set() deactivates every achievement and leaderboard and
+  // drops the rich presence, and nothing is handed over meanwhile. No set is
+  // proven for what runs now, so RA_HC_BLOCK_SET holds until one is read again.
+  // Back with the boot's ROM, the RA task, which owns body[] now, reads the card
+  // set anew and hands it over like the first time.
+  if(foreign_rom != set_off) {
+    set_off = foreign_rom;
+    if(set_off) {
+      static const rc_api_fetch_game_data_response_t none;
+      debugf("RA: the set is switched off, the ROM in the core is not the game's");
+      rc_runtime_reset(rt);
+      activate_set(rt, &none);
+      ra_task_hardcore_block(RA_HC_BLOCK_SET, true);
+      what |= RA_PATCH_NEW_SET;
+    } else {
+      set_again = true;
+      ra_task_wake();
+    }
+  }
+  if(!set_off && handover && xQueueReceive(handover, &r, 0) == pdTRUE) {
     activate_set(rt, r);
     discard(r);             // rcheevos has copied the conditions
     what |= RA_PATCH_NEW_SET;

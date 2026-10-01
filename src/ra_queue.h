@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <FreeRTOS.h>
 #include <queue.h>
+#include "ra_games.h"
 
 #define RA_QUEUE_HANDOVER 16   /**< unlocks com_task can hand over before the RA task takes them */
 
@@ -16,6 +17,7 @@ typedef struct {
   unsigned      id;        /**< achievement id */
   unsigned long when;      /**< unix time of the unlock, 0 when the clock was not set */
   bool          hardcore;  /**< earned in hardcore mode, sent as that and nothing else */
+  char          hash[RA_GAMES_HASH_LEN + 1];   /**< the game it was earned under, stamped by ra_queue_add(), read back from the line */
 } ra_unlock_t;
 
 /** @brief Creates the handover queue and returns it, for the RA task's queue set.
@@ -25,13 +27,24 @@ QueueHandle_t ra_queue_init(void);
 
 /** @brief Hands an unlock over to the RA task. From com_task, never blocks.
  *
- *  hardcore is the mode the achievement was earned in. */
+ *  hardcore is the mode the achievement was earned in. The game is the running
+ *  one, ra_game_hash(): the only game that can produce an unlock this boot. Dropped
+ *  with a log line while another game's ROM is in the core (ra_patch_foreign_rom())
+ *  or without a game hash. */
 void ra_queue_add(unsigned id, bool hardcore);
+
+/** @brief True when a line with this game hash is the running game's. RA task only.
+ *
+ *  Its own hash, or the hash of the table game the server resolved a fallback
+ *  identity to (ra_game_id()). The reverse, a line stamped with a fallback hash
+ *  read back under the table game, stays foreign: only the server knows that link. */
+bool ra_queue_own(const char *hash);
 
 /** @brief Opens the queue for this account and counts its waiting unlocks. RA task only.
  *
  *  Every line on the card names the account it was earned with. Lines of another
- *  account are never sent, they are set aside. */
+ *  account are never sent, they are set aside. Lines of the running game count as
+ *  unlocked (ra_state_add), so a second call after ra_state_load() counts them again. */
 void ra_queue_open(const char *user);
 
 /** @brief Takes one unlock from the handover queue and writes it to the card.

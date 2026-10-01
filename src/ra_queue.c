@@ -5,14 +5,25 @@
  *
  *  com_task only puts an unlock into a FreeRTOS queue, which never blocks the game
  *  loop. The RA task writes it to the card at once, as a line
- *  "id unixtime user mode tag", mode h for hardcore and s for softcore, tag the
- *  HMAC-SHA256 of everything before it with the device key (ra_mac.c). The mode
- *  counts only with a tag that checks out, so an edited card cannot make an unlock
- *  hardcore. A line without a tag, as older firmware wrote them, counts as softcore,
- *  so the card can at most add softcore unlocks. A line whose tag does not check
- *  out is set aside and never sent. Without a device key, tagged lines wait. Older
- *  firmware reads lines of 63 characters, a tagged line is longer: going back to it
- *  loses what is still queued.
+ *  "id unixtime user mode hash tag": mode h for hardcore and s for softcore, hash
+ *  the 32 hex md5 of the game the unlock was earned under (what the award request
+ *  needs, and a line keeps its game across boots into other games), tag the
+ *  HMAC-SHA256 of everything before it with the device key (ra_mac.c, label
+ *  RA_QUEUE_LABEL). The mode counts only with a tag that checks out, so an edited
+ *  card cannot make an unlock hardcore, and the hash is inside the tagged text, so
+ *  an edited game fails the tag like an edited mode. Without a device key the
+ *  line ends after the hash and counts as softcore when it is read back.
+ *  Lines without a hash, "id unixtime user mode [tag]", are Galaga's: the firmware
+ *  that wrote them knew no other game, the tag is checked under RA_QUEUE_LABEL_V1.
+ *  The shape decides, the token after the mode is none, 64 characters (a tag) or
+ *  32 lowercase hex (a hash); a token of another shape makes the line unreadable,
+ *  it is marked done and skipped like a torn one. The two labels cannot verify
+ *  each other's line, so a hash cannot be inserted or removed unnoticed. A line
+ *  whose tag does not check out is set aside to the parked file and never sent.
+ *  Without a device key, tagged lines wait. A line is the running game's when it
+ *  carries its hash, see ra_queue_own(). Firmware that reads 127 characters per
+ *  line splits a line with a hash into a bad fragment and a garbage fragment:
+ *  going back to it loses what is still queued.
  *  Once the server has it, the line is marked done in place: its first digit
  *  becomes '#'. That is a single sector, nothing is rewritten or renamed, so a
  *  power cut can at worst leave a line unmarked, and sending an unlock twice is
@@ -20,6 +31,7 @@
  *  file is deleted. Only the RA task touches the files. */
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
@@ -28,14 +40,16 @@
 #include "debug.h"
 #include "sdc.h"
 #include "ra_task.h"
+#include "ra_patch.h"   // ra_game_hash(): the running game, stamped into every new unlock
 #include "ra_state.h"
 #include "ra_queue.h"
 #include "ra_mac.h"
 
-#define RA_QUEUE_FILE     "/sd/ra_pending.txt"   /**< one line "id unixtime user mode tag" per unlock, '#' in front once done */
+#define RA_QUEUE_FILE     "/sd/ra_pending.txt"   /**< one line "id unixtime user mode hash tag" per unlock, '#' in front once done */
 #define RA_QUEUE_PARKED   "/sd/ra_parked.txt"    /**< unlocks that are not sent: refused for good, or of another account */
-#define RA_QUEUE_LINE_MAX 128                    /**< two numbers, an RA user name (at most 20 characters), the mode and a 64-character tag fit */
-#define RA_QUEUE_LABEL    "g20k-q1"              /**< what the tag of a queue line is made over, keeps it apart from other tags */
+#define RA_QUEUE_LINE_MAX 160                    /**< 10+1+10+1+31+1+1+1+32+1+64+1 = 154 characters at most, and the NUL */
+#define RA_QUEUE_LABEL    "g20k-q2"              /**< what the tag of a queue line with a hash is made over, keeps it apart from other tags */
+#define RA_QUEUE_LABEL_V1 "g20k-q1"              /**< the label of lines without a hash, read forever, never written */
 #define RA_QUEUE_USER_MAX 32                     /**< longest user name kept */
 #define RA_QUEUE_RAM      8                      /**< unlocks kept in RAM while the card fails */
 #define RA_QUEUE_DONE     '#'                    /**< written over the first digit of a line that is done */
@@ -43,10 +57,14 @@
 /** What the first line not yet done is. */
 enum { LINE_NONE, LINE_OWN, LINE_OTHER, LINE_BAD, LINE_FORGED };
 
-/** How a line parses. */
-enum { PARSE_BAD, PARSE_OK, PARSE_FORGED };
+/** How a line parses: torn, fine, a tag that does not check out, a malformed token. */
+enum { PARSE_BAD, PARSE_OK, PARSE_FORGED, PARSE_JUNK };
 
 static QueueHandle_t handover;                  // com_task -> RA task
+// static storage for it, like the leaderboard queue in ra_task.c: the FreeRTOS
+// heap is nearly full once FTP runs
+static StaticQueue_t handover_ctl;
+static uint8_t       handover_mem[RA_QUEUE_HANDOVER * sizeof(ra_unlock_t)];
 static char          owner[RA_QUEUE_USER_MAX];  // the account unlocks are kept for
 static unsigned      pending;                   // this account's lines not done, plus ram[]
 static ra_unlock_t   ram[RA_QUEUE_RAM];         // unlocks the card did not take
@@ -59,15 +77,40 @@ static char          head_line[RA_QUEUE_LINE_MAX];
 static char          head_user[RA_QUEUE_USER_MAX];
 
 QueueHandle_t ra_queue_init(void) {
-  if(!handover) handover = xQueueCreate(RA_QUEUE_HANDOVER, sizeof(ra_unlock_t));
+  if(!handover) handover = xQueueCreateStatic(RA_QUEUE_HANDOVER, sizeof(ra_unlock_t), handover_mem, &handover_ctl);
   return handover;
 }
 
 void ra_queue_add(unsigned id, bool hardcore) {
-  ra_unlock_t u = { id, (unsigned long)time(NULL), hardcore };
+  ra_unlock_t u = { id, (unsigned long)time(NULL), hardcore, "" };
   if(u.when < RA_CLOCK_VALID) u.when = 0;
+  // the running game: the only one that can produce an unlock this boot. Not while
+  // another game's ROM is in the core, its set is off and a trigger from the RAM
+  // of that ROM is no unlock of this game
+  if(ra_patch_foreign_rom()) {
+    debugf("RA: unlock %u dropped, the ROM in the core is not the game's", id);
+    return;
+  }
+  snprintf(u.hash, sizeof(u.hash), "%s", ra_game_hash());
+  // a set is active only with an identity, so the hash is there by construction;
+  // a line without one would read back as Galaga's or as forged
+  if(!u.hash[0]) {
+    debugf("RA: unlock %u without a game, dropped", id);
+    return;
+  }
   if(!handover || xQueueSend(handover, &u, 0) != pdTRUE)
     debugf("RA: unlock %u lost, the RA task does not take it", id);
+}
+
+bool ra_queue_own(const char *hash) {
+  const ra_game_t *g;
+  if(!strcmp(hash, ra_game_hash())) return true;
+  // the hash of the table game the server resolved a fallback identity to (a
+  // clone set's name): ra_patch_resolved() takes such an id only on the game's
+  // own board. The reverse, a line stamped with a fallback hash and read back
+  // under the table game, stays foreign: only the server knows that link
+  g = ra_games_by_hash(hash);
+  return g && ra_game_id() && g->id == ra_game_id();
 }
 
 /* Appends one line. If a power cut left the last line without its newline, the
@@ -96,11 +139,13 @@ static FRESULT append_line(const char *path, const char *text) {
   return r;
 }
 
+/* Writes u as a line with its own hash: a line moved back or parked keeps the
+   game it was earned under, never the running one. */
 static FRESULT append_unlock(const char *path, const ra_unlock_t *u) {
   char line[RA_QUEUE_LINE_MAX], tag[RA_MAC_HEX + 1];
-  int n = snprintf(line, sizeof(line), "%u %lu %s %c", u->id, u->when, owner, u->hardcore ? 'h' : 's');
-  // the tag over everything before it. Without a device key the line has none and
-  // counts as softcore when it is read back.
+  int n = snprintf(line, sizeof(line), "%u %lu %s %c %s", u->id, u->when, owner, u->hardcore ? 'h' : 's', u->hash);
+  // the tag over everything before it, the hash included. Without a device key
+  // the line has none and counts as softcore when it is read back.
   if(n > 0 && n < (int)sizeof(line) && ra_mac_tag(RA_QUEUE_LABEL, line, (size_t)n, tag))
     snprintf(line + n, sizeof(line) - (size_t)n, " %s\n", tag);
   else
@@ -126,11 +171,18 @@ static FRESULT mark_done(FSIZE_t at) {
   return r;
 }
 
-/* "id unixtime user mode tag" with its newline, mode and tag may be missing. A line
-   a power cut left without its end, or anything else, is PARSE_BAD. The mode counts
-   only with a tag that checks out. Without a tag the line is softcore. A tag that
-   does not check out, or one that cannot be checked because there is no device
-   key, makes it PARSE_FORGED. */
+/* "id unixtime user mode hash tag" with its newline, mode, hash and tag may be
+   missing. A line a power cut left without its end, or anything else, is
+   PARSE_BAD. The token after the mode decides the shape: none or 64 characters is
+   a line without a hash, Galaga's, checked under RA_QUEUE_LABEL_V1; 32 lowercase
+   hex is the hash, then none or a tag under RA_QUEUE_LABEL; a 32-character token
+   that is not lowercase hex, or a token of any other length, is PARSE_JUNK: the
+   line is malformed, nothing waits for it. The mode counts only with a tag that
+   checks out. Without a tag the line is softcore. A tag that does not check out,
+   or one that cannot be checked because there is no device key, makes it
+   PARSE_FORGED. A 64-character tag edited down to 32 characters looks like a
+   hash: the line then reads as untagged with that hash, softcore, and the server
+   refuses it until it is parked after RA_REFUSE_MAX refusals. */
 static int parse(const char *line, ra_unlock_t *u, char *user) {
   size_t len = strlen(line);
   if(len < 2 || line[len - 1] != '\n' || line[0] < '0' || line[0] > '9') return PARSE_BAD;
@@ -149,23 +201,40 @@ static int parse(const char *line, ra_unlock_t *u, char *user) {
   if(mode) end++;
   while(*end == ' ') end++;
   u->hardcore = false;
+  // the hash, when the next token has its length: a line without one is Galaga's
+  const char *label = RA_QUEUE_LABEL_V1;
+  snprintf(u->hash, sizeof(u->hash), "%s", RA_GAMES_V1_HASH);
+  n = strcspn(end, " \r\n");
+  if(n == RA_GAMES_HASH_LEN) {
+    for(size_t i = 0; i < n; i++)
+      if(!((end[i] >= '0' && end[i] <= '9') || (end[i] >= 'a' && end[i] <= 'f'))) return PARSE_JUNK;
+    memcpy(u->hash, end, n);
+    u->hash[n] = 0;
+    label = RA_QUEUE_LABEL;
+    end += n;
+    while(*end == ' ') end++;
+    n = strcspn(end, " \r\n");
+  }
   if(*end == '\r' || *end == '\n') return PARSE_OK;   // no tag: softcore
   // the tag, over the text before the space in front of it
   size_t text = (size_t)(end - line);
   while(text && line[text - 1] == ' ') text--;
   char tag[RA_MAC_HEX + 1];
-  if(strcspn(end, " \r\n") != RA_MAC_HEX) return PARSE_FORGED;
+  if(n != RA_MAC_HEX) return PARSE_JUNK;
   memcpy(tag, end, RA_MAC_HEX);
   tag[RA_MAC_HEX] = 0;
-  if(!ra_mac_check(RA_QUEUE_LABEL, line, text, tag)) return PARSE_FORGED;
+  if(!ra_mac_check(label, line, text, tag)) return PARSE_FORGED;
   u->hardcore = mode == 'h';
   return PARSE_OK;
 }
 
 /* Reads the file. The first line not done goes to head, head_at, head_line and
    head_user, and its kind is returned, -1 on a card error. This account's lines
-   are counted on the way. A file with only done lines is deleted, that cannot
-   lose anything. */
+   are counted on the way, those of the running game also count as unlocked: the
+   state lists are that game's. A malformed line counts as unreadable (LINE_BAD),
+   marked done on its turn. A blank line is skipped and never marked: the '#'
+   would land on its newline and join it with the next line. A file with only done
+   and blank lines is deleted, that cannot lose anything. */
 static int scan(void) {
   FIL f;
   char line[RA_QUEUE_LINE_MAX], user[RA_QUEUE_USER_MAX];
@@ -180,13 +249,17 @@ static int scan(void) {
       FSIZE_t at = f_tell(&f);
       if(!f_gets(line, sizeof(line), &f)) break;
       lines = true;
-      if(line[0] == RA_QUEUE_DONE) continue;
-      ra_unlock_t u = { 0, 0, false };
+      if(line[0] == RA_QUEUE_DONE || line[0] == '\n' || line[0] == '\r') continue;
+      ra_unlock_t u = { 0, 0, false, "" };
       int p = parse(line, &u, user);
-      int k = p == PARSE_BAD ? LINE_BAD : p == PARSE_FORGED ? LINE_FORGED :
+      int k = p == PARSE_BAD || p == PARSE_JUNK ? LINE_BAD : p == PARSE_FORGED ? LINE_FORGED :
               strcasecmp(user, owner) ? LINE_OTHER : LINE_OWN;
-      // queued counts as unlocked, in the mode it was earned in
-      if(k == LINE_OWN) { own++; ra_state_add(u.id, u.hardcore); }
+      // every line to send counts as pending; queued counts as unlocked, in the
+      // mode it was earned in, when it is the running game's
+      if(k == LINE_OWN) {
+        own++;
+        if(ra_queue_own(u.hash)) ra_state_add(u.id, u.hardcore);
+      }
       if(kind == LINE_NONE) {
         kind = k; head = u; head_at = at;
         snprintf(head_line, sizeof(head_line), "%s", line);
@@ -261,8 +334,8 @@ int ra_queue_head(ra_unlock_t *u) {
   } else {
     int k;
     // what cannot be sent is set aside first: another account's line, and one whose
-    // tag does not check out, go to the parked file, an unreadable one is only
-    // marked done
+    // tag does not check out, go to the parked file, an unreadable or malformed
+    // one is only marked done
     while((k = scan()) == LINE_OTHER || k == LINE_BAD || k == LINE_FORGED) {
       // without a device key a tag cannot be checked: the line waits instead of
       // being set aside, a key may come back
@@ -281,7 +354,7 @@ int ra_queue_head(ra_unlock_t *u) {
                RA_QUEUE_PARKED);
         if(append_line(RA_QUEUE_PARKED, head_line) != FR_OK) return -1;
       } else
-        debugf("RA: unreadable line in %s set aside", RA_QUEUE_FILE);
+        debugf("RA: unreadable or malformed line in %s marked done, skipped", RA_QUEUE_FILE);
       if(mark_done(head_at) != FR_OK) return -1;
     }
     if(k != LINE_OWN) return k;               // LINE_NONE is 0, a card error -1

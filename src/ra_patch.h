@@ -7,45 +7,94 @@
 
 #include <stdbool.h>
 #include "rc_runtime.h"
+#include "ra_games.h"
 
-/** @brief Hash the server knows the current game by, an md5 in hex. */
+/* The identity of this boot's game, decided once by ra_patch_settle() and read by
+   every task through these accessors. Before settle they say "no game". */
+
+/** @brief Hash the server knows the current game by, an md5 in hex. "" when there is no game. */
 const char *ra_game_hash(void);
-/** @brief Id of the current game on the server. */
+/** @brief Id of the current game on the server. 0 when there is none, or the server has not resolved it yet. */
 unsigned    ra_game_id(void);
-
-/** @brief A DIP switch the set expects at one value, by the switch's id in the core's XML. */
-typedef struct {
-  char id;      /**< the id of the list in the core's XML, e.g. 'L' */
-  int  value;   /**< the listentry value the set expects, as the menu keeps it and the core gets it */
-} ra_dip_t;
+/** @brief The DIP switches the set expects, n of them. NULL when it expects none, or there is no game. */
+const ra_dip_t *ra_game_dips(unsigned *n);
+/** @brief Title of the table entry, for the menu. NULL for a fallback identity or before settle. */
+const char *ra_game_title(void);
+/** @brief Board id of the running core, header byte 12 of the RAM mirror. 0 until a header was read. */
+unsigned char ra_game_board(void);
+/** @brief What the ROM file is: the known file's label, "ROM unknown", "ROM not checked" (the stream had not ended at settle), "no ROM". "" before settle. */
+const char *ra_game_rom_label(void);
 
 #define RA_PATCH_ROM_IMAGE 0   /**< the core's image index of the ROM set, "ROM set" in the core's XML */
 
-/** @brief The ROM image starts to stream to the core. com_task, from sdc.c.
+/* The ROM hooks run in the task that drives the transfer: rom_data and rom_end in
+   com_task, rom_start and rom_gone also in menu_task (a file picked, ejected or
+   replaced in the OSD) and under sdc_lock. So rom_start and rom_gone do no FatFs
+   and no settle: they record what they know and move the ROM block bit, which can
+   log a switch to softcore but never resets the core (a block that appears never
+   does). The settle that reads what they stored runs in com_task alone. */
+
+/** @brief The ROM image starts to stream to the core, from sdc.c. No FatFs and no settle here, it may hold sdc_lock; only the ROM block bit moves.
  *
+ *  name is the file's name for RetroAchievements' arcade rule (NULL: unknown).
  *  Hardcore is off until ra_patch_rom_end() has checked the whole file. */
-void ra_patch_rom_start(void);
+void ra_patch_rom_start(const char *name);
 /** @brief One block of the ROM image as it goes to the core. com_task, from sdc.c. */
 void ra_patch_rom_data(const void *data, unsigned len);
-/** @brief The whole ROM image went to the core: compare its SHA-256 with the known files. com_task, from sdc.c. */
+/** @brief The whole ROM image went to the core: finish the SHA-256 and settle. com_task, from sdc.c, outside sdc_lock. */
 void ra_patch_rom_end(void);
-/** @brief The ROM image was deselected or could not be sent: no known ROM. com_task, from sdc.c. */
-void ra_patch_rom_gone(void);
+/** @brief The ROM image is closed before it went whole: ejected or replaced in the OSD (sdc_image_open, menu_task) or rejected by the core (sdc_image_start_transfer, under sdc_lock). No FatFs and no settle here; only the ROM block bit moves.
+ *
+ *  another_follows: the image is replaced in the OSD, the main loop keeps holding
+ *  its settle back (ra_patch_rom_pending() stays true) until the new stream starts
+ *  (ra_patch_rom_start) or its open fails (a second call with false). False for an
+ *  eject, a rejected image or a failed open: the next settle applies "no ROM". */
+void ra_patch_rom_gone(bool another_follows);
+/** @brief True from ra_patch_rom_start() until ra_patch_rom_end() or ra_patch_rom_gone(false). Any task.
+ *
+ *  A replacement in the OSD (ra_patch_rom_gone(true)) keeps it up until the new
+ *  stream starts, so the main loop does not settle by "no ROM" between the close
+ *  of the old image and the open of the new one. */
+bool ra_patch_rom_pending(void);
 
-/** @brief The DIP switches the set expects, n of them. NULL when it expects none. */
-const ra_dip_t *ra_game_dips(unsigned *n);
+/** @brief The board id from a valid RAM mirror header, byte 12. com_task, whenever one is adopted. */
+void ra_patch_board(unsigned char board);
+
+/** @brief Decides the game of this boot, once, and reads its card set. com_task only.
+ *
+ *  Called when board and ROM are known: from ra_patch_rom_end(), or from main.c
+ *  when nothing streams or the stream stalled. The first call selects the game
+ *  from board, digest and image name, sets RA_HC_BLOCK_ROM and RA_HC_BLOCK_GAME,
+ *  moves the card files of the firmware before this one into the game's folder,
+ *  and reads the card set: before the RA task is started from the main loop, so
+ *  the two never share the set buffer. A set with a valid tag lifts
+ *  RA_HC_BLOCK_SET right away, and the game starts in hardcore.
+ *
+ *  Later calls (a ROM picked in the OSD) move the two block bits and the ROM label
+ *  of the Version dialog: identity, session and card files never change within a
+ *  boot. A file of another game switches the set off (ra_patch_foreign_rom()), the
+ *  boot's ROM back in the core switches it on again. */
+void ra_patch_settle(void);
+/** @brief True once ra_patch_settle() ran. com_task. */
+bool ra_patch_settled(void);
+/** @brief True while the ROM in the core is another game's than this boot's, from a later settle. com_task.
+ *
+ *  ra_patch_apply_pending() takes the set out of rcheevos meanwhile, ra_queue_add()
+ *  drops what would still come. */
+bool ra_patch_foreign_rom(void);
+
+/** @brief The id the server resolved the game hash to. RA task, after r=gameid.
+ *
+ *  For a table entry a differing id raises RA_HC_BLOCK_GAME, the table's id is
+ *  kept. For a fallback identity the id is stored and its card folder made: on a
+ *  board the table knows only when it is one of that board's table games, on a
+ *  board without a table entry whatever the server says. With the board still
+ *  unknown (no RAM mirror header read) nothing is played. Anything else, and 0
+ *  (the server does not know the hash), leaves no game. */
+void ra_patch_resolved(unsigned server_id);
 
 /** @brief Sets up the handover of a parsed set to com_task. Once, before the RA task runs. False when it failed. */
 bool ra_patch_init(void);
-
-/** @brief Reads the set from the card, parses it and hands it to com_task. Once, by com_task before the game starts.
- *
- *  Before the RA task runs, so the two never share the set buffer. A set with a
- *  valid tag lifts RA_HC_BLOCK_SET right away, and the game can start in hardcore.
- *
- *  Returns the number of core achievements in the file, which com_task will try
- *  to activate, or -1 when there is no usable set. */
-int ra_patch_read_card(void);
 
 #define RA_PATCH_RESET   1u   /**< ra_patch_apply_pending(): the core was reset, a game starts */
 #define RA_PATCH_NEW_SET 2u   /**< ra_patch_apply_pending(): a new set is active, table positions changed */
@@ -62,6 +111,15 @@ unsigned ra_patch_apply_pending(rc_runtime_t *rt);
  *  Before the next frame, rcheevos starts over: hit counts, leaderboards and rich
  *  presence begin anew, so nothing of the previous game carries into the next. */
 void ra_patch_core_reset(void);
+
+/** @brief Reads the card set once more and hands it over, when com_task asked for it. RA task only, never while a set fetch is in flight.
+ *
+ *  com_task asks (and wakes the task, ra_task_wake()) when the boot's ROM is back
+ *  after another game's file, see ra_patch_foreign_rom(). Nothing happens
+ *  otherwise, so it is cheap to call at every event. True when nothing was asked
+ *  for or the card gave a set with a valid tag; false when it did not (no file, no
+ *  tag, unusable), the caller then fetches the set from the server again. */
+bool ra_patch_set_again(void);
 
 /** @brief The buffer for a set from the server, and its size. RA task only. */
 char *ra_patch_body(unsigned *cap);
@@ -103,7 +161,7 @@ void ra_patch_format_progress(const rc_runtime_t *rt, unsigned id, char *buf, si
  *  About once a second is enough, the menu shows what it read last. */
 void ra_patch_update_progress(const rc_runtime_t *rt);
 
-#define RA_PATCH_LB_MAX 8   /**< leaderboards kept per set, e.g. Galaga 1 */
+#define RA_PATCH_LB_MAX 12   /**< leaderboards kept per set, e.g. Galaga 1, Ms. Pac-Man 10 */
 
 /** @brief One leaderboard of the active set. */
 typedef struct {

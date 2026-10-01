@@ -23,7 +23,8 @@
 #include "ra_patch.h"
 #include "ra_state.h"
 
-#define RA_STATE_FILE     "/sd/ra_unlocked.txt"   /**< "# game <id> <user>", then one id per line, an s in front of softcore only ones */
+/* The file is RA_GAMES_STATE_FILE in the game's folder, "/sd/ra/<id>/unlocked.txt":
+   "# game <id> <user>", then one id per line, an s in front of softcore only ones. */
 #define RA_STATE_LINE_MAX 64                      /**< the header line is the longest */
 #define RA_STATE_REAL_ID  100000000u              /**< the server's own pseudo achievements have ids from here on */
 
@@ -109,14 +110,16 @@ bool ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n) {
 
 void ra_state_save(void) {
   FIL f;
-  char line[RA_STATE_LINE_MAX];
+  char line[RA_STATE_LINE_MAX], path[RA_GAMES_PATH_MAX];
   FRESULT r;
   bool ok = true;
 
+  if(!ra_games_path(ra_game_id(), RA_GAMES_STATE_FILE, path, sizeof(path))) return;   // no game, no file
   // the whole file anew. A power cut in between leaves a file without a full
   // header, which ra_state_load() ignores, and the server fills it again.
   sdc_lock();
-  r = f_open(&f, RA_STATE_FILE, FA_WRITE | FA_CREATE_ALWAYS);
+  r = ra_games_mkdir(ra_game_id());   // cheap when the folder exists
+  if(r == FR_OK) r = f_open(&f, path, FA_WRITE | FA_CREATE_ALWAYS);
   if(r == FR_OK) {
     snprintf(line, sizeof(line), "# game %u %s\n", ra_game_id(), owner);
     ok = f_puts(line, &f) >= 0;
@@ -131,18 +134,22 @@ void ra_state_save(void) {
     r = f_close(&f);
   }
   sdc_unlock();
-  if(r != FR_OK || !ok) debugf("RA: %s not written (error %d)", RA_STATE_FILE, (int)r);
+  if(r != FR_OK || !ok) debugf("RA: %s not written (error %d)", path, (int)r);
 }
 
 void ra_state_load(const char *user) {
   FIL f;
-  char line[RA_STATE_LINE_MAX];
+  char line[RA_STATE_LINE_MAX], path[RA_GAMES_PATH_MAX];
   unsigned h = 0, s = 0;
 
   snprintf(owner, sizeof(owner), "%s", user);
+  if(!ra_games_path(ra_game_id(), RA_GAMES_STATE_FILE, path, sizeof(path))) {
+    debugf("RA: no game yet, no unlocked state to read");
+    return;
+  }
 
   sdc_lock();
-  if(f_open(&f, RA_STATE_FILE, FA_READ) == FR_OK) {
+  if(f_open(&f, path, FA_READ) == FR_OK) {
     // the header names game and account, a file of another one is ignored:
     // its ids would mean nothing here
     unsigned long game = 0;
@@ -155,7 +162,7 @@ void ra_state_load(const char *user) {
       snprintf(who, sizeof(who), "%.*s", (int)strcspn(end, " \r\n"), end);
     }
     if(!header)
-      debugf("RA: %s has no header, ignored", RA_STATE_FILE);   // e.g. cut short by a power cut
+      debugf("RA: %s has no header, ignored", path);   // e.g. cut short by a power cut
     else if(game == ra_game_id() && !strcasecmp(who, owner)) {
       // one id per line, an s in front means softcore only. No critical
       // section: the counts are stored last, so a reader sees empty lists
@@ -168,7 +175,7 @@ void ra_state_load(const char *user) {
         if(sc  && s < RA_STATE_MAX) soft[s++] = id;
       }
     } else
-      debugf("RA: %s is for another game or account, ignored", RA_STATE_FILE);
+      debugf("RA: %s is for another game or account, ignored", path);
     f_close(&f);
   }
   sdc_unlock();
