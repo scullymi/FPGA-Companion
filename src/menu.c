@@ -984,8 +984,12 @@ static void menu_draw(const config_menu_t *menu, int selected, int scroll) {
   // =============== draw a regular menu =================
   menu_debugf("drawing '%s'", menu->label);  
     
-  // draw the title
-  menu_draw_title(menu->label, !menu_is_root(menu), selected == 0);
+  // draw the title. game20k: the root menu is the core's, one per board, so it
+  // names the board's first game; the game the ROM was found to be names it
+  // instead, e.g. Puck Man on the Pac-Man board
+  const char *title = menu->label;
+  if(menu_is_root(menu) && ra_game_title()) title = ra_game_title();
+  menu_draw_title(title, !menu_is_root(menu), selected == 0);
 
   config_menu_entry_t *entry = menu->entries;
   for(int i=0;i<scroll;i++) entry=entry->next;  // skip first "scroll" entries
