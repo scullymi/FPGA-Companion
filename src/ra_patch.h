@@ -55,6 +55,12 @@ void ra_patch_rom_gone(void);
  *  stream starts, so the main loop does not settle by "no ROM" between the close
  *  of the old image and the open of the new one. */
 bool ra_patch_rom_pending(void);
+/** @brief True while a ROM streams that began less than limit_ms ago. Any task.
+ *
+ *  A restart waits for such a stream, so its settle decides the target and the
+ *  newest pick wins. Each stream gets its own limit, a stalled one is not waited for
+ *  beyond it. */
+bool ra_patch_rom_streaming(unsigned limit_ms);
 
 /** @brief The board id from a valid RAM mirror header, byte 12. com_task, whenever one is adopted. */
 void ra_patch_board(unsigned char board);

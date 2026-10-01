@@ -323,8 +323,9 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
    e.g. puckman.rom in the Pac-Man core: its own set, session and card folder come
    only with a start (ra_patch_restart_to()). The Pico restarts into it: the menu
    says so for a few seconds. Unlocks still in the handover reach the card,
-   leaderboard results the server, a ROM picked meanwhile ends its stream, as far
-   as that takes at most 10 s, and a running FTP upload then stops after its chunk.
+   leaderboard results the server, as far as that takes at most 10 s, a ROM picked
+   meanwhile ends its stream (each within 10 s of its start), and a running FTP
+   upload then stops after its chunk.
    The game's id goes into the watchdog's scratch registers 0 to 3, which the SDK
    leaves to the program and which a reboot keeps, and the Pico restarts.
    restart_take() moves them out at the very start, restart_rom() loads that game's
@@ -402,7 +403,9 @@ static void restart_step(void) {
   // until its settle decides the target: wait for them, but not for ever
   bool late = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS);
   bool cut  = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS + RESTART_STOP_MS);
-  if((ra_queue_in_transit() || ra_task_lboard_pending() || ra_patch_rom_pending()) && !late)
+  if((ra_queue_in_transit() || ra_task_lboard_pending()) && !late)
+    return;
+  if(ra_patch_rom_streaming(RESTART_WAIT_MS))   /* its own limit: also a pick made late wins */
     return;
   // an upload still running then stops after its chunk with 426, its file closed
   // whole: wait for that too, only a stalled one is cut
@@ -415,7 +418,7 @@ static void restart_step(void) {
   // wait for the lock. The target is fixed last, a pick can change it until then
   sdc_lock();
   bool held = g->board != ram_mirror_board && buttons_held();
-  bool busy = (!late && ra_patch_rom_pending()) || (!cut && ftpd_uploads());
+  bool busy = ra_patch_rom_streaming(RESTART_WAIT_MS) || (!cut && ftpd_uploads());
   if(held || busy || !ra_patch_restart_commit(g)) {
     sdc_unlock();
     return;

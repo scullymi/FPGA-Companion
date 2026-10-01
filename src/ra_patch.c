@@ -71,6 +71,7 @@ static volatile bool    set_again;                     // com_task asks the RA t
 static mbedtls_sha256_context rom_sha;                 // the ROM image while it streams
 static bool                   rom_hashing;
 static volatile bool          rom_pending;             // rom_start ran, rom_end or rom_gone did not yet: the main loop holds its settle back
+static volatile TickType_t    rom_started;             // when the stream that runs now began, see ra_patch_rom_streaming()
 static unsigned char          rom_sum[32];             // its SHA-256 once the stream ended
 static bool                   rom_sum_valid;
 static char                   rom_name_hash[RA_GAMES_HASH_LEN + 1];   // md5 of the image's name (arcade rule), "" when nothing streamed
@@ -706,6 +707,7 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
 
 void ra_patch_rom_start(const char *name) {
   char hex[RA_GAMES_HASH_LEN + 1];
+  rom_started = xTaskGetTickCount();   // before rom_pending: a reader never sees an old start
   rom_pending = true;
   ra_task_hardcore_block(RA_HC_BLOCK_ROM, true);
   // the name's hash right away, not the name: a long name (up to 255 characters)
@@ -759,6 +761,9 @@ void ra_patch_rom_gone(void) {
 }
 
 bool ra_patch_rom_pending(void) { return rom_pending; }
+bool ra_patch_rom_streaming(unsigned limit_ms) {
+  return rom_pending && (TickType_t)(xTaskGetTickCount() - rom_started) < pdMS_TO_TICKS(limit_ms);
+}
 bool ra_patch_foreign_rom(void) { return foreign_rom; }
 const ra_game_t *ra_patch_restart_to(void) { return restart_to; }
 
