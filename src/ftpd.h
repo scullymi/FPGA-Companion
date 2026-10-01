@@ -17,4 +17,9 @@ unsigned ftpd_uploads(void);
  * its directory entry and FAT half written. See restart_step() in main.c. */
 void ftpd_hold_uploads(bool hold);
 
+/* game20k: while set, a running upload ends after the chunk it is in: its file is
+ * closed whole and the client gets 426. A restart sets it when its wait for the
+ * uploads is over, see restart_step() in main.c. */
+void ftpd_stop_uploads(bool stop);
+
 #endif

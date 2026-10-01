@@ -420,8 +420,10 @@ static void do_retr(ftps_t *fs, const char *path)
 /* game20k: see ftpd_uploads() and ftpd_hold_uploads() in ftpd.h */
 static volatile unsigned stor_open;     /* changed under sdc_lock only */
 static volatile bool     stor_held;
+static volatile bool     stor_stop;
 unsigned ftpd_uploads(void) { return stor_open; }
 void ftpd_hold_uploads(bool hold) { stor_held = hold; }
+void ftpd_stop_uploads(bool stop) { stor_stop = stop; }
 
 static void do_stor(ftps_t *fs, const char *path)
 {
@@ -476,6 +478,10 @@ static void do_stor(ftps_t *fs, const char *path)
     bool ok = true;
     uint32_t total = restart_at;        /* track offset to pinpoint a bad write */
     for (;;) {
+        if (stor_stop) {                /* game20k: a restart waits, see ftpd_stop_uploads() */
+            ok = false;
+            break;
+        }
         int r = lwip_recv(dfd, fs->xbuf, XFER_CHUNK, 0);
         if (r == 0)
             break;

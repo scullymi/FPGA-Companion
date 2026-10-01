@@ -339,6 +339,7 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 #define RESTART_MAGIC   0x67323072u          /* "g20r" */
 #define RESTART_SHOW_MS 3000                 /* the menu's message first */
 #define RESTART_WAIT_MS 10000                /* then at most this for unlocks and results */
+#define RESTART_STOP_MS 12000                /* then this for an upload to stop after its chunk, its data socket times out after 10 s */
 #define SWITCH_HOPS     7                    /* the 8 MB flash holds at most 8 cores of 1 MB */
 
 /* The game for the next start. hops counts the core switches on the way to its
@@ -377,7 +378,10 @@ static void restart_step(void) {
   static const ra_game_t *shown;     /* the target the message and the wait are for */
   const ra_game_t *g = ra_patch_restart_to();
   if(!g) {                           /* none, or the ROM picked last took it back */
-    if(shown) ftpd_hold_uploads(false);
+    if(shown) {
+      ftpd_hold_uploads(false);
+      ftpd_stop_uploads(false);
+    }
     start = 0;
     shown = NULL;
     return;
@@ -396,7 +400,13 @@ static void restart_step(void) {
   // has them, an upload runs until its file is closed, a ROM picked last streams
   // until its settle decides the target: wait for them, but not for ever
   bool late = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS);
-  if((ra_queue_in_transit() || ra_task_lboard_pending() || ftpd_uploads() || ra_patch_rom_pending()) && !late)
+  bool cut  = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS + RESTART_STOP_MS);
+  if((ra_queue_in_transit() || ra_task_lboard_pending() || ra_patch_rom_pending()) && !late)
+    return;
+  // an upload still running then stops after its chunk with 426, its file closed
+  // whole: wait for that too, only a stalled one is cut
+  if(late) ftpd_stop_uploads(true);
+  if(ftpd_uploads() && !cut)
     return;
   // the last checks under the card lock, where they hold until the Pico goes:
   // every card operation ends whole, an upload opens its file and a ROM starts to
@@ -404,7 +414,7 @@ static void restart_step(void) {
   // wait for the lock. The target is fixed last, a pick can change it until then
   sdc_lock();
   bool held = g->board != ram_mirror_board && buttons_held();
-  bool busy = !late && (ftpd_uploads() || ra_patch_rom_pending());
+  bool busy = (!late && ra_patch_rom_pending()) || (!cut && ftpd_uploads());
   if(held || busy || !ra_patch_restart_commit(g)) {
     sdc_unlock();
     return;
@@ -428,6 +438,7 @@ static void restart_step(void) {
   start = 0;
   shown = NULL;
   ftpd_hold_uploads(false);
+  ftpd_stop_uploads(false);
   ra_patch_restart_cancel();
   menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
 }
