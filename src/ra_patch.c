@@ -771,6 +771,7 @@ void ra_patch_restart_cancel(void) {
   taskENTER_CRITICAL();
   restart_to        = NULL;
   restart_committed = false;
+  stream_seq        = pick_seq;   // the dropped pick holds no later settle back
   taskEXIT_CRITICAL();
 }
 

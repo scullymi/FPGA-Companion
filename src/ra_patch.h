@@ -116,7 +116,10 @@ bool ra_patch_pick_other_board(const char *name);
  *  changed it in this moment, and the restart starts over with the new one. */
 bool ra_patch_restart_commit(const ra_game_t *g);
 
-/** @brief Drops the restart target and its commit: the core switch did not happen. Any task. */
+/** @brief Drops the restart target and its commit: the core switch did not happen. Any task.
+ *
+ *  The pick of another board is gone with it, a settle after it decides again from
+ *  the ROM in the core. */
 void ra_patch_restart_cancel(void);
 
 

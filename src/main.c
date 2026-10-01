@@ -445,6 +445,10 @@ static void restart_step(void) {
   ftpd_stop_uploads(false);
   ra_patch_restart_cancel();
   menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
+  // the ROM now in the core decides again: a known ROM of another game of this
+  // board, streamed while the switch was the target, asks for its restart. A stream
+  // that still runs settles by itself when it ends
+  if(!ra_patch_rom_pending()) ra_patch_settle();
 }
 
 /* The marker as the Pico found it at its start. restart_take() moves it out of
