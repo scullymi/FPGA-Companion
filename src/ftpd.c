@@ -417,8 +417,18 @@ static void do_retr(ftps_t *fs, const char *path)
     reply(fs, ok ? "226 Transfer complete." : "426 Transfer aborted.");
 }
 
+/* game20k: see ftpd_uploads() and ftpd_hold_uploads() in ftpd.h */
+static volatile unsigned stor_open;     /* changed under sdc_lock only */
+static volatile bool     stor_held;
+unsigned ftpd_uploads(void) { return stor_open; }
+void ftpd_hold_uploads(bool hold) { stor_held = hold; }
+
 static void do_stor(ftps_t *fs, const char *path)
 {
+    if (stor_held) {
+        reply(fs, "450 The device restarts, try again in a moment.");
+        return;
+    }
     sdc_lock();
     bool mounted = disk_path_mounted(path);
     sdc_unlock();
@@ -449,6 +459,7 @@ static void do_stor(ftps_t *fs, const char *path)
         reply(fs, "550 Bad restart offset.");
         return;
     }
+    stor_open++;                        /* game20k: open until the f_close below */
     sdc_unlock();
 
     reply(fs, "150 Opening data connection.");
@@ -456,6 +467,7 @@ static void do_stor(ftps_t *fs, const char *path)
     if (dfd < 0) {
         sdc_lock();
         f_close(&f);
+        stor_open--;
         sdc_unlock();
         reply(fs, "425 No data connection.");
         return;
@@ -486,6 +498,7 @@ static void do_stor(ftps_t *fs, const char *path)
 
     sdc_lock();
     f_close(&f);
+    stor_open--;
     sdc_unlock();
     lwip_close(dfd);
     reply(fs, ok ? "226 Transfer complete." : "426 Transfer aborted.");

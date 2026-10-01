@@ -23,6 +23,7 @@ uint32_t getFreeHeap(void);   /* mcu_hw.c: the SDK heap left for mbedTLS and rch
 #include <string.h>
 #include "pico/time.h"
 #include "hardware/watchdog.h"   /* the game to start after a restart, see restart_step() */
+#include "../ftpd.h"             /* a restart waits for the uploads that run */
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
@@ -350,7 +351,8 @@ static void restart_mark(const ra_game_t *g, uint32_t hops) {
 }
 
 /* The core pulls RECONFIG_N and the FPGA loads the next core of the ring. Caller
-   holds sdc_lock: the card hangs on the FPGA, no write may be cut off. Caller has
+   holds sdc_lock: the card hangs on the FPGA, no card operation may run while it
+   goes. Caller has
    seen S1 and S2 released, see buttons_held(). False when the core still answers
    50 ms later: it does not know Z, it was built before the switch, and goes on. A
    new core is not up that early, a full bitstream takes 0.3 s from the flash at
@@ -374,6 +376,7 @@ static void restart_step(void) {
   static const ra_game_t *shown;     /* the target the message and the wait are for */
   const ra_game_t *g = ra_patch_restart_to();
   if(!g) {                           /* none, or the ROM picked last took it back */
+    if(shown) ftpd_hold_uploads(false);
     start = 0;
     shown = NULL;
     return;
@@ -382,22 +385,31 @@ static void restart_step(void) {
   if(!start || g != shown) {         /* a new target: its message, and the wait starts over */
     start = now ? now : 1;
     shown = g;
+    ftpd_hold_uploads(true);         /* no new upload, the restart would cut it */
     menu_notify(MENU_EVENT_RA_RESTART);
     return;
   }
   TickType_t since = now - start;
   if(since < pdMS_TO_TICKS(RESTART_SHOW_MS)) return;
   // unlocks and leaderboard results live in RAM until the card or the server
-  // has them: wait for them, but not for ever
-  if((ra_queue_in_transit() || ra_task_lboard_pending()) && since < pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS))
+  // has them, an upload runs until its file is closed: wait for them, but not for
+  // ever
+  bool late = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS);
+  if((ra_queue_in_transit() || ra_task_lboard_pending() || ftpd_uploads()) && !late)
     return;
   if(g->board != ram_mirror_board && buttons_held()) return;
   if(!ra_patch_restart_commit(g)) return;   /* a pick changed the target in this moment */
   if(ra_queue_in_transit() || ra_task_lboard_pending())
     debugf("RA: restart with %u unlocks and %u leaderboard results not yet out",
            ra_queue_in_transit(), ra_task_lboard_pending());
+  // every card operation ends whole before the Pico goes. An upload spans many,
+  // its count changes under the lock only, so it is exact here
+  sdc_lock();
+  if(ftpd_uploads()) {
+    if(!late) { sdc_unlock(); return; }
+    debugf("FTP: the restart cuts %u upload(s) in the middle", ftpd_uploads());
+  }
   restart_mark(g, 0);
-  sdc_lock();                  /* no card write is cut off in the middle */
   if(g->board == ram_mirror_board) {
     debugf("RA: restart for %s (%u)", g->title, g->id);
     mcu_hw_reset();
@@ -410,6 +422,7 @@ static void restart_step(void) {
   debugf("Core switch: the core did not reload, its bitstream does not know Z");
   start = 0;
   shown = NULL;
+  ftpd_hold_uploads(false);
   ra_patch_restart_cancel();
   menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
 }
