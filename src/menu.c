@@ -947,7 +947,8 @@ static void menu_ra_status(void) {
   if(!ra_task_hardcore() && ra_task_hardcore_wanted() && why)
     snprintf(line, sizeof(line), "softcore: %s",
              (why & RA_HC_BLOCK_CORE) ? "test core" : (why & RA_HC_BLOCK_XML) ? "config.xml" :
-             (why & RA_HC_BLOCK_KEY)  ? "key error" : (why & RA_HC_BLOCK_GAME) ? "wrong game" :
+             (why & RA_HC_BLOCK_KEY)  ? "key error" : (why & RA_HC_BLOCK_SIZE) ? "set too big" :
+             (why & RA_HC_BLOCK_GAME) ? "wrong game" :
              (why & RA_HC_BLOCK_ROM)  ? "ROM unknown" : "till online");
   else
     snprintf(line, sizeof(line), "%s, %s", ra_task_hardcore() ? "hardcore" : "softcore", state);

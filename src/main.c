@@ -236,6 +236,7 @@ static void banner_login(void) {
                        (why & RA_HC_BLOCK_CORE)     ? "RA: SOFTCORE TEST CORE" :
                        (why & RA_HC_BLOCK_XML)      ? "RA: SOFTCORE CONFIG.XML" :
                        (why & RA_HC_BLOCK_KEY)      ? "RA: SOFTCORE KEY ERROR" :
+                       (why & RA_HC_BLOCK_SIZE)     ? "RA: SOFTCORE SET TOO BIG" :
                        // a wrong game also explains an unknown ROM, so it comes first
                        (why & RA_HC_BLOCK_GAME)     ? "RA: SOFTCORE WRONG GAME" :
                        (why & RA_HC_BLOCK_ROM)      ? "RA: SOFTCORE ROM UNKNOWN" :

@@ -31,6 +31,8 @@
 #include "rc_api_runtime.h"
 #include "rc_runtime_types.h"   // rc_trigger_t and its states, for the challenge indicator
 #include "rcheevos/src/rhash/md5.h"
+#include "rcheevos/src/rapi/rc_api_common.h"   // rc_json_*: one field of the set text, decoded as rc_api does
+#include "rc_util.h"                             // rc_buffer_t for that one field
 #include "mbedtls/sha256.h"
 #include <ff.h>
 #include "debug.h"
@@ -39,6 +41,8 @@
 #include "ra_patch.h"
 #include "ra_task.h"
 #include "ra_mac.h"
+
+uint32_t getFreeHeap(void);   // mcu_hw.c, or the weak stand-in in ra_net.c: the SDK heap left
 
 /* The identity of this boot's game, written once by ra_patch_settle() in com_task
    and read by every task through the accessors. The game table (ra_games.c) names
@@ -161,6 +165,18 @@ typedef struct {
 } lb_entry_t;
 static lb_entry_t lb_set[RA_PATCH_LB_MAX];
 static unsigned   lb_n;
+
+// leaderboards and the rich presence script that found no memory while the
+// parsed set was still on the heap: once it is freed they are activated from
+// the set's text in body[], see activate_deferred(). A large one needs as much
+// memory as the rest of the set, the parsed set as much again. com_task only,
+// handed_fp is written by whoever hands a set over, before it does.
+static lb_entry_t    deferred_lb[RA_PATCH_LB_MAX];
+static unsigned      deferred_lb_n;
+static unsigned      oom_off;        // parts of the set that found no memory and stay off: hardcore is blocked
+static bool          deferred_rp;
+static unsigned char deferred_rp_md5[16];
+static unsigned char handed_fp[16];   // fingerprint of body[] the handed-over set was parsed from
 
 // the rich presence script that runs, by its md5. com_task only.
 static unsigned char rp_md5[16];
@@ -422,49 +438,40 @@ static void note_warning(const rc_api_fetch_game_data_response_t *r) {
     debugf("RA: no server warning any more");
 }
 
-/* Adds one md5 over a tag, two numbers and up to three strings to sum, as a
-   128-bit addition. Addition and not xor: with xor, two equal items cancel out,
-   so a set with one achievement doubled and changed would read as unchanged. */
-static void fold(unsigned char *sum, char tag, uint32_t id, uint32_t num,
-                 const char *s1, const char *s2, const char *s3) {
+/* A fingerprint of a set as the server sent it, without parsing it: an md5 over
+   the reply, with the values left out of the keys that change from request to
+   request: Rarity and RarityHardcore (unlock statistics), Modified and Created
+   (the server's warning carries the time of the request there). The same set
+   gives the same fingerprint, and anything that plays or shows differently,
+   conditions, titles, leaderboards, the rich presence script or the warning,
+   gives another. It needs no memory: rcheevos' parse of a large set takes about
+   as much again as the set itself, more than is left once a large set runs. */
+static void fingerprint(const char *s, unsigned len, unsigned char *sum) {
+  static const char *const skip[] = { "\"Rarity\":", "\"RarityHardcore\":", "\"Modified\":", "\"Created\":" };
   md5_state_t md5;
-  unsigned char one[16];
-  unsigned k, carry = 0;
+  unsigned i = 0, from = 0, k, n;
   md5_init(&md5);
-  md5_append(&md5, (const md5_byte_t *)&tag, 1);
-  md5_append(&md5, (const md5_byte_t *)&id, sizeof(id));
-  md5_append(&md5, (const md5_byte_t *)&num, sizeof(num));
-  if(s1) md5_append(&md5, (const md5_byte_t *)s1, (int)strlen(s1) + 1);
-  if(s2) md5_append(&md5, (const md5_byte_t *)s2, (int)strlen(s2) + 1);
-  if(s3) md5_append(&md5, (const md5_byte_t *)s3, (int)strlen(s3));
-  md5_finish(&md5, one);
-  for(k = 0; k < 16; k++) {
-    carry += (unsigned)sum[k] + one[k];
-    sum[k] = (unsigned char)carry;
-    carry >>= 8;
+  while(i < len) {
+    // a key starts at an unescaped quote; one of the four: hash up to and with
+    // the key, then step over its value, a number or null
+    if(s[i] == '"' && (i == 0 || s[i - 1] != '\\')) {
+      for(k = 0; k < sizeof(skip) / sizeof(skip[0]); k++) {
+        n = (unsigned)strlen(skip[k]);
+        if(len - i >= n && !memcmp(s + i, skip[k], n)) break;
+      }
+      if(k < sizeof(skip) / sizeof(skip[0])) {
+        unsigned j = i + n;
+        md5_append(&md5, (const md5_byte_t *)s + from, (int)(j - from));
+        if(len - j >= 4 && !memcmp(s + j, "null", 4)) j += 4;
+        else while(j < len && s[j] && strchr("0123456789.-+eE", s[j])) j++;
+        from = i = j;
+        continue;
+      }
+    }
+    i++;
   }
-}
-
-/* A fingerprint of a parsed set: one md5 per core achievement over id, points,
-   title, description and condition, one per leaderboard over id, format, title
-   and definition, one over the rich presence script and one over the title of
-   the server's warning, all added up, so the order in the reply does not
-   matter. Two sets with the same fingerprint play and show the same, and a
-   warning that comes or goes reaches the card. */
-static void fingerprint(const rc_api_fetch_game_data_response_t *r, unsigned char *sum) {
-  unsigned i;
-  memset(sum, 0, 16);
-  for(i = 0; i < r->num_achievements; i++) {
-    const rc_api_achievement_definition_t *a = &r->achievements[i];
-    if(core_item(a)) fold(sum, 'a', a->id, a->points, a->title, a->description, a->definition);
-    else if(a->id >= RA_PATCH_WARNING_ID) fold(sum, 'w', a->id, 0, a->title, NULL, NULL);
-  }
-  for(i = 0; i < r->num_leaderboards; i++) {
-    const rc_api_leaderboard_definition_t *l = &r->leaderboards[i];
-    fold(sum, 'l', l->id, (uint32_t)l->format, l->title, NULL, l->definition);
-  }
-  if(r->rich_presence_script && *r->rich_presence_script)
-    fold(sum, 'r', 0, 0, NULL, NULL, r->rich_presence_script);
+  md5_append(&md5, (const md5_byte_t *)s + from, (int)(len - from));
+  md5_finish(&md5, sum);
 }
 
 /* Lets rcheevos parse the body, prints why when it is unusable. The caller
@@ -522,8 +529,14 @@ static int activate_richpresence(rc_runtime_t *rt, const char *script) {
   if(rv == RC_OK) {
     memcpy(rp_md5, sum, sizeof(rp_md5));
     rp_on = true;
-  } else if(!rt->richpresence || !rt->richpresence->richpresence)
-    rp_on = false;          // a parse error keeps the old script, running out of memory does not
+  } else {
+    if(!rt->richpresence || !rt->richpresence->richpresence)
+      rp_on = false;        // a parse error keeps the old script, running out of memory does not
+    if(rv == RC_OUT_OF_MEMORY) {
+      deferred_rp = true;   // again once the parsed set is freed
+      memcpy(deferred_rp_md5, sum, sizeof(deferred_rp_md5));
+    }
+  }
   return rv;
 }
 
@@ -550,6 +563,17 @@ static unsigned activate_lboards(rc_runtime_t *rt, const rc_api_fetch_game_data_
       (*kept)++;
     else {
       int rv = rc_runtime_activate_lboard(rt, l->id, l->definition, NULL, 0);
+      if(rv == RC_OUT_OF_MEMORY && deferred_lb_n < RA_PATCH_LB_MAX) {
+        // again once the parsed set is freed, with what the table needs kept here
+        lb_entry_t *d = &deferred_lb[deferred_lb_n++];
+        d->info.id              = l->id;
+        d->info.format          = l->format;
+        d->info.lower_is_better = l->lower_is_better != 0;
+        snprintf(d->info.title, sizeof(d->info.title), "%s", l->title ? l->title : "");
+        memcpy(d->md5, sum, sizeof(sum));
+        continue;
+      }
+      if(rv == RC_OUT_OF_MEMORY) oom_off++;
       if(rv != RC_OK) {
         debugf("RA: leaderboard %u (%s) rejected, code %d", (unsigned)l->id, l->title ? l->title : "", rv);
         (*rejected)++;
@@ -615,6 +639,7 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
       // arguments, unused. A string it cannot parse is not activated and does not
       // enter the table.
       int rv = rc_runtime_activate_achievement(rt, a->id, a->definition, NULL, 0);
+      if(rv == RC_OUT_OF_MEMORY) oom_off++;
       if(rv != RC_OK) {
         debugf("RA: condition %u (%s) rejected, code %d, it will never fire",
                (unsigned)a->id, a->title ? a->title : "", rv);
@@ -658,18 +683,20 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
 
   // the leaderboards
   unsigned lb_kept, lb_rejected;
+  deferred_lb_n = 0;
+  deferred_rp   = false;
   unsigned lbs = activate_lboards(rt, r, &lb_kept, &lb_rejected);
 
   // rich presence: the script of this set, an empty one switches it off. A script
   // rcheevos rejects leaves the previous one running, the log says so.
   int rp = activate_richpresence(rt, r->rich_presence_script);
-  if(rp != RC_OK)
+  if(rp != RC_OK && !deferred_rp)
     debugf("RA: rich presence script rejected, code %d", rp);
 
   debugf("RA: set for '%s': %u achievements active (%u kept running), %u rejected, "
-         "%u leaderboards active (%u kept running), %u rejected, rich presence %s",
-         r->title ? r->title : "?", n, kept, rejected, lbs, lb_kept, lb_rejected,
-         rp != RC_OK ? "rejected" : rp_on ? "on" : "none");
+         "%u leaderboards active (%u kept running), %u rejected, %u later, rich presence %s",
+         r->title ? r->title : "?", n, kept, rejected, lbs, lb_kept, lb_rejected, deferred_lb_n,
+         deferred_rp ? "later" : rp != RC_OK ? "rejected" : rp_on ? "on" : "none");
   return (int)n;
 }
 
@@ -758,9 +785,12 @@ static rc_api_fetch_game_data_response_t *parse_new(unsigned *n) {
   return r;
 }
 
-/* Hands a set to com_task. One it has not taken yet gives way, the newer one counts. */
-static void hand_over(rc_api_fetch_game_data_response_t *r) {
+/* Hands a set to com_task. One it has not taken yet gives way, the newer one counts.
+   fp is the fingerprint of the text in body[] it was parsed from, for the parts
+   that are read from there later, see activate_deferred(). */
+static void hand_over(rc_api_fetch_game_data_response_t *r, const unsigned char *fp) {
   rc_api_fetch_game_data_response_t *old;
+  memcpy(handed_fp, fp, sizeof(handed_fp));
   if(xQueueReceive(handover, &old, 0) == pdTRUE) discard(old);
   xQueueSend(handover, &r, 0);
 }
@@ -775,20 +805,23 @@ static bool read_card(void) {
   rc_api_fetch_game_data_response_t *r;
   unsigned n;
 
+  unsigned char fp[16];
+
   card_fp_valid = false;
   if(!handover || !card_read()) return false;
+  fingerprint(body, body_len, fp);   // over the file as it lies on the card, before the parse
   if(!(r = parse_new(&n))) return false;
   note_warning(r);          // until the server's set arrives, the card's says it
   // only a set with a valid tag counts as the one the server sent last: its
   // fingerprint lets an unchanged server set pass, and hardcore may use it. An
   // untagged or edited one plays softcore until the server's set replaces it.
   if(card_verified) {
-    fingerprint(r, card_fp);
+    memcpy(card_fp, fp, sizeof(card_fp));
     card_fp_valid = true;
     ra_task_hardcore_block(RA_HC_BLOCK_SET, false);
   } else
     debugf("RA: set on the card has no valid tag, softcore until the server's set arrives");
-  hand_over(r);
+  hand_over(r, fp);
   debugf("RA: set from the card: %u core achievements", n);
   return card_verified;
 }
@@ -998,16 +1031,16 @@ int ra_patch_from_server(unsigned len) {
     debugf("RA: reply from the server is not a set");
     return -1;
   }
-  if(!(r = parse_new(&n))) return -1;
-  note_warning(r);
-  // the same achievements as on the card: nothing to write, nothing to hand
-  // over. The set that runs came from the card at start.
-  fingerprint(r, sum);
+  // the same set as on the card: nothing to parse, write or hand over, the set
+  // that runs came from the card at start. Compared before the parse, which
+  // would need as much memory again as a large set already takes.
+  fingerprint(body, body_len, sum);
   if(card_fp_valid && memcmp(sum, card_fp, sizeof(sum)) == 0) {
     debugf("RA: set unchanged on the server");
-    discard(r);
     return 0;
   }
+  if(!(r = parse_new(&n))) return -1;
+  note_warning(r);
   // the card first, so a power cut after this leaves the new set there too
   if(card_write()) {
     memcpy(card_fp, sum, sizeof(card_fp));
@@ -1015,7 +1048,7 @@ int ra_patch_from_server(unsigned len) {
     debugf("RA: set from the server: %u core achievements, kept on the card", n);
   } else
     debugf("RA: set from the server: %u core achievements, only in memory", n);
-  hand_over(r);
+  hand_over(r, sum);
   // straight from the server over TLS: this set may count in hardcore
   ra_task_hardcore_block(RA_HC_BLOCK_SET, false);
   return 1;
@@ -1027,6 +1060,92 @@ bool ra_patch_set_again(void) {
   if(!set_again) return true;
   set_again = false;
   return read_card();
+}
+
+/* Activates what activate_set() deferred for lack of memory, once the parsed set
+   is freed: from the set's text in body[], one definition at a time on the heap,
+   found and decoded by rcheevos' own JSON reader as rc_api would. body[] must
+   still hold the text the set was parsed from, and each definition must have the
+   md5 it had there, else it stays off, and the log names what stays off. */
+static void activate_deferred(rc_runtime_t *rt) {
+  rc_json_field_t top[] = { RC_JSON_NEW_FIELD("PatchData") };
+  rc_json_field_t pd[]  = { RC_JSON_NEW_FIELD("Leaderboards"), RC_JSON_NEW_FIELD("RichPresencePatch") };
+  rc_json_field_t lbf[] = { RC_JSON_NEW_FIELD("ID"), RC_JSON_NEW_FIELD("Mem") };
+  rc_json_iterator_t it;
+  rc_json_field_t arr;
+  unsigned char fp[16], sum[16];
+  uint32_t num, id;
+  unsigned i;
+  if(!deferred_lb_n && !deferred_rp) return;
+
+  // the text the set came from, else nothing is read from it
+  fingerprint(body, body_len, fp);
+  if(memcmp(fp, handed_fp, sizeof(fp))) goto out;
+  it.json = body; it.end = body + body_len;
+  if(!rc_json_get_array_entry_object(top, 1, &it) || !top[0].value_start) goto out;
+  it.json = top[0].value_start; it.end = top[0].value_end;
+  if(!rc_json_get_array_entry_object(pd, 2, &it)) goto out;
+
+  // the leaderboards: each deferred one by its id, its definition decoded alone
+  if(deferred_lb_n && rc_json_get_optional_array(&num, &arr, &pd[0], "Leaderboards")) {
+    it.json = arr.value_start; it.end = arr.value_end;
+    while(deferred_lb_n && rc_json_get_array_entry_object(lbf, 2, &it)) {
+      rc_buffer_t buf;
+      const char *mem = NULL;
+      int rv = RC_INVALID_STATE;
+      if(!rc_json_get_unum(&id, &lbf[0], "ID")) continue;
+      for(i = 0; i < deferred_lb_n && deferred_lb[i].info.id != id; i++) ;
+      if(i == deferred_lb_n) continue;
+      rc_buffer_init(&buf);
+      if(rc_json_get_string(&mem, &buf, &lbf[1], "Mem") && mem) {
+        md5_of(mem, sum);
+        if(!memcmp(sum, deferred_lb[i].md5, sizeof(sum)))
+          rv = rc_runtime_activate_lboard(rt, id, mem, NULL, 0);
+      }
+      rc_buffer_destroy(&buf);
+      if(rv != RC_OK) {
+        oom_off++;
+        debugf("RA: leaderboard %u (%s) stays off, code %d", (unsigned)id, deferred_lb[i].info.title, rv);
+      } else if(lb_n < RA_PATCH_LB_MAX) {
+        taskENTER_CRITICAL();
+        lb_set[lb_n++] = deferred_lb[i];
+        taskEXIT_CRITICAL();
+        debugf("RA: leaderboard %u (%s) active", (unsigned)id, deferred_lb[i].info.title);
+      }
+      deferred_lb[i] = deferred_lb[--deferred_lb_n];
+    }
+  }
+
+  // the rich presence script
+  if(deferred_rp) {
+    rc_buffer_t buf;
+    const char *script = NULL;
+    int rv = RC_INVALID_STATE;
+    rc_buffer_init(&buf);
+    if(rc_json_get_string(&script, &buf, &pd[1], "RichPresencePatch") && script) {
+      md5_of(script, sum);
+      if(!memcmp(sum, deferred_rp_md5, sizeof(sum))) {
+        rv = rc_runtime_activate_richpresence(rt, script, NULL, 0);
+        if(rv == RC_OK) {
+          memcpy(rp_md5, sum, sizeof(rp_md5));
+          rp_on = true;
+        }
+      }
+    }
+    rc_buffer_destroy(&buf);
+    if(rv != RC_OK) oom_off++;
+    debugf("RA: rich presence %s, code %d", rv == RC_OK ? "active" : "stays off", rv);
+    deferred_rp = false;
+  }
+
+out:
+  oom_off += deferred_lb_n + (deferred_rp ? 1 : 0);
+  for(i = 0; i < deferred_lb_n; i++)
+    debugf("RA: leaderboard %u (%s) stays off, the set's text was not there", (unsigned)deferred_lb[i].info.id, deferred_lb[i].info.title);
+  if(deferred_rp) debugf("RA: rich presence stays off, the set's text was not there");
+  deferred_lb_n = 0;
+  deferred_rp   = false;
+  debugf("RA: after the deferred parts, SDK heap free %lu", (unsigned long)getFreeHeap());
 }
 
 unsigned ra_patch_apply_pending(rc_runtime_t *rt) {
@@ -1060,8 +1179,13 @@ unsigned ra_patch_apply_pending(rc_runtime_t *rt) {
     }
   }
   if(!set_off && handover && xQueueReceive(handover, &r, 0) == pdTRUE) {
+    oom_off = 0;
     activate_set(rt, r);
     discard(r);             // rcheevos has copied the conditions
+    activate_deferred(rt);  // what did not fit beside the parsed set
+    // a set that runs only in part is not the set: no hardcore with it
+    if(oom_off) debugf("RA: %u parts of the set found no memory, softcore with this set", oom_off);
+    ra_task_hardcore_block(RA_HC_BLOCK_SIZE, oom_off != 0);
     what |= RA_PATCH_NEW_SET;
   }
   return what;

@@ -50,6 +50,7 @@ bool ra_task_hardcore(void);
 #define RA_HC_BLOCK_ROM  4u    /**< the ROM image is not one of the known files, or not loaded yet */
 #define RA_HC_BLOCK_SET  8u    /**< the achievement set is not proven: the card's copy without a valid tag, and none from the server yet */
 #define RA_HC_BLOCK_KEY  16u   /**< no device key, unlocks cannot be tagged, see ra_mac.c */
+#define RA_HC_BLOCK_SIZE 64u   /**< a part of the set found no memory and stays off: in hardcore every achievement and leaderboard must run */
 #define RA_HC_BLOCK_GAME 32u   /**< the ROM in the core is not this game's in one of four ways: the board is unknown, the ROM's game does not belong to this board, the ROM was changed to another game after the start, or the server's id differs from the table's */
 
 /** @brief The reasons that keep hardcore off although the menu asks for it, RA_HC_BLOCK_*. Any task. */
