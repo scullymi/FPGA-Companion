@@ -49,11 +49,11 @@ void ra_patch_rom_end(void);
  *  core keeps the ROM it has until a new stream starts, and ra_patch_rom_start
  *  takes over then. */
 void ra_patch_rom_gone(void);
-/** @brief True from ra_patch_rom_start() until ra_patch_rom_end() or ra_patch_rom_gone(false). Any task.
+/** @brief True from ra_patch_rom_start() until ra_patch_rom_end() or ra_patch_rom_gone() (an eject). Any task.
  *
- *  A replacement in the OSD (ra_patch_rom_gone(true)) keeps it up until the new
- *  stream starts, so the main loop does not settle by "no ROM" between the close
- *  of the old image and the open of the new one. */
+ *  A replacement in the OSD closes the old stream with neither, so the flag stays
+ *  up until the new stream starts, and the main loop does not settle by "no ROM"
+ *  between the close of the old image and the open of the new one. */
 bool ra_patch_rom_pending(void);
 /** @brief True while a ROM streams that began less than limit_ms ago. Any task.
  *
