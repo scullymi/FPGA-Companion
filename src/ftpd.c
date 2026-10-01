@@ -427,6 +427,11 @@ void ftpd_stop_uploads(bool stop) { stor_stop = stop; }
 
 static void do_stor(ftps_t *fs, const char *path)
 {
+    /* REST only applies to the next transfer, also when this one is refused:
+     * game20k, a refused STOR left it for the transfer after */
+    uint32_t restart_at = fs->restart_at;
+    fs->restart_at = 0;
+
     if (stor_held) {
         reply(fs, "450 The device restarts, try again in a moment.");
         return;
@@ -441,9 +446,6 @@ static void do_stor(ftps_t *fs, const char *path)
 
     char full[FPATH_MAX];
     full_path(path, full, sizeof(full));
-
-    uint32_t restart_at = fs->restart_at;
-    fs->restart_at = 0;                 /* REST only applies to the next transfer */
 
     /* a resumed upload must keep the existing bytes up to the restart
      * offset; only a fresh upload (no REST) truncates the file */
