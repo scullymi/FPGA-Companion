@@ -223,8 +223,10 @@ static void banner_login(void) {
   // once the task knows whether there is an account: without one nothing counts.
   // Softcore although the menu asks for hardcore names the reason. The same text
   // again within a few seconds is left out: a reset from the menu also changes the
-  // core's reset count, both ask for this banner.
-  if(banner_mode_due && now != RA_TASK_STARTING) {
+  // core's reset count, both ask for this banner. While a ROM streams to the core
+  // the banner waits: the stream blocks hardcore until its digest is checked, a
+  // second later, and the settle after it names the mode that counts.
+  if(banner_mode_due && now != RA_TASK_STARTING && !ra_patch_rom_pending()) {
     static const char *last_text;
     static TickType_t  last_tick;
     unsigned why = ra_task_hardcore_blocked();

@@ -713,9 +713,9 @@ static void sdc_rom_image_selected(char image, FSIZE_t size) {
   // ignore de-selection of a deselected image
   if(!fil[MAX_DRIVES+image].flag && !size) return;  
 
-  // no ROM set any more: no known ROM
-  if(image == RA_PATCH_ROM_IMAGE && !size) ra_patch_rom_gone(false);
-  
+  // game20k: a deselect says nothing about the ROM the core keeps running, an
+  // eject is told to RetroAchievements by sdc_image_open
+
   if(size) sdc_debugf("IMG %d: selected. Size = %llu", image, (unsigned long long)size);
   else     sdc_debugf("IMG %d: deselected", image);
 
@@ -740,8 +740,9 @@ static bool sdc_image_start_transfer(int image) {
   image_bytes2send[(int)image] = fil[image+MAX_DRIVES].obj.objsize;
   if(sdc_rom_image_get_buffer(image) < 0) {
     sdc_debugf("IMG %d: Core has rejected image", image);
-    if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_gone(false);
-    
+    // the core keeps the ROM it has, and so does RetroAchievements: a file of the
+    // wrong size never reached the core, the game and its mode go on
+
     // close the transfer immediately
     f_close(&fil[image+MAX_DRIVES]);
     memset(&fil[image+MAX_DRIVES], 0, sizeof(FIL));
@@ -780,12 +781,14 @@ int sdc_image_open(int drive, char *name) {
     sdc_debugf("%s %d: closing file '%s'", (drive < MAX_DRIVES)?"DRV":"IMG",
 	       (drive < MAX_DRIVES)?drive:(drive-MAX_DRIVES),
 	       image_name[drive]?image_name[drive]:"<unknown>");
-    // game20k: the ROM set goes before it went whole (ejected or replaced in the
-    // OSD): no known ROM, nothing left to send. Before the FIL is cleared, so an
-    // eject settles by "no ROM" and not by the stale name; with a name following,
-    // the settle waits for the new stream
+    // game20k: ejected in the OSD: no known ROM, nothing left to send. Before the
+    // FIL is cleared, so the settle goes by "no ROM" and not by the stale name. A
+    // file that replaces this one changes nothing for RetroAchievements here: the
+    // core keeps the ROM it has until the loader accepts the new stream, and
+    // rom_start takes over then. A file the loader rejects leaves the old ROM
+    // running, in the mode it earned.
     if(drive == MAX_DRIVES + RA_PATCH_ROM_IMAGE) {
-      ra_patch_rom_gone(name != NULL);
+      if(!name) ra_patch_rom_gone();
       image_bytes2send[RA_PATCH_ROM_IMAGE] = 0;
     }
     f_close(&fil[drive]);
@@ -899,8 +902,7 @@ int sdc_image_open(int drive, char *name) {
     sdc_lock();
     if(f_open(&fil[drive], fname, FA_OPEN_EXISTING | FA_READ) != 0) {
       sdc_debugf("IMG %d: file open failed", image);
-      // game20k: no stream follows, the settle held back at the close goes ahead
-      if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_gone(false);
+      // game20k: no stream follows, the core keeps the ROM it has
       sdc_unlock();
       return -1;
     }
@@ -917,13 +919,21 @@ int sdc_image_open(int drive, char *name) {
 	active = true;
 
     // We transfer one image at a time. So if one is already
-    // and being active, the we won't activate a second one, yet 
-    if(!active) sdc_image_start_transfer(image);
-    else {
+    // and being active, the we won't activate a second one, yet
+    if(!active) {
+      if(!sdc_image_start_transfer(image)) {
+        // game20k: the core rejected the file, it keeps the ROM it has. The name
+        // is dropped, so the settings cannot keep a file that never loads, and the
+        // menu tells the player
+        vPortFree(image_name[drive]);
+        image_name[drive] = NULL;
+        sdc_unlock();
+        return SDC_IMAGE_REJECTED;
+      }
+    } else {
       sdc_debugf("IMG %d: Delaying additional rom download", image);
       // game20k: the stream starts later from sdc_check_for_pending_image_uploads,
-      // the other image's stream holds the settle back meanwhile
-      if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_gone(false);
+      // rom_start takes over for RetroAchievements then
     }
     
     sdc_unlock();

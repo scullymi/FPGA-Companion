@@ -1181,10 +1181,16 @@ static void menu_fileselector_select(sdc_dir_entry_t *entry) {
     }
   } else {
     // request insertion of this image
-    sdc_image_open(drive, entry->name);
-    
+    int r = sdc_image_open(drive, entry->name);
+
     // return to parent form
     menu_pop();
+
+    // game20k: a ROM file the core rejected never loads, the old game goes on. Say
+    // so, else the player waits for a game that does not come
+    if(r == SDC_IMAGE_REJECTED)
+      menu_draw_dialog_for("ROM rejected", "Not a ROM file for this core:\nwrong size. The game goes on.",
+                           pdMS_TO_TICKS(5000));
 
     // check if this is a drive image selection and run action if yes. Image selectors
     // work differently and do an IRQ driven transfer in the background. The action is there executed

@@ -43,13 +43,12 @@ void ra_patch_rom_start(const char *name);
 void ra_patch_rom_data(const void *data, unsigned len);
 /** @brief The whole ROM image went to the core: finish the SHA-256 and settle. com_task, from sdc.c, outside sdc_lock. */
 void ra_patch_rom_end(void);
-/** @brief The ROM image is closed before it went whole: ejected or replaced in the OSD (sdc_image_open, menu_task) or rejected by the core (sdc_image_start_transfer, under sdc_lock). No FatFs and no settle here; only the ROM block bit moves.
+/** @brief The ROM image is ejected in the OSD (sdc_image_open, menu_task). No FatFs and no settle here; only the ROM block bit moves, the next settle applies "no ROM".
  *
- *  another_follows: the image is replaced in the OSD, the main loop keeps holding
- *  its settle back (ra_patch_rom_pending() stays true) until the new stream starts
- *  (ra_patch_rom_start) or its open fails (a second call with false). False for an
- *  eject, a rejected image or a failed open: the next settle applies "no ROM". */
-void ra_patch_rom_gone(bool another_follows);
+ *  Not for a file that replaces the ROM, whether the core accepts it or not: the
+ *  core keeps the ROM it has until a new stream starts, and ra_patch_rom_start
+ *  takes over then. */
+void ra_patch_rom_gone(void);
 /** @brief True from ra_patch_rom_start() until ra_patch_rom_end() or ra_patch_rom_gone(false). Any task.
  *
  *  A replacement in the OSD (ra_patch_rom_gone(true)) keeps it up until the new

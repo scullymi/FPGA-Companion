@@ -16,6 +16,8 @@ typedef struct sdc_dir {
 } sdc_dir_entry_t;
 
 int sdc_init(void);
+/** @brief sdc_image_open(): the core rejected the ROM file (wrong size for this board), it keeps the ROM it has. */
+#define SDC_IMAGE_REJECTED -2
 int sdc_image_open(int drive, char *name);
 sdc_dir_entry_t *sdc_readdir(int drive, char *name, const char *exts);
 int sdc_handle_event(void);

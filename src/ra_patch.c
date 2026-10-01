@@ -706,19 +706,18 @@ void ra_patch_rom_end(void) {
   ra_patch_settle();
 }
 
-void ra_patch_rom_gone(bool another_follows) {
-  // no FatFs and no settle here: this runs under sdc_lock (a rejected image,
-  // sdc_image_start_transfer) or in menu_task (a file ejected or replaced in the
-  // OSD, sdc_image_open). Only the ROM block bit moves, and without a name the next
-  // settle applies its "no ROM" rule.
+void ra_patch_rom_gone(void) {
+  // no FatFs and no settle here: this runs in menu_task (a file ejected in the
+  // OSD, sdc_image_open). Only the ROM block bit moves, and without a name the
+  // next settle applies its "no ROM" rule. A file that replaces the ROM, or fails
+  // to, does not come here: the core keeps the ROM it has until a new stream
+  // starts, and rom_start takes over then.
   if(rom_hashing) mbedtls_sha256_free(&rom_sha);
   rom_hashing = false;
   // published whole, as rom_start does: the 15 s timeout settle in com_task may
-  // read these while menu_task is in here. rom_pending stays up for a file that
-  // replaces this one in the OSD, so the main loop does not settle by "no ROM"
-  // between the close of this image and the start of the new stream
+  // read these while menu_task is in here
   taskENTER_CRITICAL();
-  rom_pending      = another_follows;
+  rom_pending      = false;
   rom_sum_valid    = false;
   rom_name_hash[0] = 0;
   taskEXIT_CRITICAL();
