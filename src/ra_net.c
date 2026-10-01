@@ -21,7 +21,10 @@
 #include "rc_version.h"
 
 #include "debug.h"
-uint32_t getFreeHeap(void);   // mcu_hw.c: the SDK heap left for mbedTLS and rcheevos
+// the SDK heap left and the FreeRTOS heap left, for the log. Weak stand-ins that give 0:
+// the firmware's mcu_hw.c and FreeRTOS define the real ones, the host test links neither
+__attribute__((weak)) uint32_t getFreeHeap(void) { return 0; }
+__attribute__((weak)) size_t xPortGetFreeHeapSize(void) { return 0; }
 #include "ra_ca.h"
 #include "ra_net.h"
 
