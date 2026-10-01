@@ -357,13 +357,10 @@ static list_result_t send_list(int dfd, const char *path, bool names_only,
 }
 
 /* ---- transfers ------------------------------------------------------------ */
-static void do_retr(ftps_t *fs, const char *path)
+static void do_retr(ftps_t *fs, const char *path, uint32_t restart_at)
 {
     char full[FPATH_MAX];
     full_path(path, full, sizeof(full));
-
-    uint32_t restart_at = fs->restart_at;
-    fs->restart_at = 0;                 /* REST only applies to the next transfer */
 
     FIL f;
     sdc_lock();
@@ -425,13 +422,8 @@ unsigned ftpd_uploads(void) { return stor_open; }
 void ftpd_hold_uploads(bool hold) { stor_held = hold; }
 void ftpd_stop_uploads(bool stop) { stor_stop = stop; }
 
-static void do_stor(ftps_t *fs, const char *path)
+static void do_stor(ftps_t *fs, const char *path, uint32_t restart_at)
 {
-    /* REST only applies to the next transfer, also when this one is refused:
-     * game20k, a refused STOR left it for the transfer after */
-    uint32_t restart_at = fs->restart_at;
-    fs->restart_at = 0;
-
     if (stor_held) {
         reply(fs, "450 The device restarts, try again in a moment.");
         return;
@@ -632,18 +624,20 @@ static void session(ftps_t *fs)
                     }
                 }
                 reply(fs, "550 Not found.");
-            } else if (!strcmp(line, "RETR")) {
-                if (resolve(fs, arg, path, sizeof(path)))
-                    do_retr(fs, path);
-                else
-                    reply(fs, "550 Bad path.");
-            } else if (!strcmp(line, "STOR")) {
+            } else if (!strcmp(line, "RETR") || !strcmp(line, "STOR")) {
+                /* game20k: REST applies to this transfer only, also when it is
+                 * refused here or in do_retr()/do_stor(). Left set, it moved the
+                 * next transfer into the middle of its file */
+                uint32_t at = fs->restart_at;
+                fs->restart_at = 0;
                 if (!resolve(fs, arg, path, sizeof(path)))
                     reply(fs, "550 Bad path.");
+                else if (line[0] == 'R')
+                    do_retr(fs, path, at);
                 else if (protected_path(path))
                     reply(fs, "550 Write protected in hardcore mode.");
                 else
-                    do_stor(fs, path);
+                    do_stor(fs, path, at);
             } else if (!strcmp(line, "DELE")) {
                 if (resolve(fs, arg, path, sizeof(path)) && protected_path(path)) {
                     reply(fs, "550 Write protected in hardcore mode.");
