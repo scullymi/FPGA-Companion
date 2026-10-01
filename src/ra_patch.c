@@ -58,6 +58,8 @@ static bool             table_wrong;                   // the server's id differ
 static bool             foreign_rom;                   // the ROM in the core is another game's than the boot's, see ra_patch_settle()
 static const ra_game_t *volatile restart_to;           // the game a restart starts, see ra_patch_restart_to()
 static volatile bool   restart_committed;             // restart_step() writes the marker now: picks no longer change the target
+static unsigned        pick_seq;                      // picks of a game of another board, counted
+static unsigned        stream_seq;                    // pick_seq when the ROM that streams now started
 static bool             set_off;                       // ra_patch_apply_pending() took the set out of rcheevos for that
 static volatile bool    set_again;                     // com_task asks the RA task to read the card set once more
 
@@ -715,6 +717,7 @@ void ra_patch_rom_start(const char *name) {
   taskENTER_CRITICAL();
   memcpy(rom_name_hash, hex, sizeof(rom_name_hash));
   rom_sum_valid = false;
+  stream_seq    = pick_seq;
   taskEXIT_CRITICAL();
   mbedtls_sha256_init(&rom_sha);
   rom_hashing = mbedtls_sha256_starts(&rom_sha, 0) == 0;
@@ -783,6 +786,7 @@ bool ra_patch_pick_other_board(const char *name) {
     taken = true;         // the restart is under way: nothing streams to a core that goes
   else if(g && board && g->board != board) {
     restart_to = g;       // the newest pick wins
+    pick_seq++;           // also over a stream that started before it, see the settle
     taken = true;
   }
   taskEXIT_CRITICAL();
@@ -978,11 +982,15 @@ void ra_patch_settle(void) {
     // what to do.
     const ra_game_t *to = !same && ident.game && ident.rom_ok && ident.board_ok && game_hash[0] ? ident.game : NULL;
     const ra_game_t *was;
+    bool later;
     taskENTER_CRITICAL();   // the menu may pick a game of another board meanwhile
-    was = restart_to;
-    if(!restart_committed) restart_to = to;
+    was   = restart_to;
+    later = stream_seq != pick_seq;   // a game of another board was picked after this stream began
+    if(!restart_committed && !later) restart_to = to;
     taskEXIT_CRITICAL();
-    if(to && to != was)
+    if(later)
+      debugf("RA: %s was picked after this ROM, it stays the target", was ? was->set : "a game of another board");
+    else if(to && to != was)
       debugf("RA: the ROM is now %s, a game of this board: restart for its achievements", to->set);
     else if(!to && was)
       debugf("RA: no restart for %s, the ROM picked last plays here", was->set);

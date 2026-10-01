@@ -393,18 +393,19 @@ static void restart_step(void) {
   TickType_t since = now - start;
   if(since < pdMS_TO_TICKS(RESTART_SHOW_MS)) return;
   // unlocks and leaderboard results live in RAM until the card or the server
-  // has them, an upload runs until its file is closed: wait for them, but not for
-  // ever
+  // has them, an upload runs until its file is closed, a ROM picked last streams
+  // until its settle decides the target: wait for them, but not for ever
   bool late = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS);
-  if((ra_queue_in_transit() || ra_task_lboard_pending() || ftpd_uploads()) && !late)
+  if((ra_queue_in_transit() || ra_task_lboard_pending() || ftpd_uploads() || ra_patch_rom_pending()) && !late)
     return;
   // the last checks under the card lock, where they hold until the Pico goes:
-  // every card operation ends whole, an upload opens its file only under the lock,
-  // S1 and S2 are read right before Z and not before a wait for the lock. The
-  // target is fixed last, a pick can change it until then
+  // every card operation ends whole, an upload opens its file and a ROM starts to
+  // stream only under the lock, S1 and S2 are read right before Z and not before a
+  // wait for the lock. The target is fixed last, a pick can change it until then
   sdc_lock();
   bool held = g->board != ram_mirror_board && buttons_held();
-  if(held || (ftpd_uploads() && !late) || !ra_patch_restart_commit(g)) {
+  bool busy = !late && (ftpd_uploads() || ra_patch_rom_pending());
+  if(held || busy || !ra_patch_restart_commit(g)) {
     sdc_unlock();
     return;
   }
