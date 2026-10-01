@@ -51,12 +51,23 @@ static const ra_rom_t roms_pacman[] = {
 };
 static const ra_dip_t dips_pacman[] = { { 'L', 2 }, { 'C', 1 } };
 
+// Puck Man (Namco, 1980), as scripts/make_rom.py builds puckman.rom from the MAME set
+// "puckman", the sixteen chips in MAME's order, on the Pac-Man board. RetroAchievements
+// lists this set name as game 24933, "Pac-Man [Subset - Perfect Pac]": the subset is
+// played with the Japanese original. Its switches are Pac-Man's, the subset asks for 3
+// lives or more and for 5 in "Perfect Pac" itself.
+static const ra_rom_t roms_puckman[] = {
+  { { 0xad,0x4a,0x2c,0x56,0x2a,0xa8,0xb8,0x7d,0x8f,0x1d,0xff,0xcc,0xf4,0x5b,0xf9,0xd2,
+      0x13,0xc0,0x45,0xe1,0xb2,0x37,0xe5,0xec,0x11,0x21,0xfd,0xc8,0x80,0xef,0x73,0x87 }, "MAME puckman" },
+};
+
 // one row per game: set, title, id, hash, board, its files, its switches. Boards
 // are numbered in the order the cores arrive (Galaga 1); several sets may share a
-// board, the digest then picks the set.
+// board, the digest then picks the set, and ra_games_by_board() names the first row.
 static const ra_game_t games[] = {
-  { "galaga", "Galaga", 12138u, "b8140b5e33c53b0f7dd3cc368951a4dd", 1, roms_galaga, 2, dips_galaga, 2 },
-  { "pacman", "Pac-Man", 12192u, "64d1f88b9b276aece4b0edcc25b7a434", 2, roms_pacman, 1, dips_pacman, 2 },
+  { "galaga",  "Galaga",   12138u, "b8140b5e33c53b0f7dd3cc368951a4dd", 1, roms_galaga,  2, dips_galaga, 2 },
+  { "pacman",  "Pac-Man",  12192u, "64d1f88b9b276aece4b0edcc25b7a434", 2, roms_pacman,  1, dips_pacman, 2 },
+  { "puckman", "Puck Man", 24933u, "7775842918a8f43b7f3caf433e8327b7", 2, roms_puckman, 1, dips_pacman, 2 },
 };
 #define GAMES_N (sizeof(games) / sizeof(games[0]))   /**< rows in games[] */
 
