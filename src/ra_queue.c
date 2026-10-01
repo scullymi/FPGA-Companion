@@ -76,6 +76,8 @@ static FSIZE_t       head_at;                   // file offset of its line
 static char          head_line[RA_QUEUE_LINE_MAX];
 static char          head_user[RA_QUEUE_USER_MAX];
 
+unsigned ra_queue_in_transit(void) { return handover ? (unsigned)uxQueueMessagesWaiting(handover) : 0; }
+
 QueueHandle_t ra_queue_init(void) {
   if(!handover) handover = xQueueCreateStatic(RA_QUEUE_HANDOVER, sizeof(ra_unlock_t), handover_mem, &handover_ctl);
   return handover;

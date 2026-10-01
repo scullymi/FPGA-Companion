@@ -56,6 +56,7 @@ static volatile unsigned char board;                   // header byte 12, 0 unti
 static bool             settled;                       // ra_patch_settle() ran
 static bool             table_wrong;                   // the server's id differs from the table's: RA_HC_BLOCK_GAME stays
 static bool             foreign_rom;                   // the ROM in the core is another game's than the boot's, see ra_patch_settle()
+static const ra_game_t *volatile restart_to;           // the game a restart starts, see ra_patch_restart_to()
 static bool             set_off;                       // ra_patch_apply_pending() took the set out of rcheevos for that
 static volatile bool    set_again;                     // com_task asks the RA task to read the card set once more
 
@@ -755,6 +756,20 @@ void ra_patch_rom_gone(void) {
 
 bool ra_patch_rom_pending(void) { return rom_pending; }
 bool ra_patch_foreign_rom(void) { return foreign_rom; }
+const ra_game_t *ra_patch_restart_to(void) { return restart_to; }
+void ra_patch_restart_cancel(void) { restart_to = NULL; }
+
+bool ra_patch_pick_other_board(const char *name) {
+  const ra_game_t *g = ra_games_by_file(name);
+  bool taken = false;
+  taskENTER_CRITICAL();   // the settle may set a restart of its own meanwhile, see ra_patch_settle()
+  if(g && board && g->board != board && !restart_to) {
+    restart_to = g;
+    taken = true;
+  }
+  taskEXIT_CRITICAL();
+  return taken;
+}
 
 void ra_patch_board(unsigned char b) { board = b; }
 bool ra_patch_settled(void) { return settled; }
@@ -937,6 +952,17 @@ void ra_patch_settle(void) {
     else if(same && foreign_rom && game_hash[0])
       debugf("RA: the game's ROM is back, its set is read again");
     foreign_rom = !same;
+    // a known ROM of another game of this board, proven by its digest: a
+    // restart of the Pico makes it the boot's game with its own set, see
+    // restart_step() in main.c. Only when a game was decided at the start, else
+    // the identity was never set up and the log line above says what to do.
+    if(!same && ident.game && ident.rom_ok && ident.board_ok && game_hash[0]) {
+      bool taken = false;
+      taskENTER_CRITICAL();   // the menu may have picked a game of another board meanwhile
+      if(!restart_to) { restart_to = ident.game; taken = true; }
+      taskEXIT_CRITICAL();
+      if(taken) debugf("RA: the ROM is now %s, a game of this board: restart for its achievements", ident.game->set);
+    }
     return;
   }
   settled     = true;

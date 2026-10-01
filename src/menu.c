@@ -1185,6 +1185,14 @@ static void menu_fileselector_select(sdc_dir_entry_t *entry) {
       }
     }
   } else {
+    // game20k: the ROM file of a known game of another board, e.g. galaga.rom in
+    // the Pac-Man core, needs that board's core. Nothing streams to this one:
+    // main.c switches the core and starts the game there, see restart_step()
+    if(drive == MAX_DRIVES + RA_PATCH_ROM_IMAGE && ra_patch_pick_other_board(entry->name)) {
+      menu_pop();
+      return;
+    }
+
     // request insertion of this image
     int r = sdc_image_open(drive, entry->name);
 
@@ -1552,6 +1560,25 @@ static void menu_task(__attribute__((unused)) void *parms) {
     } else
 #endif
 
+    if(cmd == MENU_EVENT_RA_RESTART) {
+      // game20k: the ROM picked is another game of this board, main.c restarts
+      // the Pico into it for its achievements in a few seconds. A game of another
+      // board loads its core first
+      const ra_game_t *g = ra_patch_restart_to();
+      char message[64];
+      if(g && g->board != ra_game_board()) {
+        snprintf(message, sizeof(message), "%s: loading its core", g->title);
+        menu_draw_dialog_for("Core switch", message, pdMS_TO_TICKS(4000));
+      } else {
+        snprintf(message, sizeof(message), "%s: restart for its achievements", g ? g->title : "Game");
+        menu_draw_dialog_for("RetroAchievements", message, pdMS_TO_TICKS(4000));
+      }
+    } else
+    if(cmd == MENU_EVENT_CORE_SWITCH_FAILED) {
+      // game20k: the running bitstream was built before the core switch
+      menu_draw_dialog_for("Core switch", "This bitstream cannot load\nanother core. The game goes on.",
+                           pdMS_TO_TICKS(5000));
+    } else
     if(cmd == MENU_EVENT_NETWORK_GOT_IP) {
       char message[32];
       snprintf(message, sizeof(message), "IP: %s", network_ipaddr);

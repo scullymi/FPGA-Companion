@@ -31,6 +31,8 @@
 #define MENU_EVENT_BLUETOOTH_PIN_CODE_REQUEST 17
 #define MENU_EVENT_NETWORK_GOT_IP       18
 #define MENU_EVENT_NETWORK_DISCONNECTED 19
+#define MENU_EVENT_RA_RESTART    20  // game20k: another game, the Pico restarts into it, for one of another board with its core
+#define MENU_EVENT_CORE_SWITCH_FAILED 21  // game20k: the running bitstream does not know the core switch
 
 #define MENU_EVENT_KEY_LATIN1    256  // 256..511
 

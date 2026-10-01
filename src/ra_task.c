@@ -189,6 +189,10 @@ void ra_task_core_value(char id, int value) {
     hc_update();
   }
 }
+unsigned ra_task_lboard_pending(void) {
+  return lb_n + (lb_queue ? (unsigned)uxQueueMessagesWaiting(lb_queue) : 0);
+}
+
 void ra_task_frame(void) { frames++; }
 
 void ra_task_set_richpresence(const char *text) {

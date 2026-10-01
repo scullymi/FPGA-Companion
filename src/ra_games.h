@@ -61,6 +61,8 @@ const ra_game_t *ra_games_by_board(unsigned char board);
 const ra_game_t *ra_games_by_hash(const char *hex);
 /** @brief The entry with that id, NULL when there is none. */
 const ra_game_t *ra_games_by_id(unsigned id);
+/** @brief The entry whose card file is name, the set name plus ".rom", case ignored, NULL when there is none. */
+const ra_game_t *ra_games_by_file(const char *name);
 /** @brief The entry one of whose files has that digest, any board, NULL when there is none.
  *
  *  row, when not NULL, gets the file's row. */

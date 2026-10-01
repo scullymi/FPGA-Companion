@@ -82,6 +82,27 @@ bool ra_patch_settled(void);
  *  drops what would still come. */
 bool ra_patch_foreign_rom(void);
 
+/** @brief The game a restart of the Pico should start, NULL when none. Any task.
+ *
+ *  Set by the settle of a ROM picked after the start, when its digest proves it
+ *  is a known ROM of another game of the same board, e.g. Puck Man in the Pac-Man
+ *  core. That game's set, session and card folder come only with a start, so
+ *  main.c restarts the Pico into it. Or set by ra_patch_pick_other_board() for a
+ *  game of another board: main.c switches the core first. */
+const ra_game_t *ra_patch_restart_to(void);
+
+/** @brief A ROM file picked in the menu: true when it is the card file of a table
+ *  game of another board than the running core's. Menu task.
+ *
+ *  That game becomes ra_patch_restart_to() and nothing streams to this core.
+ *  False, and nothing changes, when the board is not known, a restart is under
+ *  way, or the file is no table game's or one of this board. */
+bool ra_patch_pick_other_board(const char *name);
+
+/** @brief Drops the restart target: the core switch did not happen. Any task. */
+void ra_patch_restart_cancel(void);
+
+
 /** @brief The id the server resolved the game hash to. RA task, after r=gameid.
  *
  *  For a table entry a differing id raises RA_HC_BLOCK_GAME, the table's id is

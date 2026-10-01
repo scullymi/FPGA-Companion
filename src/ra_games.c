@@ -94,6 +94,18 @@ const ra_game_t *ra_games_by_id(unsigned id) {
   return NULL;
 }
 
+const ra_game_t *ra_games_by_file(const char *name) {
+  unsigned i;
+  if(!name) return NULL;
+  for(i = 0; i < GAMES_N; i++) {
+    // the set name first, then nothing but the extension. strncasecmp stops at the
+    // end of a shorter name, so name + n is inside it
+    size_t n = strlen(games[i].set);
+    if(!strncasecmp(name, games[i].set, n) && !strcasecmp(name + n, ".rom")) return &games[i];
+  }
+  return NULL;
+}
+
 const ra_game_t *ra_games_by_rom(const unsigned char sha[32], const ra_rom_t **row) {
   unsigned i, j;
   for(i = 0; i < GAMES_N; i++)

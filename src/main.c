@@ -22,6 +22,7 @@ uint32_t getFreeHeap(void);   /* mcu_hw.c: the SDK heap left for mbedTLS and rch
 #include "../ra_mac.h"
 #include <string.h>
 #include "pico/time.h"
+#include "hardware/watchdog.h"   /* the game to start after a restart, see restart_step() */
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
@@ -317,6 +318,126 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
   }
 }
 
+/* A ROM picked after the start can be a known ROM of another game of this board,
+   e.g. puckman.rom in the Pac-Man core: its own set, session and card folder come
+   only with a start (ra_patch_restart_to()). The Pico restarts into it: the menu
+   says so for a few seconds, unlocks still in the handover reach the card and
+   leaderboard results the server, as far as that takes at most 10 s, then the
+   game's id goes into the watchdog's scratch registers 0 to 3, which the SDK
+   leaves to the program and which a reboot keeps, and the Pico restarts.
+   restart_rom() reads them at the start and loads that game's ROM instead of
+   image0 of the ini, once: power off brings back the saved game, "Save settings"
+   keeps the new one, as before.
+   A game of another board, e.g. galaga.rom picked in the Pac-Man core
+   (ra_patch_pick_other_board()), needs its core first: the same steps, but
+   before the restart the core pulls RECONFIG_N (Z = 0xA5, see game20k_top.sv) and
+   the FPGA loads the next core of the flash ring (fpga/common/slots.txt). The
+   Pico restarts while it loads, waits for it at the start as after power on, and
+   restart_rom() finds the board it wanted or switches on to the next core. Power
+   on loads the first core of the ring again. */
+#define RESTART_MAGIC   0x67323072u          /* "g20r" */
+#define RESTART_SHOW_MS 3000                 /* the menu's message first */
+#define RESTART_WAIT_MS 10000                /* then at most this for unlocks and results */
+#define SWITCH_HOPS     7                    /* the 8 MB flash holds at most 8 cores of 1 MB */
+
+/* The game for the next start. hops counts the core switches on the way to its
+   board, the check covers it too. */
+static void restart_mark(const ra_game_t *g, uint32_t hops) {
+  watchdog_hw->scratch[0] = RESTART_MAGIC;
+  watchdog_hw->scratch[1] = g->id;
+  watchdog_hw->scratch[3] = hops;
+  watchdog_hw->scratch[2] = ~(RESTART_MAGIC ^ g->id ^ hops);
+}
+
+/* The core pulls RECONFIG_N and the FPGA loads the next core of the ring. Caller
+   holds sdc_lock: the card hangs on the FPGA, no write may be cut off. False when
+   the core still answers 50 ms later: it does not know Z, it was built before the
+   switch, and goes on. A new core is not up that early, a full bitstream takes
+   0.3 s from the flash at 25 MHz. */
+static bool core_switch(void) {
+  sys_set_val('Z', (int8_t)0xA5);
+  vTaskDelay(pdMS_TO_TICKS(50));
+  return !sys_status_is_valid();
+}
+
+static void restart_step(void) {
+  static TickType_t start;
+  const ra_game_t *g = ra_patch_restart_to();
+  if(!g) return;
+  TickType_t now = xTaskGetTickCount();
+  if(!start) {
+    start = now ? now : 1;
+    menu_notify(MENU_EVENT_RA_RESTART);
+    return;
+  }
+  TickType_t since = now - start;
+  if(since < pdMS_TO_TICKS(RESTART_SHOW_MS)) return;
+  // unlocks and leaderboard results live in RAM until the card or the server
+  // has them: wait for them, but not for ever
+  if((ra_queue_in_transit() || ra_task_lboard_pending()) && since < pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS))
+    return;
+  if(ra_queue_in_transit() || ra_task_lboard_pending())
+    debugf("RA: restart with %u unlocks and %u leaderboard results not yet out",
+           ra_queue_in_transit(), ra_task_lboard_pending());
+  restart_mark(g, 0);
+  sdc_lock();                  /* no card write is cut off in the middle */
+  if(g->board == ram_mirror_board) {
+    debugf("RA: restart for %s (%u)", g->title, g->id);
+    mcu_hw_reset();
+  }
+  debugf("Core switch for %s (%u), board %u", g->title, g->id, g->board);
+  if(core_switch()) mcu_hw_reset();
+  // the bitstream has no switch: the game goes on, and the menu says why
+  watchdog_hw->scratch[0] = 0;
+  sdc_unlock();
+  debugf("Core switch: the core did not reload, its bitstream does not know Z");
+  start = 0;
+  ra_patch_restart_cancel();
+  menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
+}
+
+/* At the start, before the images are mounted: the game a restart was for. After
+   a core switch the board of the core that came up decides: the game's board
+   loads its ROM, another one switches on to the next core of the ring. */
+static void restart_rom(void) {
+  uint32_t magic = watchdog_hw->scratch[0], id = watchdog_hw->scratch[1];
+  uint32_t check = watchdog_hw->scratch[2], hops = watchdog_hw->scratch[3];
+  watchdog_hw->scratch[0] = 0;   /* once */
+  if(magic != RESTART_MAGIC || check != ~(RESTART_MAGIC ^ id ^ hops)) return;
+  const ra_game_t *g = ra_games_by_id(id);
+  if(!g) return;
+  if(g->board != ram_mirror_board) {
+    // a core of a third board: on to the next one, as long as the ring can be
+    // longer. Without a valid header the board is unknown, nothing to compare
+    if(!ram_mirror_board || hops >= SWITCH_HOPS) {
+      debugf("Core switch: no core of board %u for %s after %lu switches", g->board, g->title, (unsigned long)hops);
+      return;
+    }
+    restart_mark(g, hops + 1);
+    sdc_lock();
+    debugf("Core switch for %s, board %u, on from board %u", g->title, g->board, ram_mirror_board);
+    if(core_switch()) mcu_hw_reset();
+    watchdog_hw->scratch[0] = 0;
+    sdc_unlock();
+    debugf("Core switch: the core did not reload, its bitstream does not know Z");
+    return;
+  }
+  char path[48];                 /* "/sd/" plus a MAME set name, at most 16 characters, plus ".rom" */
+  snprintf(path, sizeof(path), "/sd/%s.rom", g->set);
+  // the switch went by the file name, the file is taken from the card's root: a
+  // file picked in a folder, or one gone since, leaves the ini's ROM
+  FILINFO fno;
+  sdc_lock();
+  FRESULT r = f_stat(path, &fno);
+  sdc_unlock();
+  if(r != FR_OK) {
+    debugf("RA: started for %s, but %s is missing (%d), the ini's ROM", g->title, path, r);
+    return;
+  }
+  debugf("RA: started for %s, ROM %s instead of the ini's", g->title, path);
+  sdc_set_default(MAX_DRIVES + RA_PATCH_ROM_IMAGE, path);
+}
+
 /* The server's answer to a leaderboard entry: the rank of the account's best
    value. It did not record the entry when the rank is 0, while its warning is
    on, or when the best is 0 for a result that is not. A client RetroAchievements
@@ -476,6 +597,7 @@ static void ram_mirror_poll(void) {
   // the banner, one character per poll in bytes 6 and 7
   banner_login();
   banner_lboard();
+  restart_step();
   banner_step(hdr_tx);
 
   /* Verdict: 0xA5 ok, otherwise the failed check. 0xE1 magic, 0xE2 layout, 0xE3
@@ -668,6 +790,7 @@ static void com_task(__attribute__((unused)) void *p ) {
     // open disk images, either defaults set in sdc_init or
     // user configure ones from the ini file. This will also
     // start rom image transfers if specified in the ini file
+    restart_rom();            /* a game picked before a restart of the Pico goes first */
     sdc_mount_defaults();
 
     // game20k: no image0 in the ini, or the core rejected it (the transfer is

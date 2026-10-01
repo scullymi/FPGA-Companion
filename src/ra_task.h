@@ -110,4 +110,9 @@ bool ra_task_lboard_result(unsigned *seen, ra_lboard_result_t *out);
  *  Pings go out only while frames arrive, as rc_client does. */
 void ra_task_frame(void);
 
+/** @brief Leaderboard results handed over and not yet answered by the server. Any task.
+ *
+ *  They live in RAM only, so a restart of the Pico waits for 0, as long as it can. */
+unsigned ra_task_lboard_pending(void);
+
 #endif /* RA_TASK_H */
