@@ -68,7 +68,8 @@ static uint8_t       handover_mem[RA_QUEUE_HANDOVER * sizeof(ra_unlock_t)];
 static char          owner[RA_QUEUE_USER_MAX];  // the account unlocks are kept for
 static unsigned      pending;                   // this account's lines not done, plus ram[]
 static ra_unlock_t   ram[RA_QUEUE_RAM];         // unlocks the card did not take
-static unsigned      ram_n;
+static volatile unsigned ram_n;                 // volatile: ra_queue_in_transit() reads it from com_task
+static volatile bool taking;                    // ra_queue_take() holds an unlock between the queue and the card
 static ra_unlock_t   head;                      // what ra_queue_head() returned last
 static bool          head_in_ram;               // ... it is ram[0]
 static bool          head_taken;                // ... and a submit is using it
@@ -76,7 +77,13 @@ static FSIZE_t       head_at;                   // file offset of its line
 static char          head_line[RA_QUEUE_LINE_MAX];
 static char          head_user[RA_QUEUE_USER_MAX];
 
-unsigned ra_queue_in_transit(void) { return handover ? (unsigned)uxQueueMessagesWaiting(handover) : 0; }
+unsigned ra_queue_in_transit(void) {
+  // in this order: an unlock leaves the queue only after taking is set, and taking
+  // is cleared only once the unlock is on the card or in ram[]
+  unsigned n = handover ? (unsigned)uxQueueMessagesWaiting(handover) : 0;
+  if(taking) n++;
+  return n + ram_n;
+}
 
 QueueHandle_t ra_queue_init(void) {
   if(!handover) handover = xQueueCreateStatic(RA_QUEUE_HANDOVER, sizeof(ra_unlock_t), handover_mem, &handover_ctl);
@@ -300,7 +307,7 @@ void ra_queue_open(const char *user) {
     debugf("RA: %u unlocks pending from before", pending);
 }
 
-void ra_queue_take(bool keep) {
+static void take_one(bool keep) {
   ra_unlock_t u;
   if(!handover || xQueueReceive(handover, &u, 0) != pdTRUE) return;
   if(!keep) {
@@ -325,6 +332,12 @@ void ra_queue_take(bool keep) {
     debugf("RA: unlock %u NOT on the card (error %d), kept in RAM until it can be written", u.id, (int)r);
   } else
     debugf("RA: unlock %u lost, card error %d and no room in RAM", u.id, (int)r);
+}
+
+void ra_queue_take(bool keep) {
+  taking = true;   // counted by ra_queue_in_transit() from before the receive
+  take_one(keep);
+  taking = false;
 }
 
 int ra_queue_head(ra_unlock_t *u) {

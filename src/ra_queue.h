@@ -33,7 +33,9 @@ QueueHandle_t ra_queue_init(void);
  *  or without a game hash. */
 void ra_queue_add(unsigned id, bool hardcore);
 
-/** @brief Unlocks handed over and not yet on the card. Any task. A restart waits for 0. */
+/** @brief Unlocks on their way: in the handover, being taken from it, or kept in RAM
+ *  after a card error until the server has them. Any task. A restart waits for 0,
+ *  as long as it can. */
 unsigned ra_queue_in_transit(void);
 
 /** @brief True when a line with this game hash is the running game's. RA task only.

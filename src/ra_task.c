@@ -97,7 +97,8 @@ static QueueHandle_t      lb_queue;                          // com_task -> RA t
 static StaticQueue_t      lb_queue_ctl;
 static uint8_t            lb_queue_mem[RA_LB_QUEUE * sizeof(lb_entry_t)];
 static lb_entry_t         lb_ram[RA_LB_RAM];                 // waiting for the server, oldest first
-static unsigned           lb_n;
+static volatile unsigned  lb_n;                              // volatile: ra_task_lboard_pending() reads it from com_task
+static volatile bool      lb_taking;                         // lb_take() holds a result between the queue and lb_ram[]
 static ra_lboard_result_t lb_result;                         // the server's latest answer
 static volatile unsigned  lb_seq;                            // counts answers, see ra_task_lboard_result()
 
@@ -190,7 +191,11 @@ void ra_task_core_value(char id, int value) {
   }
 }
 unsigned ra_task_lboard_pending(void) {
-  return lb_n + (lb_queue ? (unsigned)uxQueueMessagesWaiting(lb_queue) : 0);
+  // in this order: a result leaves the queue only after lb_taking is set, and
+  // lb_taking is cleared only once the result is in lb_ram[]
+  unsigned n = lb_queue ? (unsigned)uxQueueMessagesWaiting(lb_queue) : 0;
+  if(lb_taking) n++;
+  return n + lb_n;
 }
 
 void ra_task_frame(void) { frames++; }
@@ -229,7 +234,7 @@ bool ra_task_lboard_result(unsigned *seen, ra_lboard_result_t *out) {
 
 /* Takes a leaderboard result from com_task into the RAM list. Without an account
    it is dropped, as unlocks are. When the list is full the oldest goes. */
-static void lb_take(void) {
+static void lb_take_one(void) {
   lb_entry_t e;
   if(!lb_queue || xQueueReceive(lb_queue, &e, 0) != pdTRUE) return;
   if(!account) {
@@ -242,6 +247,12 @@ static void lb_take(void) {
   }
   lb_ram[lb_n++] = e;
   debugf("RA: leaderboard %u result %ld kept in RAM until the server has it", e.id, (long)e.score);
+}
+
+static void lb_take(void) {
+  lb_taking = true;   // counted by ra_task_lboard_pending() from before the receive
+  lb_take_one();
+  lb_taking = false;
 }
 
 /* Handles one event of the queue set: an unlock goes to the card, a leaderboard
