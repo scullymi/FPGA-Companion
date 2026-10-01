@@ -350,10 +350,19 @@ static void restart_mark(const ra_game_t *g, uint32_t hops) {
 }
 
 /* The core pulls RECONFIG_N and the FPGA loads the next core of the ring. Caller
-   holds sdc_lock: the card hangs on the FPGA, no write may be cut off. False when
-   the core still answers 50 ms later: it does not know Z, it was built before the
-   switch, and goes on. A new core is not up that early, a full bitstream takes
-   0.3 s from the flash at 25 MHz. */
+   holds sdc_lock: the card hangs on the FPGA, no write may be cut off. Caller has
+   seen S1 and S2 released, see buttons_held(). False when the core still answers
+   50 ms later: it does not know Z, it was built before the switch, and goes on. A
+   new core is not up that early, a full bitstream takes 0.3 s from the flash at
+   25 MHz. */
+/* S1 and S2 sit on the FPGA's MODE pins (MODE0 and MODE1, schematic 3923). One
+   held while the FPGA reloads selects another way of loading, and no core comes up
+   until power off and on. The switch waits until both are released. The read also
+   re-arms the button interrupt, so it is made only at the moment of the switch. */
+static bool buttons_held(void) {
+  return (sys_get_buttons() & 3) != 0;
+}
+
 static bool core_switch(void) {
   sys_set_val('Z', (int8_t)0xA5);
   vTaskDelay(pdMS_TO_TICKS(50));
@@ -376,6 +385,7 @@ static void restart_step(void) {
   // has them: wait for them, but not for ever
   if((ra_queue_in_transit() || ra_task_lboard_pending()) && since < pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS))
     return;
+  if(g->board != ram_mirror_board && buttons_held()) return;
   if(ra_queue_in_transit() || ra_task_lboard_pending())
     debugf("RA: restart with %u unlocks and %u leaderboard results not yet out",
            ra_queue_in_transit(), ra_task_lboard_pending());
@@ -414,6 +424,7 @@ static void restart_rom(void) {
       return;
     }
     restart_mark(g, hops + 1);
+    while(buttons_held()) vTaskDelay(pdMS_TO_TICKS(20));
     sdc_lock();
     debugf("Core switch for %s, board %u, on from board %u", g->title, g->board, ram_mirror_board);
     if(core_switch()) mcu_hw_reset();
