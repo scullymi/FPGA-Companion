@@ -119,10 +119,13 @@ bool ra_patch_lboard(unsigned id, ra_patch_lboard_t *out);
 /** @brief The server's warning about this client, e.g. "Unknown Emulator". Any task.
  *
  *  RetroAchievements adds it to the set as an achievement while it has not
- *  approved the client for hardcore. Until then the server records hardcore
- *  unlocks as casual and keeps no leaderboard entries, whatever mode the device
- *  is in. Copies its title without "Warning: " to out, which may be NULL, and
- *  returns true when the set parsed last, from the card or the server, has one. */
+ *  fully approved the client for hardcore, e.g. an unknown or outdated one. The
+ *  server then records hardcore unlocks as casual and keeps no leaderboard
+ *  entries, whatever mode the device is in. It may warn an approved client with
+ *  a known issue as well, which this firmware does not tell apart: such a
+ *  client's results would read as not recorded. Copies its title without
+ *  "Warning: " to out, which may be NULL, and returns true when the set parsed
+ *  last, from the card or the server, has one. */
 bool ra_patch_warning(char *out, size_t size);
 
 /** @brief Number of core achievements in the active set. */

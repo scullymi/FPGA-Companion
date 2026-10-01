@@ -302,16 +302,16 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 }
 
 /* The server's answer to a leaderboard entry: the rank of the account's best
-   value. It did not record the entry when the rank is 0, or when the best is 0
-   for a result that is not. A client RetroAchievements has not approved gets
-   success, the account's earlier best or 0, and the rank of that value, so
-   with the server's warning a best of 0 means the same for a result of 0. */
+   value. It did not record the entry when the rank is 0, while its warning is
+   on, or when the best is 0 for a result that is not. A client RetroAchievements
+   has not approved gets success, the account's earlier best or 0, and the rank
+   of that value, never the entry itself. */
 static void banner_lboard(void) {
   static unsigned seen;
   ra_lboard_result_t r;
   char text[BANNER_LEN + 1];
   if(!ra_task_lboard_result(&seen, &r)) return;
-  if(!r.rank || (r.best == 0 && (r.score != 0 || ra_patch_warning(NULL, 0)))) {
+  if(!r.rank || ra_patch_warning(NULL, 0) || (r.best == 0 && r.score != 0)) {
     banner_show("RA: LB NOT RECORDED", false, false);
     return;
   }

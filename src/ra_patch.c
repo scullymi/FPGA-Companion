@@ -66,8 +66,8 @@ static bool                   rom_hashing;
 #define RA_PATCH_MAC        "/sd/ra_patch.mac"    /**< "g20k-s1 <tag>": the set file's tag with the device key */
 #define RA_PATCH_MAC_LABEL  "g20k-s1"             /**< what the set's tag is made over, keeps it apart from other tags */
 /** The first id of the server's warnings, e.g. "Warning: Unknown Emulator", which
-   it adds as an achievement for a client it has not approved for hardcore. Not
-   an achievement of the game, rc_client treats every id from here on as one. */
+   it adds as an achievement for a client it has not fully approved for hardcore.
+   Not an achievement of the game, rc_client treats every id from here on as one. */
 #define RA_PATCH_WARNING_ID 101000001u
 
 // the set as it was read from the card or received from the server, for

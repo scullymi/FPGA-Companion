@@ -82,10 +82,11 @@ add_library(u8g2 ${U8G2_SRC})
 # rcheevos (submodule), for the achievements of the game20k core
 set(RCHEEVOS_DIR ${CMAKE_CURRENT_LIST_DIR}/../rcheevos)
 
-# how this firmware introduces itself to RetroAchievements (User-Agent). Raise the
-# version with every release, override with -DGAME20K_VERSION=... when building.
+# how this firmware introduces itself to RetroAchievements (User-Agent). The version here
+# is the fallback for a build without git: scripts/build_companion.sh of game20k passes its
+# git describe output with -DGAME20K_VERSION=... instead.
 if(NOT DEFINED GAME20K_VERSION)
-  set(GAME20K_VERSION "0.1.0")
+  set(GAME20K_VERSION "0.2.0")
 endif()
 if(NOT DEFINED GAME20K_PLATFORM)
   set(GAME20K_PLATFORM "Tang Nano 20K")
