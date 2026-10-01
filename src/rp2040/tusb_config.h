@@ -139,7 +139,9 @@
 #define CFG_TUH_VENDOR              0
 #define CFG_TUH_XINPUT              MAX_XBOX_DEVICES
 
-#define CFG_TUH_ASIX                1   // support one ASIX network interface
+// game20k: no ASIX USB Ethernet, the Pico 2 W has WiFi. Its 16.5 KB of buffers go to the
+// achievement sets, mcu_hw.c leaves the driver out with it.
+#define CFG_TUH_ASIX                0
 
 // max device support (excluding hub device)
 #define CFG_TUH_DEVICE_MAX          (CFG_TUH_HUB ? 4 : 1) // hub typically has 4 ports

@@ -36,7 +36,9 @@
 #define MEM_ALIGNMENT               4
 #define MEM_SIZE                    (MAX_CONCURRENT_CX_HINT * TCP_MSS)
 #define MEMP_NUM_ARP_QUEUE          10
-#define PBUF_POOL_SIZE              24
+// game20k: 16 instead of 24, 12 KB more for the achievement sets. The receive window is
+// TCP_WND = 6 * TCP_MSS, 8.8 KB, so 16 buffers of about 1.5 KB still hold more than a window.
+#define PBUF_POOL_SIZE              16
 #define LWIP_ARP                    1
 #define LWIP_ETHERNET               1
 #define LWIP_ICMP                   1

@@ -161,7 +161,10 @@ if(${BOARD} STREQUAL PICO)
    add_compile_definitions(${PROJECT} PRIVATE MISTLE_BOARD=0 ENABLE_WIFI ENABLE_BLUETOOTH)
    add_custom_command(TARGET ${PROJECT} POST_BUILD COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "Firmware has been built for Raspberry Pi Pico or Pico-W.")
 elseif(${BOARD} STREQUAL PICO2)
-   add_compile_definitions(${PROJECT} PRIVATE MISTLE_BOARD=1 ENABLE_WIFI ENABLE_BLUETOOTH)
+   # game20k: no Bluetooth on the Pico 2 W, the cabinet's stick is USB. Its 22 KB of RAM go
+   # to the achievement sets: a large one with two leaderboards needs more than 140 KB.
+   add_compile_definitions(${PROJECT} PRIVATE MISTLE_BOARD=1 ENABLE_WIFI)
+   set(GAME20K_NO_BLUETOOTH ON)
    add_custom_command(TARGET ${PROJECT} POST_BUILD COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "Firmware has been built for Raspberry Pi Pico2 or Pico2-W.")
 elseif(${BOARD} STREQUAL WS2040ZERO)
    add_compile_definitions(${PROJECT} PRIVATE MISTLE_BOARD=2)
@@ -221,7 +224,9 @@ target_compile_definitions(${PROJECT} PRIVATE
 # shown, and the game goes on. A large set once stopped the firmware at every start.
 target_compile_definitions(${PROJECT} PRIVATE PICO_MALLOC_PANIC=0)
 target_link_libraries(${PROJECT} PRIVATE pico_cyw43_arch_lwip_sys_freertos)
-target_link_libraries(${PROJECT} PRIVATE pico_btstack_cyw43 pico_btstack_classic)
+if(NOT GAME20K_NO_BLUETOOTH)
+  target_link_libraries(${PROJECT} PRIVATE pico_btstack_cyw43 pico_btstack_classic)
+endif()
 target_link_libraries(${PROJECT} PRIVATE tinyusb_host tinyusb_board u8g2)
 target_link_libraries(${PROJECT} PRIVATE pico_lwip_sntp)
 # HTTPS to RetroAchievements: the HTTP client, lwIP's TLS layer, mbedTLS

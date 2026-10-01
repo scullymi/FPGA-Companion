@@ -688,14 +688,21 @@ void mcu_hw_spi_txrx_block(const unsigned char *tx, unsigned char *rx, unsigned 
 /* ======================================================================= */
 
 #include "xinput_host.h"
+#if CFG_TUH_ASIX
 #include "asix_host.h"
+#endif
 
+// game20k: the ASIX USB Ethernet driver only where tusb_config.h has it, the Pico 2 W
+// build of game20k uses WiFi and gives its 16.5 KB of buffers to the achievement sets
 usbh_class_driver_t const* usbh_app_driver_get_cb(uint8_t* driver_count){
   static usbh_class_driver_t drivers[2];
 
-  *driver_count = 2;
+  *driver_count = 1;
   memcpy(drivers+0, &usbh_xinput_driver, sizeof(usbh_class_driver_t));
+#if CFG_TUH_ASIX
   memcpy(drivers+1, &usbh_asix_driver, sizeof(usbh_class_driver_t));
+  *driver_count = 2;
+#endif
 
   return drivers;
 }
@@ -727,6 +734,7 @@ static bool asix_unmount_in_progress = false;
 #include "lwip/dhcp.h"
 #include "lwip/apps/sntp.h"
 
+#if CFG_TUH_ASIX
 static err_t netif_asix_output(struct netif *netif, struct pbuf *p) {
   if(network_status == NETWORK_STATUS_UNINITIALIZED) return ERR_OK;
   
@@ -742,6 +750,7 @@ static err_t netif_asix_low_init(struct netif *netif) {
 
   return ERR_OK;
 }
+#endif // CFG_TUH_ASIX
 
 static void netif_link_callback(struct netif *netif) {
   usb_debugf("netif link status changed %s", netif_is_link_up(netif) ? "up" : "down");
@@ -861,7 +870,8 @@ DWORD get_fattime(void) {
          (DWORD)tm.tm_min << 5 | (DWORD)(tm.tm_sec / 2);                  // bits 10-5 minute, 4-0 seconds/2
 }
 
-static void netif_up(struct netif *netif) {
+// game20k: unused without ASIX and PPP, as in the Pico 2 W build
+__attribute__((unused)) static void netif_up(struct netif *netif) {
   usb_debugf("netif_up(%c%c)", netif->name[0], netif->name[1]);
   
   // assign callbacks for link and status
@@ -891,6 +901,7 @@ static void netif_up(struct netif *netif) {
     usb_debugf("Not starting DHCP for PPP");
 }
 
+#if CFG_TUH_ASIX
 static void asix_net_register(asixh_interface_t *itf) {
   if(!(network_status & NETWORK_STATUS_TCPIP_INIT)) {
     usb_debugf("Ignoring USB network device since TCP stack is not initialized");
@@ -977,6 +988,7 @@ void tuh_asix_umount_cb(asixh_interface_t *itf) {
   // On USB unplug, always show a network-down OSD message.
   menu_notify(MENU_EVENT_NETWORK_DISCONNECTED);
 }
+#endif // CFG_TUH_ASIX
 
 #ifdef ENABLE_PPP
 

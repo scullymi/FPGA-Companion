@@ -18,6 +18,10 @@
 //  /opt/pico-sdk/src/rp2_common/pico_btstack/btstack_flash_bank.c
 // flash_safe_execute -> PICO_ERROR_NOT_PERMITTED
 
+// game20k: compiled only where the board has Bluetooth, the Pico 2 W build of game20k
+// has none, see CMakeLists.txt
+#ifdef ENABLE_BLUETOOTH
+
 #include "../debug.h"
 #include "../menu.h"
 #include "../hid.h"
@@ -444,3 +448,5 @@ void bluetooth_scan(void) {
   bt_debugf("Starting 10 second inquiry scan..");
   gap_inquiry_start(10);   // start scanning for 5 seconds  
 }
+
+#endif // ENABLE_BLUETOOTH
