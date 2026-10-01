@@ -359,8 +359,9 @@ static void restart_mark(const ra_game_t *g, uint32_t hops) {
    25 MHz. */
 /* S1 and S2 sit on the FPGA's MODE pins (MODE0 and MODE1, schematic 3923). One
    held while the FPGA reloads selects another way of loading, and no core comes up
-   until power off and on. The switch waits until both are released. The read also
-   re-arms the button interrupt, so it is made only at the moment of the switch. */
+   until power off and on. The switch waits until both are released, read under
+   the card lock right before Z. The read also re-arms the button interrupt, so a
+   press in that moment may not reach the menu, the core is about to go anyway. */
 static bool buttons_held(void) {
   return (sys_get_buttons() & 3) != 0;
 }
@@ -397,18 +398,21 @@ static void restart_step(void) {
   bool late = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS);
   if((ra_queue_in_transit() || ra_task_lboard_pending() || ftpd_uploads()) && !late)
     return;
-  if(g->board != ram_mirror_board && buttons_held()) return;
-  if(!ra_patch_restart_commit(g)) return;   /* a pick changed the target in this moment */
+  // the last checks under the card lock, where they hold until the Pico goes:
+  // every card operation ends whole, an upload opens its file only under the lock,
+  // S1 and S2 are read right before Z and not before a wait for the lock. The
+  // target is fixed last, a pick can change it until then
+  sdc_lock();
+  bool held = g->board != ram_mirror_board && buttons_held();
+  if(held || (ftpd_uploads() && !late) || !ra_patch_restart_commit(g)) {
+    sdc_unlock();
+    return;
+  }
+  if(ftpd_uploads())
+    debugf("FTP: the restart cuts %u upload(s) in the middle", ftpd_uploads());
   if(ra_queue_in_transit() || ra_task_lboard_pending())
     debugf("RA: restart with %u unlocks and %u leaderboard results not yet out",
            ra_queue_in_transit(), ra_task_lboard_pending());
-  // every card operation ends whole before the Pico goes. An upload spans many,
-  // its count changes under the lock only, so it is exact here
-  sdc_lock();
-  if(ftpd_uploads()) {
-    if(!late) { sdc_unlock(); return; }
-    debugf("FTP: the restart cuts %u upload(s) in the middle", ftpd_uploads());
-  }
   restart_mark(g, 0);
   if(g->board == ram_mirror_board) {
     debugf("RA: restart for %s (%u)", g->title, g->id);
@@ -454,8 +458,12 @@ static void restart_rom(void) {
       return;
     }
     restart_mark(g, hops + 1);
-    while(buttons_held()) vTaskDelay(pdMS_TO_TICKS(20));
-    sdc_lock();
+    for(;;) {                    /* S1 and S2 read under the lock, right before Z */
+      sdc_lock();
+      if(!buttons_held()) break;
+      sdc_unlock();
+      vTaskDelay(pdMS_TO_TICKS(20));
+    }
     debugf("Core switch for %s, board %u, on from board %u", g->title, g->board, ram_mirror_board);
     if(core_switch()) mcu_hw_reset();
     watchdog_hw->scratch[0] = 0;

@@ -57,7 +57,7 @@ static bool             settled;                       // ra_patch_settle() ran
 static bool             table_wrong;                   // the server's id differs from the table's: RA_HC_BLOCK_GAME stays
 static bool             foreign_rom;                   // the ROM in the core is another game's than the boot's, see ra_patch_settle()
 static const ra_game_t *volatile restart_to;           // the game a restart starts, see ra_patch_restart_to()
-static volatile bool   restart_committed;             // restart_step() wrote the marker: the target stays until the Pico restarts
+static volatile bool   restart_committed;             // restart_step() writes the marker now: picks no longer change the target
 static bool             set_off;                       // ra_patch_apply_pending() took the set out of rcheevos for that
 static volatile bool    set_again;                     // com_task asks the RA task to read the card set once more
 

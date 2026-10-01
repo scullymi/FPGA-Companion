@@ -103,10 +103,11 @@ const ra_game_t *ra_patch_restart_to(void);
  *  this board. */
 bool ra_patch_pick_other_board(const char *name);
 
-/** @brief Fixes the target g for the restart that follows at once. com_task.
+/** @brief Fixes the target g right before the marker is written, under the card lock. com_task.
  *
- *  False when the target is no longer g: a pick changed it in this moment, and the
- *  restart starts over with the new one. */
+ *  From here picks no longer change it, until the Pico restarts or
+ *  ra_patch_restart_cancel() runs. False when the target is no longer g: a pick
+ *  changed it in this moment, and the restart starts over with the new one. */
 bool ra_patch_restart_commit(const ra_game_t *g);
 
 /** @brief Drops the restart target and its commit: the core switch did not happen. Any task. */
