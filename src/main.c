@@ -427,13 +427,22 @@ static void restart_step(void) {
   menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
 }
 
+/* The marker as the Pico found it at its start. restart_take() moves it out of
+   the scratch registers before the wait for the FPGA: a boot that never reaches
+   restart_rom(), because no core comes up, must not leave it for the next core
+   that shows up, it would switch that one away. */
+static uint32_t marker[4];
+
+static void restart_take(void) {
+  for(int i = 0; i < 4; i++) marker[i] = watchdog_hw->scratch[i];
+  watchdog_hw->scratch[0] = 0;
+}
+
 /* At the start, before the images are mounted: the game a restart was for. After
    a core switch the board of the core that came up decides: the game's board
    loads its ROM, another one switches on to the next core of the ring. */
 static void restart_rom(void) {
-  uint32_t magic = watchdog_hw->scratch[0], id = watchdog_hw->scratch[1];
-  uint32_t check = watchdog_hw->scratch[2], hops = watchdog_hw->scratch[3];
-  watchdog_hw->scratch[0] = 0;   /* once */
+  uint32_t magic = marker[0], id = marker[1], check = marker[2], hops = marker[3];
   if(magic != RESTART_MAGIC || check != ~(RESTART_MAGIC ^ id ^ hops)) return;
   const ra_game_t *g = ra_games_by_id(id);
   if(!g) return;
@@ -752,6 +761,7 @@ TaskHandle_t com_task_handle = NULL;
 
 static void com_task(__attribute__((unused)) void *p ) {
   debugf("Starting main communication task");
+  restart_take();             /* game20k: the marker of a restart, first of all */
   
   // startup FPGA, this will also put the core into reset
   if(sys_wait4fpga()) {
