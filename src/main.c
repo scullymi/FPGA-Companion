@@ -322,13 +322,15 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 /* A ROM picked after the start can be a known ROM of another game of this board,
    e.g. puckman.rom in the Pac-Man core: its own set, session and card folder come
    only with a start (ra_patch_restart_to()). The Pico restarts into it: the menu
-   says so for a few seconds, unlocks still in the handover reach the card and
-   leaderboard results the server, as far as that takes at most 10 s, then the
-   game's id goes into the watchdog's scratch registers 0 to 3, which the SDK
+   says so for a few seconds. Unlocks still in the handover reach the card,
+   leaderboard results the server, a ROM picked meanwhile ends its stream, as far
+   as that takes at most 10 s, and a running FTP upload then stops after its chunk.
+   The game's id goes into the watchdog's scratch registers 0 to 3, which the SDK
    leaves to the program and which a reboot keeps, and the Pico restarts.
-   restart_rom() reads them at the start and loads that game's ROM instead of
-   image0 of the ini, once: power off brings back the saved game, "Save settings"
-   keeps the new one, as before.
+   restart_take() moves them out at the very start, restart_rom() loads that game's
+   ROM instead of image0 of the ini, once: power off brings back the saved game,
+   "Save settings" keeps the new one, as before. The newest pick wins until the
+   marker is written, see ra_patch_restart_to().
    A game of another board, e.g. galaga.rom picked in the Pac-Man core
    (ra_patch_pick_other_board()), needs its core first: the same steps, but
    before the restart the core pulls RECONFIG_N (Z = 0xA5, see game20k_top.sv) and
@@ -351,13 +353,6 @@ static void restart_mark(const ra_game_t *g, uint32_t hops) {
   watchdog_hw->scratch[2] = ~(RESTART_MAGIC ^ g->id ^ hops);
 }
 
-/* The core pulls RECONFIG_N and the FPGA loads the next core of the ring. Caller
-   holds sdc_lock: the card hangs on the FPGA, no card operation may run while it
-   goes. Caller has
-   seen S1 and S2 released, see buttons_held(). False when the core still answers
-   50 ms later: it does not know Z, it was built before the switch, and goes on. A
-   new core is not up that early, a full bitstream takes 0.3 s from the flash at
-   25 MHz. */
 /* S1 and S2 sit on the FPGA's MODE pins (MODE0 and MODE1, schematic 3923). One
    held while the FPGA reloads selects another way of loading, and no core comes up
    until power off and on. The switch waits until both are released, read under
@@ -367,6 +362,12 @@ static bool buttons_held(void) {
   return (sys_get_buttons() & 3) != 0;
 }
 
+/* The core pulls RECONFIG_N and the FPGA loads the next core of the ring. Caller
+   holds sdc_lock: the card hangs on the FPGA, no card operation may run while it
+   goes. Caller has seen S1 and S2 released, see buttons_held(). False when the
+   core still answers 50 ms later: it does not know Z, it was built before the
+   switch, and goes on. A new core is not up that early, a full bitstream takes
+   0.3 s from the flash at 25 MHz. */
 static bool core_switch(void) {
   sys_set_val('Z', (int8_t)0xA5);
   vTaskDelay(pdMS_TO_TICKS(50));
