@@ -42,11 +42,21 @@ static const ra_rom_t roms_galaga[] = {
 };
 static const ra_dip_t dips_galaga[] = { { 'L', 2 }, { 'B', 2 } };
 
+// Pac-Man (Midway), as scripts/make_rom.py builds pacman.rom from the MAME set "pacman", the
+// ten chips in MAME's order. The set expects 3 lives (list 'L' value 2) and 1 coin 1 credit
+// (list 'C' value 1): every achievement resets on free play and on more than 3 lives.
+static const ra_rom_t roms_pacman[] = {
+  { { 0xb1,0xde,0xec,0x6d,0x4a,0xb9,0x67,0xbc,0x01,0x15,0xbc,0xa3,0x7c,0xad,0x19,0xbc,
+      0x22,0x77,0xc4,0x82,0x37,0x62,0x0a,0x2e,0x4a,0x41,0x93,0x2d,0x8e,0x5a,0xb2,0x0e }, "MAME pacman" },
+};
+static const ra_dip_t dips_pacman[] = { { 'L', 2 }, { 'C', 1 } };
+
 // one row per game: set, title, id, hash, board, its files, its switches. Boards
 // are numbered in the order the cores arrive (Galaga 1); several sets may share a
 // board, the digest then picks the set.
 static const ra_game_t games[] = {
   { "galaga", "Galaga", 12138u, "b8140b5e33c53b0f7dd3cc368951a4dd", 1, roms_galaga, 2, dips_galaga, 2 },
+  { "pacman", "Pac-Man", 12192u, "64d1f88b9b276aece4b0edcc25b7a434", 2, roms_pacman, 1, dips_pacman, 2 },
 };
 #define GAMES_N (sizeof(games) / sizeof(games[0]))   /**< rows in games[] */
 
