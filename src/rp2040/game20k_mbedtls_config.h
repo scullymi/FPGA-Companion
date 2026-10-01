@@ -66,6 +66,13 @@
 #define MBEDTLS_X509_CRT_PARSE_C
 #define MBEDTLS_BASE64_C
 #define MBEDTLS_PEM_PARSE_C             /* the anchor is PEM */
+
+/* Record buffers: the server's replies come in records of up to 16 KB, so the input
+   buffer keeps the full size. Our requests are short GETs, so the output buffer needs
+   no 16 KB; 4 KB saves 12 KB of SDK heap per connection, which the achievement sets
+   and their parse need. */
+#define MBEDTLS_SSL_IN_CONTENT_LEN      16384
+#define MBEDTLS_SSL_OUT_CONTENT_LEN     4096
 /** @} */
 
 #endif /* GAME20K_MBEDTLS_CONFIG_H */

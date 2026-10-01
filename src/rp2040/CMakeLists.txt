@@ -83,10 +83,11 @@ add_library(u8g2 ${U8G2_SRC})
 set(RCHEEVOS_DIR ${CMAKE_CURRENT_LIST_DIR}/../rcheevos)
 
 # how this firmware introduces itself to RetroAchievements (User-Agent). The version here
-# is the fallback for a build without git: scripts/build_companion.sh of game20k passes its
-# git describe output with -DGAME20K_VERSION=... instead.
+# is the fallback for a build without the script: scripts/build_companion.sh of game20k
+# passes its git describe output with -DGAME20K_VERSION=... instead. 0.0.0 so that such a
+# build never looks like a release to the server.
 if(NOT DEFINED GAME20K_VERSION)
-  set(GAME20K_VERSION "0.2.0")
+  set(GAME20K_VERSION "0.0.0")
 endif()
 if(NOT DEFINED GAME20K_PLATFORM)
   set(GAME20K_PLATFORM "Tang Nano 20K")
@@ -215,6 +216,10 @@ target_include_directories(${PROJECT} PRIVATE ${RCHEEVOS_DIR}/include ${RCHEEVOS
 target_compile_definitions(${PROJECT} PRIVATE RC_NO_THREADS=1)
 target_compile_definitions(${PROJECT} PRIVATE
 	GAME20K_VERSION="${GAME20K_VERSION}" GAME20K_PLATFORM="${GAME20K_PLATFORM}")
+# malloc returns NULL when the SDK heap is out instead of stopping the firmware: rcheevos
+# then rejects the achievement, mbedTLS fails the request, both are logged and retried or
+# shown, and the game goes on. A large set once stopped the firmware at every start.
+target_compile_definitions(${PROJECT} PRIVATE PICO_MALLOC_PANIC=0)
 target_link_libraries(${PROJECT} PRIVATE pico_cyw43_arch_lwip_sys_freertos)
 target_link_libraries(${PROJECT} PRIVATE pico_btstack_cyw43 pico_btstack_classic)
 target_link_libraries(${PROJECT} PRIVATE tinyusb_host tinyusb_board u8g2)

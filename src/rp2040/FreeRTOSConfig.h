@@ -91,6 +91,10 @@
 #ifdef ENABLE_BLUETOOTH
 // reserve a little more ram outside freertos for bluetooth
 #if PICO_RP2350
+// game20k: measured 01.10.2026, the task stacks alone take about 76 KB of this heap
+// (com 16 KB, menu 16 KB, tcpip 16 KB, usb, wifi and at_wifi 8 KB each, timer 4 KB),
+// with 72 KB the start failed at "task creation failed". The SDK heap for rcheevos and
+// mbedTLS has to come from elsewhere.
 #define configTOTAL_HEAP_SIZE                   (112*1024)
 #else
 #define configTOTAL_HEAP_SIZE                   (106*1024)

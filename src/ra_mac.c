@@ -124,7 +124,10 @@ ra_mac_state_t ra_mac_init(void) {
 }
 
 /* HMAC-SHA256 over label, a newline and the data. */
-static bool mac(const char *label, const void *data, size_t len, uint8_t *out) {
+/* HMAC-SHA256 over the label, a newline, head and data: head is an optional
+   prefix, so that a tag over an id and a large buffer needs no copy of the
+   buffer with the id in front. */
+static bool mac(const char *label, const void *head, size_t head_len, const void *data, size_t len, uint8_t *out) {
   const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   mbedtls_md_context_t ctx;
   bool ok;
@@ -134,17 +137,18 @@ static bool mac(const char *label, const void *data, size_t len, uint8_t *out) {
        mbedtls_md_hmac_starts(&ctx, key, sizeof(key)) == 0 &&
        mbedtls_md_hmac_update(&ctx, (const unsigned char *)label, strlen(label)) == 0 &&
        mbedtls_md_hmac_update(&ctx, (const unsigned char *)"\n", 1) == 0 &&
+       (head_len == 0 || mbedtls_md_hmac_update(&ctx, (const unsigned char *)head, head_len) == 0) &&
        mbedtls_md_hmac_update(&ctx, (const unsigned char *)data, len) == 0 &&
        mbedtls_md_hmac_finish(&ctx, out) == 0;
   mbedtls_md_free(&ctx);
   return ok;
 }
 
-bool ra_mac_tag(const char *label, const void *data, size_t len, char *hex) {
+bool ra_mac_tag2(const char *label, const void *head, size_t head_len, const void *data, size_t len, char *hex) {
   static const char digits[] = "0123456789abcdef";
   uint8_t t[32];
   unsigned i;
-  if(!mac(label, data, len, t)) return false;
+  if(!mac(label, head, head_len, data, len, t)) return false;
   for(i = 0; i < sizeof(t); i++) {
     hex[2 * i]     = digits[t[i] >> 4];
     hex[2 * i + 1] = digits[t[i] & 15];
@@ -153,8 +157,16 @@ bool ra_mac_tag(const char *label, const void *data, size_t len, char *hex) {
   return true;
 }
 
-bool ra_mac_check(const char *label, const void *data, size_t len, const char *hex) {
+bool ra_mac_tag(const char *label, const void *data, size_t len, char *hex) {
+  return ra_mac_tag2(label, NULL, 0, data, len, hex);
+}
+
+bool ra_mac_check2(const char *label, const void *head, size_t head_len, const void *data, size_t len, const char *hex) {
   char want[RA_MAC_HEX + 1];
-  if(!hex || strlen(hex) != RA_MAC_HEX || !ra_mac_tag(label, data, len, want)) return false;
+  if(!hex || strlen(hex) != RA_MAC_HEX || !ra_mac_tag2(label, head, head_len, data, len, want)) return false;
   return mbedtls_ct_memcmp(want, hex, RA_MAC_HEX) == 0;
+}
+
+bool ra_mac_check(const char *label, const void *data, size_t len, const char *hex) {
+  return ra_mac_check2(label, NULL, 0, data, len, hex);
 }

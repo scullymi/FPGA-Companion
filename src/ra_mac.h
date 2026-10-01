@@ -45,4 +45,11 @@ bool ra_mac_tag(const char *label, const void *data, size_t len, char *hex);
 /** @brief True when hex is the tag over label and data. Compared in constant time. */
 bool ra_mac_check(const char *label, const void *data, size_t len, const char *hex);
 
+/** @brief The tag over label and two parts of data, head then data, as ra_mac_tag() would give it for the two joined.
+ *
+ *  For a tag over a prefix and a large buffer without a copy of the buffer. */
+bool ra_mac_tag2(const char *label, const void *head, size_t head_len, const void *data, size_t len, char *hex);
+/** @brief True when hex is the tag over label, head and data. Compared in constant time. */
+bool ra_mac_check2(const char *label, const void *head, size_t head_len, const void *data, size_t len, const char *hex);
+
 #endif /* RA_MAC_H */

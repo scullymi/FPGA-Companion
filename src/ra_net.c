@@ -21,6 +21,7 @@
 #include "rc_version.h"
 
 #include "debug.h"
+uint32_t getFreeHeap(void);   // mcu_hw.c: the SDK heap left for mbedTLS and rcheevos
 #include "ra_ca.h"
 #include "ra_net.h"
 
@@ -202,9 +203,12 @@ int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply) {
   if(reply->result == HTTPC_RESULT_OK && !reply->truncated && reply->len &&
      buf[0] != '{' && buf[0] != '[')
     chunked = ra_net_dechunk(buf, &reply->len);
+  // with the SDK heap left after the connection: a set rcheevos holds and a large
+  // reply both live there, a request that finds too little stops the firmware
   if(reply->result == HTTPC_RESULT_OK)
-    debugf("RA: r=%s -> HTTP %lu, %u bytes%s%s, %lu ms", kind, reply->status, reply->len,
-           chunked ? " (chunked)" : "", reply->truncated ? " (truncated)" : "", ms);
+    debugf("RA: r=%s -> HTTP %lu, %u bytes%s%s, %lu ms, heap free %lu/%u", kind, reply->status, reply->len,
+           chunked ? " (chunked)" : "", reply->truncated ? " (truncated)" : "", ms,
+           (unsigned long)getFreeHeap(), (unsigned)xPortGetFreeHeapSize());
   else
     debugf("RA: r=%s failed, result %d, lwIP error %d, %lu ms", kind, reply->result, reply->err, ms);
   return 0;

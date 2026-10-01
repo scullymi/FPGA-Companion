@@ -4,6 +4,7 @@
 */
 
 #include "../mcu_hw.h"
+uint32_t getFreeHeap(void);   /* mcu_hw.c: the SDK heap left for mbedTLS and rcheevos */
 
 #include "../config.h"
 #include "../sysctrl.h"
@@ -556,6 +557,10 @@ static void ram_mirror_poll(void) {
     ra_task_core_flags(ram_mirror_buf[9]);
   }
   unsigned what = ra_patch_apply_pending(&ra_rt);
+  /* the SDK heap is where rcheevos keeps the set and mbedTLS a connection: a large
+     set leaves less for the next request, so the log shows what is left */
+  if(what & RA_PATCH_NEW_SET) debugf("RA: set active, SDK heap free %lu, FreeRTOS heap free %u",
+                                     (unsigned long)getFreeHeap(), (unsigned)xPortGetFreeHeapSize());
   if(what & RA_PATCH_RESET) banner_mode_due = true;          /* a game starts */
   if(what) ra_primed = 0;          /* after a reset nothing is primed, a new set moves the positions */
   absolute_time_t t0 = get_absolute_time();

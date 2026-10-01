@@ -67,7 +67,7 @@ static unsigned char          rom_sum[32];             // its SHA-256 once the s
 static bool                   rom_sum_valid;
 static char                   rom_name_hash[RA_GAMES_HASH_LEN + 1];   // md5 of the image's name (arcade rule), "" when nothing streamed
 
-#define RA_PATCH_BODY_MAX   40960        /**< a whole set, e.g. Galaga has about 15.7 KB */
+#define RA_PATCH_BODY_MAX   65536        /**< a whole set, e.g. Galaga has about 15.7 KB, the Perfect Pac subset of Pac-Man 53.6 KB */
 #define RA_PATCH_MAX        64           /**< achievements kept per set, e.g. Galaga 17 */
 #define RA_PATCH_MAC_LABEL  "g20k-s1"    /**< what the set's tag is made over, keeps it apart from other tags */
 
@@ -108,20 +108,22 @@ static volatile bool reset_due;
 // this Pico received from the server, not one edited on a computer
 static bool card_verified;
 
-/* The data the set's tag is made over: the game id (4 bytes, little endian) and the
-   file as it lies on the card. Returns its length. */
-static char tag_buf[4 + RA_PATCH_BODY_MAX];   // RA task only, too large for its stack
-static unsigned set_tag_data(const char *data, unsigned len) {
+/* The set's tag is made over the game id (4 bytes, little endian) and the file as it
+   lies on the card, as two parts: a copy of the set with the id in front would be a
+   second buffer of its size. */
+static void set_tag_id(unsigned char id4[4]) {
   unsigned id = ra_game_id();
-  tag_buf[0] = (char)id; tag_buf[1] = (char)(id >> 8); tag_buf[2] = (char)(id >> 16); tag_buf[3] = (char)(id >> 24);
-  memcpy(tag_buf + 4, data, len);
-  return 4 + len;
+  id4[0] = (unsigned char)id; id4[1] = (unsigned char)(id >> 8); id4[2] = (unsigned char)(id >> 16); id4[3] = (unsigned char)(id >> 24);
 }
 static bool set_tag(const char *data, unsigned len, char *hex) {
-  return ra_mac_tag(RA_PATCH_MAC_LABEL, tag_buf, set_tag_data(data, len), hex);
+  unsigned char id4[4];
+  set_tag_id(id4);
+  return ra_mac_tag2(RA_PATCH_MAC_LABEL, id4, sizeof(id4), data, len, hex);
 }
 static bool set_check(const char *data, unsigned len, const char *hex) {
-  return ra_mac_check(RA_PATCH_MAC_LABEL, tag_buf, set_tag_data(data, len), hex);
+  unsigned char id4[4];
+  set_tag_id(id4);
+  return ra_mac_check2(RA_PATCH_MAC_LABEL, id4, sizeof(id4), data, len, hex);
 }
 
 // one parsed set on its way from the RA task to com_task. rcheevos copies what
