@@ -103,6 +103,9 @@ static unsigned body_len;
 // change from request to request.
 static unsigned char card_fp[16];
 static bool          card_fp_valid;
+// card_fp is the fingerprint of the set that runs, read from the card or written
+// there; card_fp_valid adds that the card's copy carries this Pico's tag
+static bool          card_fp_runs;
 
 // the title of the server's warning in the set parsed last, without "Warning: ",
 // "" when it had none. Written by com_task (card) and the RA task (server), read
@@ -853,16 +856,17 @@ static bool read_card(void) {
 
   unsigned char fp[16];
 
-  card_fp_valid = false;
+  card_fp_valid = card_fp_runs = false;
   if(!handover || !card_read()) return false;
   fingerprint(body, body_len, fp);   // over the file as it lies on the card, before the parse
   if(!(r = parse_new(&n))) return false;
+  memcpy(card_fp, fp, sizeof(card_fp));
+  card_fp_runs = true;
   note_warning(r);          // until the server's set arrives, the card's says it
   // only a set with a valid tag counts as the one the server sent last: its
   // fingerprint lets an unchanged server set pass, and hardcore may use it. An
   // untagged or edited one plays softcore until the server's set replaces it.
   if(card_verified) {
-    memcpy(card_fp, fp, sizeof(card_fp));
     card_fp_valid = true;
     ra_task_hardcore_block(RA_HC_BLOCK_SET, false);
   } else
@@ -1101,8 +1105,23 @@ int ra_patch_from_server(unsigned len) {
   // that runs came from the card at start. Compared before the parse, which
   // would need as much memory again as a large set already takes.
   fingerprint(body, body_len, sum);
-  if(card_fp_valid && memcmp(sum, card_fp, sizeof(sum)) == 0) {
+  bool same = card_fp_runs && memcmp(sum, card_fp, sizeof(sum)) == 0;
+  if(same && card_fp_valid) {
     debugf("RA: set unchanged on the server");
+    return 0;
+  }
+  // The set that runs came from the card without this Pico's tag, a new Pico or a
+  // card from another one, and it is the server's set. Parsing it again is not
+  // needed, and a large set leaves no memory for it. The card gets the server's
+  // file with this Pico's tag, and the set may count in hardcore, which starts with
+  // a reset of the game as for any set from the server.
+  if(same) {
+    if(card_write()) {
+      card_fp_valid = true;
+      debugf("RA: the set on the card is the server's, now with this Pico's tag");
+    } else
+      debugf("RA: the set on the card is the server's, its tag could not be written");
+    ra_task_hardcore_block(RA_HC_BLOCK_SET, false);
     return 0;
   }
   if(!(r = parse_new(&n))) return -1;
@@ -1110,10 +1129,12 @@ int ra_patch_from_server(unsigned len) {
   // the card first, so a power cut after this leaves the new set there too
   if(card_write()) {
     memcpy(card_fp, sum, sizeof(card_fp));
-    card_fp_valid = true;
+    card_fp_valid = card_fp_runs = true;
     debugf("RA: set from the server: %u core achievements, kept on the card", n);
-  } else
+  } else {
+    card_fp_runs = false;   // the card no longer holds the set that runs
     debugf("RA: set from the server: %u core achievements, only in memory", n);
+  }
   hand_over(r, sum);
   // straight from the server over TLS: this set may count in hardcore
   ra_task_hardcore_block(RA_HC_BLOCK_SET, false);
