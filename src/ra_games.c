@@ -63,6 +63,17 @@ static const ra_rom_t roms_puckman[] = {
 };
 static const ra_dip_t dips_puckman[] = { { 'L', 3 }, { 'C', 1 } };
 
+// Ms. Pac-Man (Midway, 1981), as scripts/make_rom.py builds mspacman.rom from the MAME set
+// "mspacman": pacman.rom's layout with the second program bank (u5, u6, u7) at the end, on
+// the Pac-Man board. The achievements read only the difficulty and come for normal and for
+// hard. Seven of the ten leaderboards count with at most 3 lives only, so the set expects
+// 3 lives (list 'L' value 2), the game's default. Coinage and bonus it reads nowhere.
+static const ra_rom_t roms_mspacman[] = {
+  { { 0xd6,0xd7,0xcf,0xdb,0xd8,0x91,0x53,0xb5,0x72,0xce,0xb6,0xdd,0xc2,0xa1,0x32,0x2f,
+      0x1f,0x48,0x1e,0xb6,0x08,0xe8,0x4c,0x5f,0xde,0xe7,0x31,0x9c,0x4c,0x05,0xba,0xe0 }, "MAME mspacman" },
+};
+static const ra_dip_t dips_mspacman[] = { { 'L', 2 } };
+
 // one row per game: set, title, id, hash, board, its files, its switches. Boards
 // are numbered in the order the cores arrive (Galaga 1); several sets may share a
 // board, the digest then picks the set, and ra_games_by_board() names the first row.
@@ -70,6 +81,7 @@ static const ra_game_t games[] = {
   { "galaga",  "Galaga",   12138u, "b8140b5e33c53b0f7dd3cc368951a4dd", 1, roms_galaga,  2, dips_galaga, 2 },
   { "pacman",  "Pac-Man",  12192u, "64d1f88b9b276aece4b0edcc25b7a434", 2, roms_pacman,  1, dips_pacman, 2 },
   { "puckman", "Puck Man", 24933u, "7775842918a8f43b7f3caf433e8327b7", 2, roms_puckman, 1, dips_puckman, 2 },
+  { "mspacman", "Ms. Pac-Man", 11800u, "01052a074f9e7ce8dc823a5dd2155d14", 2, roms_mspacman, 1, dips_mspacman, 1 },
 };
 #define GAMES_N (sizeof(games) / sizeof(games[0]))   /**< rows in games[] */
 
