@@ -74,6 +74,15 @@ static const ra_rom_t roms_mspacman[] = {
 };
 static const ra_dip_t dips_mspacman[] = { { 'L', 2 } };
 
+// 1942 (Revision B, Capcom 1984), as scripts/make_rom.py builds 1942.rom from the MAME set
+// "1942": jotego's layout for jt1942, the sprites sorted as JTFRAME stores them. Only the
+// parent set's name is linked on RetroAchievements, its revision A clone is not. The set
+// checks no DIP switch: its conditions read the game state, the lives and the score.
+static const ra_rom_t roms_1942[] = {
+  { { 0x2f,0x84,0x7d,0x48,0xe7,0xe2,0x1c,0xe3,0xf3,0xe0,0x9d,0x5e,0x96,0x11,0xcc,0x47,
+      0x42,0xed,0xa6,0xa1,0x34,0xf4,0x68,0xb0,0x7f,0x48,0xda,0xc6,0x9c,0x29,0xe0,0x43 }, "MAME 1942" },
+};
+
 // one row per game: set, title, id, hash, board, its files, its switches. Boards
 // are numbered in the order the cores arrive (Galaga 1); several sets may share a
 // board, the digest then picks the set, and ra_games_by_board() names the first row.
@@ -82,6 +91,7 @@ static const ra_game_t games[] = {
   { "pacman",  "Pac-Man",  12192u, "64d1f88b9b276aece4b0edcc25b7a434", 2, roms_pacman,  1, dips_pacman, 2 },
   { "puckman", "Puck Man", 24933u, "7775842918a8f43b7f3caf433e8327b7", 2, roms_puckman, 1, dips_puckman, 2 },
   { "mspacman", "Ms. Pac-Man", 11800u, "01052a074f9e7ce8dc823a5dd2155d14", 2, roms_mspacman, 1, dips_mspacman, 1 },
+  { "1942",    "1942",     11960u, "519c84155964659375821f7ca576f095", 3, roms_1942,    1, NULL, 0 },
 };
 #define GAMES_N (sizeof(games) / sizeof(games[0]))   /**< rows in games[] */
 
