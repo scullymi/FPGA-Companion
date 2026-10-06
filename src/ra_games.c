@@ -83,6 +83,15 @@ static const ra_rom_t roms_1942[] = {
       0x42,0xed,0xa6,0xa1,0x34,0xf4,0x68,0xb0,0x7f,0x48,0xda,0xc6,0x9c,0x29,0xe0,0x43 }, "MAME 1942" },
 };
 
+// 1943: The Battle of Midway (Capcom 1987), as scripts/make_rom.py builds 1943.rom from
+// the MAME set "1943": jotego's layout for jt1943. Only the parent set's name is linked
+// to this set on RetroAchievements, "1943mii" has its own. The set checks no DIP switch:
+// its conditions read the game state, the credits, the level, the energy and the score.
+static const ra_rom_t roms_1943[] = {
+  { { 0xce,0xf8,0x9a,0x37,0x1c,0xbc,0xbc,0x02,0x21,0xd7,0xff,0x09,0xc0,0x0b,0xe4,0x85,
+      0x43,0xe5,0xd7,0xf5,0xb0,0x6c,0x9b,0x8f,0x0c,0xbc,0x56,0x7e,0xf8,0x66,0xbf,0x44 }, "MAME 1943" },
+};
+
 // one row per game: set, title, id, hash, board, its files, its switches. Boards
 // are numbered in the order the cores arrive (Galaga 1); several sets may share a
 // board, the digest then picks the set, and ra_games_by_board() names the first row.
@@ -92,6 +101,7 @@ static const ra_game_t games[] = {
   { "puckman", "Puck Man", 24933u, "7775842918a8f43b7f3caf433e8327b7", 2, roms_puckman, 1, dips_puckman, 2 },
   { "mspacman", "Ms. Pac-Man", 11800u, "01052a074f9e7ce8dc823a5dd2155d14", 2, roms_mspacman, 1, dips_mspacman, 1 },
   { "1942",    "1942",     11960u, "519c84155964659375821f7ca576f095", 3, roms_1942,    1, NULL, 0 },
+  { "1943",    "1943",     11961u, "c3395dd46c34fa7fd8d729d8cf88b7a8", 6, roms_1943,    1, NULL, 0 },
 };
 #define GAMES_N (sizeof(games) / sizeof(games[0]))   /**< rows in games[] */
 
