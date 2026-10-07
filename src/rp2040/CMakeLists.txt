@@ -120,6 +120,7 @@ add_executable(${PROJECT}
 	../ra_games.c
 	../ra_patch.c
 	../ra_net.c
+	../ra_slim.c
 	../ra_task.c
 	../ra_mac.c
 	../ra_queue.c

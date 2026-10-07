@@ -722,7 +722,8 @@ static bool fetch_set(void) {
 
   // the buffer is taken from here on: a card set asked for again waits, see on_event()
   set_in_flight = true;
-  if(ra_net_get(path, buf, cap, &reply) != 0 || reply.result != 0 || reply.status != 200)
+  if(ra_net_get_set(path, buf, cap, &reply) != 0 || reply.result != 0 || reply.status != 200 ||
+     reply.broken)
     ok = false;
   else if(reply.truncated) {
     debugf("RA: set from the server is larger than %u bytes, not used", cap - 1);

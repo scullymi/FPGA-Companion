@@ -16,6 +16,7 @@ typedef struct {
   unsigned long status;      /**< HTTP status, 0 when none arrived */
   unsigned      len;         /**< bytes in the buffer, which is NUL-terminated */
   bool          truncated;   /**< the reply did not fit into the buffer */
+  bool          broken;      /**< ra_net_get_set() only: the reply was cut short or not as expected */
 } ra_reply_t;
 
 /** @brief Joins the RA task's queue set. Once, before the first request.
@@ -31,6 +32,10 @@ bool ra_net_init(QueueSetHandle_t set, void (*on_event)(QueueSetMemberHandle_t m
  *  (see reply->result and ->status), -1 when it could not start. The log shows
  *  only the kind of request (r=...), never the query, which may carry the token. */
 int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply);
+
+/** @brief ra_net_get() for a set (r=patch): the framing comes off and the fields nothing
+ *         reads stay out while the reply arrives (ra_slim.c), so a larger set fits into buf. */
+int ra_net_get_set(const char *path, char *buf, unsigned cap, ra_reply_t *reply);
 
 /** @brief Removes the chunked transfer framing from a body, in place.
  *

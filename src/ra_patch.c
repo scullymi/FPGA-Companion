@@ -39,6 +39,7 @@
 #include "sdc.h"
 #include "ra_net.h"
 #include "ra_patch.h"
+#include "ra_slim.h"
 #include "ra_task.h"
 #include "ra_mac.h"
 
@@ -300,6 +301,18 @@ void ra_patch_update_progress(const rc_runtime_t *rt) {
 /* The set without the chunked framing, see ra_net_dechunk(). */
 static bool strip_chunks(void) { return ra_net_dechunk(body, &body_len); }
 
+/* A set from the card goes through ra_slim like one from the server, in place: framing
+   off and the unused fields out. So a file kept before ra_slim compares equal to the
+   server's set, and an unchanged set is not parsed a second time. */
+static bool slim_body(void) {
+  ra_slim_t s;
+  unsigned n = 0;
+  ra_slim_init(&s);
+  if(!ra_slim_feed(&s, body, body_len, body, sizeof(body), &n) || !ra_slim_whole(&s)) return false;
+  body_len = n;
+  return true;
+}
+
 /* Reads the set into body and says why when it cannot. A set that does not fit
    with one byte to spare is refused whole: cut short it would only show up as
    "no valid JSON". */
@@ -366,7 +379,7 @@ static bool card_read(void) {
       hex[strcspn(hex, "\r\n")] = 0;
       card_verified = set_check(body, body_len, hex);
     }
-    if(!strip_chunks()) {       // a file put on the card from outside may still carry the framing
+    if(!slim_body()) {          // a file put on the card from outside may still carry the framing
       debugf("RA: set on the card is not a set, no achievements");
       return false;
     }

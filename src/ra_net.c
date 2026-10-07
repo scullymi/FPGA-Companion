@@ -27,6 +27,7 @@ __attribute__((weak)) uint32_t getFreeHeap(void) { return 0; }
 __attribute__((weak)) size_t xPortGetFreeHeapSize(void) { return 0; }
 #include "ra_ca.h"
 #include "ra_net.h"
+#include "ra_slim.h"
 
 #define RA_HOST "retroachievements.org"   /**< the server, and the name its certificate must carry */
 
@@ -42,6 +43,8 @@ static void (*on_event)(QueueSetMemberHandle_t);   /* its handler for everything
 static char       *dst;
 static unsigned    dst_cap, dst_len;
 static ra_reply_t *out;
+static bool        slim_on;   /* the reply is a set: framing off and unused fields out while it arrives */
+static ra_slim_t   slim;
 
 /* RetroAchievements knows a client by its User-Agent, so it names this firmware
    truthfully and never another emulator. Version and platform come from the
@@ -73,12 +76,19 @@ static struct altcp_pcb *alloc_sni(void *arg, u8_t ip_type) {
 static err_t on_recv(__attribute__((unused)) void *arg, struct altcp_pcb *pcb,
                      struct pbuf *p, __attribute__((unused)) err_t err) {
   if(!p) return ERR_OK;
-  unsigned room = dst_cap - 1 - dst_len;
-  unsigned take = p->tot_len < room ? p->tot_len : room;
-  if(take < p->tot_len) out->truncated = true;
-  pbuf_copy_partial(p, dst + dst_len, take, 0);
-  dst_len += take;
-  dst[dst_len] = 0;
+  if(slim_on) {
+    // piece by piece through ra_slim, nothing more once the buffer is full
+    for(struct pbuf *q = p; q && !out->truncated; q = q->next)
+      if(!ra_slim_feed(&slim, (const char *)q->payload, q->len, dst, dst_cap, &dst_len))
+        out->truncated = true;
+  } else {
+    unsigned room = dst_cap - 1 - dst_len;
+    unsigned take = p->tot_len < room ? p->tot_len : room;
+    if(take < p->tot_len) out->truncated = true;
+    pbuf_copy_partial(p, dst + dst_len, take, 0);
+    dst_len += take;
+    dst[dst_len] = 0;
+  }
   altcp_recved(pcb, p->tot_len);
   pbuf_free(p);
   return ERR_OK;
@@ -159,7 +169,7 @@ bool ra_net_init(QueueSetHandle_t set, void (*handler)(QueueSetMemberHandle_t)) 
   return true;
 }
 
-int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply) {
+static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, bool set) {
   char kind[24];                      // "awardachievement" is the longest
   err_t e = ERR_MEM;
 
@@ -167,6 +177,8 @@ int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply) {
 
   memset(reply, 0, sizeof(*reply));
   dst = buf; dst_cap = cap; dst_len = 0; dst[0] = 0; out = reply;
+  slim_on = set;
+  ra_slim_init(&slim);
   kind_of(path, kind, sizeof(kind));
   absolute_time_t t0 = get_absolute_time();
 
@@ -203,16 +215,30 @@ int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply) {
   // framing through. A whole reply that is not JSON already loses it here, so
   // every caller gets the plain body. One that is not chunked either stays as it is.
   bool chunked = false;
-  if(reply->result == HTTPC_RESULT_OK && !reply->truncated && reply->len &&
-     buf[0] != '{' && buf[0] != '[')
+  if(set) {
+    // ra_slim took the framing off already, a reply cut short or not as expected is unusable
+    if(reply->result == HTTPC_RESULT_OK && !reply->truncated && !ra_slim_whole(&slim))
+      reply->broken = true;
+  } else if(reply->result == HTTPC_RESULT_OK && !reply->truncated && reply->len &&
+            buf[0] != '{' && buf[0] != '[')
     chunked = ra_net_dechunk(buf, &reply->len);
   // with the SDK heap left after the connection: a set rcheevos holds and a large
   // reply both live there, a request that finds too little stops the firmware
-  if(reply->result == HTTPC_RESULT_OK)
-    debugf("RA: r=%s -> HTTP %lu, %u bytes%s%s, %lu ms, heap free %lu/%u", kind, reply->status, reply->len,
-           chunked ? " (chunked)" : "", reply->truncated ? " (truncated)" : "", ms,
+  if(reply->result == HTTPC_RESULT_OK) {
+    debugf("RA: r=%s -> HTTP %lu, %u bytes%s%s%s, %lu ms, heap free %lu/%u", kind, reply->status, reply->len,
+           chunked ? " (chunked)" : "", reply->truncated ? " (truncated)" : "",
+           reply->broken ? " (not whole)" : "", ms,
            (unsigned long)getFreeHeap(), (unsigned)xPortGetFreeHeapSize());
-  else
+    if(set) debugf("RA: r=%s %lu bytes of unused fields left out", kind, slim.dropped);
+  } else
     debugf("RA: r=%s failed, result %d, lwIP error %d, %lu ms", kind, reply->result, reply->err, ms);
   return 0;
+}
+
+int ra_net_get(const char *path, char *buf, unsigned cap, ra_reply_t *reply) {
+  return get(path, buf, cap, reply, false);
+}
+
+int ra_net_get_set(const char *path, char *buf, unsigned cap, ra_reply_t *reply) {
+  return get(path, buf, cap, reply, true);
 }
