@@ -181,7 +181,7 @@ static unsigned   lb_n;
 // handed_fp is written by whoever hands a set over, before it does.
 static lb_entry_t    deferred_lb[RA_PATCH_LB_MAX];
 static unsigned      deferred_lb_n;
-static unsigned      oom_off;        // parts of the set that found no memory and stay off: hardcore is blocked
+static unsigned      oom_off;        // parts of the set that stay off, for lack of memory or room in the table: hardcore is blocked
 static bool          deferred_rp;
 static unsigned char deferred_rp_md5[16];
 static unsigned char handed_fp[16];   // fingerprint of body[] the handed-over set was parsed from
@@ -516,6 +516,18 @@ static void md5_of(const char *s, unsigned char *sum) {
   md5_finish(&md5, sum);
 }
 
+/* rcheevos frees the old script before it allocates the new one. When the new
+   one's buffer finds no memory, it leaves an entry with the md5 set but neither
+   buffer nor script pointer set. The next call with the same script takes that
+   entry for unchanged and resets through the unset pointer, and every frame reads
+   it, so the entry goes here. */
+static void drop_half_richpresence(rc_runtime_t *rt) {
+  if(rt->richpresence && !rt->richpresence->buffer) {
+    free(rt->richpresence);
+    rt->richpresence = NULL;
+  }
+}
+
 /* The rich presence script of a set. rcheevos resets a script it is given again
    and keeps the old one when given an empty one, so an unchanged script is left
    alone, and an empty one is freed here the way rc_runtime_destroy() does it.
@@ -534,12 +546,13 @@ static int activate_richpresence(rc_runtime_t *rt, const char *script) {
   md5_of(script, sum);
   if(rp_on && memcmp(sum, rp_md5, sizeof(sum)) == 0) return RC_OK;
   int rv = rc_runtime_activate_richpresence(rt, script, NULL, 0);
+  if(rv == RC_OUT_OF_MEMORY) drop_half_richpresence(rt);
   if(rv == RC_OK) {
     memcpy(rp_md5, sum, sizeof(rp_md5));
     rp_on = true;
   } else {
     if(!rt->richpresence || !rt->richpresence->richpresence)
-      rp_on = false;        // a parse error keeps the old script, running out of memory does not
+      rp_on = false;        // a parse error keeps the old script, running out of memory frees it
     if(rv == RC_OUT_OF_MEMORY) {
       deferred_rp = true;   // again once the parsed set is freed
       memcpy(deferred_rp_md5, sum, sizeof(deferred_rp_md5));
@@ -632,7 +645,9 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
     const rc_api_achievement_definition_t *a = &r->achievements[i];
     if(!core_item(a)) continue;
     if(n >= RA_PATCH_MAX) {
-      debugf("RA: more than %u achievements, the rest is ignored", (unsigned)RA_PATCH_MAX);
+      // a set that runs only in part is not the set: no hardcore with it
+      oom_off++;
+      debugf("RA: more than %u achievements, the rest is ignored, softcore with this set", (unsigned)RA_PATCH_MAX);
       break;
     }
     // an entry of the running set with the same id and condition stays as it is
@@ -1213,6 +1228,7 @@ static void activate_deferred(rc_runtime_t *rt) {
       md5_of(script, sum);
       if(!memcmp(sum, deferred_rp_md5, sizeof(sum))) {
         rv = rc_runtime_activate_richpresence(rt, script, NULL, 0);
+        if(rv == RC_OUT_OF_MEMORY) drop_half_richpresence(rt);
         if(rv == RC_OK) {
           memcpy(rp_md5, sum, sizeof(rp_md5));
           rp_on = true;
@@ -1271,7 +1287,7 @@ unsigned ra_patch_apply_pending(rc_runtime_t *rt) {
     discard(r);             // rcheevos has copied the conditions
     activate_deferred(rt);  // what did not fit beside the parsed set
     // a set that runs only in part is not the set: no hardcore with it
-    if(oom_off) debugf("RA: %u parts of the set found no memory, softcore with this set", oom_off);
+    if(oom_off) debugf("RA: %u parts of the set stay off, softcore with this set", oom_off);
     ra_task_hardcore_block(RA_HC_BLOCK_SIZE, oom_off != 0);
     what |= RA_PATCH_NEW_SET;
   }
