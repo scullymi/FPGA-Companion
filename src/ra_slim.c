@@ -90,7 +90,7 @@ static bool json(ra_slim_t *s, char c, char *buf, unsigned cap, unsigned *len) {
   case JSON_SKIP_NUM:
     if(c != ',' && c != '}' && c != ']' && !space(c)) { s->dropped++; return true; }
     s->json = JSON_SKIP_END;
-    /* fall through: c ends the number */
+    __attribute__((fallthrough));      // c ends the number
   case JSON_SKIP_END:
     if(space(c)) { s->dropped++; return true; }
     s->json = JSON_OUT;
