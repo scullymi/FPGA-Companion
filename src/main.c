@@ -267,13 +267,20 @@ static void banner_login(void) {
    achievement is primed when all its conditions but the trigger hold, e.g. a
    stage without losing a ship, and RetroAchievements asks that this shows during
    play: header byte 5 bit 0 lights a marker next to the picture. */
-static uint64_t ra_primed;
+static uint32_t ra_primed[(RA_PATCH_MAX + 31) / 32];
 
 static void ra_primed_set(unsigned id, bool on) {
   unsigned i = ra_patch_index(id);
-  if(!i || i > 64) return;
-  if(on) ra_primed |=  (1ull << (i - 1));
-  else   ra_primed &= ~(1ull << (i - 1));
+  if(!i || i > RA_PATCH_MAX) return;
+  i--;
+  if(on) ra_primed[i / 32] |=  (1u << (i % 32));
+  else   ra_primed[i / 32] &= ~(1u << (i % 32));
+}
+
+static bool ra_primed_any(void) {
+  for(unsigned w = 0; w < sizeof(ra_primed) / sizeof(ra_primed[0]); w++)
+    if(ra_primed[w]) return true;
+  return false;
 }
 
 /* Unlocked in the mode that counts, those show neither challenge nor progress. */
@@ -663,7 +670,7 @@ static void ram_mirror_poll(void) {
   hdr_tx[2] = (unsigned char)(ra_us & 0xff);
   hdr_tx[3] = (unsigned char)(ra_us >> 8);
   hdr_tx[4] = ra_last;
-  hdr_tx[5] = ra_primed ? 0x01 : 0x00;   /* bit 0: a challenge is on, the marker shows */
+  hdr_tx[5] = ra_primed_any() ? 0x01 : 0x00;   /* bit 0: a challenge is on, the marker shows */
 
   // the banner, one character per poll in bytes 6 and 7
   banner_login();
@@ -756,7 +763,7 @@ static void ram_mirror_poll(void) {
   if(what & RA_PATCH_NEW_SET) debugf("RA: set active, SDK heap free %lu, FreeRTOS heap free %u",
                                      (unsigned long)getFreeHeap(), (unsigned)xPortGetFreeHeapSize());
   if(what & RA_PATCH_RESET) banner_mode_due = true;          /* a game starts */
-  if(what) ra_primed = 0;          /* after a reset nothing is primed, a new set moves the positions */
+  if(what) memset(ra_primed, 0, sizeof(ra_primed));   /* after a reset nothing is primed, a new set moves the positions */
   absolute_time_t t0 = get_absolute_time();
   rc_runtime_do_frame(&ra_rt, ra_event, ra_peek, NULL, NULL);
   int64_t dt = absolute_time_diff_us(t0, get_absolute_time());

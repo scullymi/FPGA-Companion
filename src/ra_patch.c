@@ -78,7 +78,6 @@ static bool                   rom_sum_valid;
 static char                   rom_name_hash[RA_GAMES_HASH_LEN + 1];   // md5 of the image's name (arcade rule), "" when nothing streamed
 
 #define RA_PATCH_BODY_MAX   65536        /**< a whole set, e.g. Galaga has about 15.7 KB, the Perfect Pac subset of Pac-Man 53.6 KB */
-#define RA_PATCH_MAX        64           /**< achievements kept per set, e.g. Galaga 17 */
 #define RA_PATCH_MAC_LABEL  "g20k-s1"    /**< what the set's tag is made over, keeps it apart from other tags */
 
 // the set's files in the game's folder, "/sd/ra/<id>/...", filled by set_paths()
@@ -150,15 +149,15 @@ static QueueHandle_t handover;
 typedef struct {
   unsigned      id;                        /**< achievement id on the server */
   unsigned      points;                    /**< its points */
-  char          title[RA_PATCH_TITLE_MAX];  /**< its title, cut to fit */
-  const char   *desc;                      /**< its description, in desc_pool */
+  const char   *title;                     /**< its title, cut to fit, in text_pool */
+  const char   *desc;                      /**< its description, in text_pool */
   unsigned char md5[16];                   /**< md5 of its condition, an unchanged one keeps running */
 } entry_t;
 static entry_t  set[RA_PATCH_MAX];
 static unsigned set_n;
-// the descriptions of the active set, one block sized to the set: Galaga's 17
-// take about 2 KB, a table of 64 fixed 256-byte fields would take 16 KB
-static char    *desc_pool;
+// titles and descriptions of the active set, one block sized to the set: Galaga's 17
+// take about 2 KB, fixed fields in the table would take 36 KB for RA_PATCH_MAX
+static char    *text_pool;
 
 /** What rcheevos says about an achievement of the table, same index. */
 typedef struct {
@@ -175,11 +174,13 @@ typedef struct {
 static lb_entry_t lb_set[RA_PATCH_LB_MAX];
 static unsigned   lb_n;
 
-// leaderboards and the rich presence script that found no memory while the
-// parsed set was still on the heap: once it is freed they are activated from
+// achievements, leaderboards and the rich presence script that found no memory
+// while the parsed set was still on the heap: once it is freed they are activated from
 // the set's text in body[], see activate_deferred(). A large one needs as much
 // memory as the rest of the set, the parsed set as much again. com_task only,
 // handed_fp is written by whoever hands a set over, before it does.
+static unsigned      deferred_ach[RA_PATCH_MAX];   // rows of the table
+static unsigned      deferred_ach_n;
 static lb_entry_t    deferred_lb[RA_PATCH_LB_MAX];
 static unsigned      deferred_lb_n;
 static unsigned      oom_off;        // parts of the set that stay off, for lack of memory or room in the table: hardcore is blocked
@@ -253,7 +254,7 @@ bool ra_patch_item(unsigned i, ra_patch_item_t *out) {
   if(i < set_n) {
     out->id     = set[i].id;
     out->points = set[i].points;
-    memcpy(out->title, set[i].title, sizeof(out->title));
+    snprintf(out->title, sizeof(out->title), "%s", set[i].title ? set[i].title : "");
     snprintf(out->desc, sizeof(out->desc), "%s", set[i].desc ? set[i].desc : "");
     memcpy(out->progress, live[i].progress, sizeof(out->progress));
     out->primed = live[i].primed;
@@ -642,11 +643,15 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
   unsigned i, j, n = 0, rejected = 0, kept = 0;
   size_t pool_size = 0;
   char *pool, *at;
+  deferred_ach_n = 0;
 
-  // one block for all descriptions of the new set, each cut to what the menu shows
+  // one block for all titles and descriptions of the new set, each cut to what the
+  // menu shows
   for(i = 0; i < r->num_achievements; i++)
     if(core_item(&r->achievements[i]))
-      pool_size += strnlen(r->achievements[i].description ? r->achievements[i].description : "",
+      pool_size += strnlen(r->achievements[i].title ? r->achievements[i].title : "",
+                           RA_PATCH_TITLE_MAX - 1) + 1 +
+                   strnlen(r->achievements[i].description ? r->achievements[i].description : "",
                            RA_PATCH_DESC_MAX - 1) + 1;
   at = pool = malloc(pool_size ? pool_size : 1);   // pico_malloc stops the firmware when the heap is out
 
@@ -675,20 +680,25 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
       // arguments, unused. A string it cannot parse is not activated and does not
       // enter the table.
       int rv = rc_runtime_activate_achievement(rt, a->id, a->definition, NULL, 0);
-      if(rv == RC_OUT_OF_MEMORY) oom_off++;
-      if(rv != RC_OK) {
+      // without memory it enters the table and comes once the parsed set is freed
+      if(rv == RC_OUT_OF_MEMORY) deferred_ach[deferred_ach_n++] = n;
+      else if(rv != RC_OK) {
         debugf("RA: condition %u (%s) rejected, code %d, it will never fire",
                (unsigned)a->id, a->title ? a->title : "", rv);
         rejected++;
         continue;
       }
     }
-    // keep id, points, title, description and condition md5. snprintf cuts the
-    // title to the table, the description goes into the block.
+    // keep id, points, title, description and condition md5, title and description
+    // cut and in the block
+    size_t tl = strnlen(a->title ? a->title : "", RA_PATCH_TITLE_MAX - 1);
     size_t dl = strnlen(a->description ? a->description : "", RA_PATCH_DESC_MAX - 1);
     next[n].id     = a->id;
     next[n].points = a->points;
-    snprintf(next[n].title, sizeof(next[n].title), "%s", a->title ? a->title : "");
+    memcpy(at, a->title ? a->title : "", tl);
+    at[tl] = 0;
+    next[n].title = at;
+    at += tl + 1;
     memcpy(at, a->description ? a->description : "", dl);
     at[dl] = 0;
     next[n].desc = at;
@@ -712,8 +722,8 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
   memcpy(set, next, n * sizeof(set[0]));
   set_n = n;
   memset(live, 0, sizeof(live));
-  old_pool  = desc_pool;
-  desc_pool = pool;
+  old_pool  = text_pool;
+  text_pool = pool;
   taskEXIT_CRITICAL();
   free(old_pool);               // no reader can hold it: they copy with interrupts off
 
@@ -729,9 +739,10 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
   if(rp != RC_OK && !deferred_rp)
     debugf("RA: rich presence script rejected, code %d", rp);
 
-  debugf("RA: set for '%s': %u achievements active (%u kept running), %u rejected, "
+  debugf("RA: set for '%s': %u achievements active (%u kept running), %u rejected, %u later, "
          "%u leaderboards active (%u kept running), %u rejected, %u later, rich presence %s",
-         r->title ? r->title : "?", n, kept, rejected, lbs, lb_kept, lb_rejected, deferred_lb_n,
+         r->title ? r->title : "?", n - deferred_ach_n, kept, rejected, deferred_ach_n,
+         lbs, lb_kept, lb_rejected, deferred_lb_n,
          deferred_rp ? "later" : rp != RC_OK ? "rejected" : rp_on ? "on" : "none");
   return (int)n;
 }
@@ -1184,14 +1195,16 @@ bool ra_patch_set_again(void) {
    md5 it had there, else it stays off, and the log names what stays off. */
 static void activate_deferred(rc_runtime_t *rt) {
   rc_json_field_t top[] = { RC_JSON_NEW_FIELD("PatchData") };
-  rc_json_field_t pd[]  = { RC_JSON_NEW_FIELD("Leaderboards"), RC_JSON_NEW_FIELD("RichPresencePatch") };
+  rc_json_field_t pd[]  = { RC_JSON_NEW_FIELD("Leaderboards"), RC_JSON_NEW_FIELD("RichPresencePatch"),
+                            RC_JSON_NEW_FIELD("Achievements") };
   rc_json_field_t lbf[] = { RC_JSON_NEW_FIELD("ID"), RC_JSON_NEW_FIELD("Mem") };
+  rc_json_field_t af[]  = { RC_JSON_NEW_FIELD("ID"), RC_JSON_NEW_FIELD("MemAddr") };
   rc_json_iterator_t it;
   rc_json_field_t arr;
   unsigned char fp[16], sum[16];
   uint32_t num, id;
   unsigned i;
-  if(!deferred_lb_n && !deferred_rp) return;
+  if(!deferred_ach_n && !deferred_lb_n && !deferred_rp) return;
 
   // the text the set came from, else nothing is read from it
   fingerprint(body, body_len, fp);
@@ -1199,7 +1212,34 @@ static void activate_deferred(rc_runtime_t *rt) {
   it.json = body; it.end = body + body_len;
   if(!rc_json_get_array_entry_object(top, 1, &it) || !top[0].value_start) goto out;
   it.json = top[0].value_start; it.end = top[0].value_end;
-  if(!rc_json_get_array_entry_object(pd, 2, &it)) goto out;
+  if(!rc_json_get_array_entry_object(pd, 3, &it)) goto out;
+
+  // the achievements first: each deferred one by its id, its condition decoded alone
+  if(deferred_ach_n && rc_json_get_optional_array(&num, &arr, &pd[2], "Achievements")) {
+    it.json = arr.value_start; it.end = arr.value_end;
+    while(deferred_ach_n && rc_json_get_array_entry_object(af, 2, &it)) {
+      rc_buffer_t buf;
+      const char *mem = NULL;
+      int rv = RC_INVALID_STATE;
+      if(!rc_json_get_unum(&id, &af[0], "ID")) continue;
+      for(i = 0; i < deferred_ach_n && set[deferred_ach[i]].id != id; i++) ;
+      if(i == deferred_ach_n) continue;
+      const entry_t *e = &set[deferred_ach[i]];
+      rc_buffer_init(&buf);
+      if(rc_json_get_string(&mem, &buf, &af[1], "MemAddr") && mem) {
+        md5_of(mem, sum);
+        if(!memcmp(sum, e->md5, sizeof(sum)))
+          rv = rc_runtime_activate_achievement(rt, id, mem, NULL, 0);
+      }
+      rc_buffer_destroy(&buf);
+      if(rv != RC_OK) {
+        oom_off++;
+        debugf("RA: achievement %u (%s) stays off, code %d", (unsigned)id, e->title, rv);
+      } else
+        debugf("RA: achievement %u (%s) active", (unsigned)id, e->title);
+      deferred_ach[i] = deferred_ach[--deferred_ach_n];
+    }
+  }
 
   // the leaderboards: each deferred one by its id, its definition decoded alone
   if(deferred_lb_n && rc_json_get_optional_array(&num, &arr, &pd[0], "Leaderboards")) {
@@ -1255,12 +1295,15 @@ static void activate_deferred(rc_runtime_t *rt) {
   }
 
 out:
-  oom_off += deferred_lb_n + (deferred_rp ? 1 : 0);
+  oom_off += deferred_ach_n + deferred_lb_n + (deferred_rp ? 1 : 0);
+  for(i = 0; i < deferred_ach_n; i++)
+    debugf("RA: achievement %u (%s) stays off, the set's text was not there", set[deferred_ach[i]].id, set[deferred_ach[i]].title);
   for(i = 0; i < deferred_lb_n; i++)
     debugf("RA: leaderboard %u (%s) stays off, the set's text was not there", (unsigned)deferred_lb[i].info.id, deferred_lb[i].info.title);
   if(deferred_rp) debugf("RA: rich presence stays off, the set's text was not there");
-  deferred_lb_n = 0;
-  deferred_rp   = false;
+  deferred_ach_n = 0;
+  deferred_lb_n  = 0;
+  deferred_rp    = false;
   debugf("RA: after the deferred parts, SDK heap free %lu", (unsigned long)getFreeHeap());
 }
 

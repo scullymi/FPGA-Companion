@@ -201,6 +201,7 @@ void ra_patch_format_progress(const rc_runtime_t *rt, unsigned id, char *buf, si
  *  About once a second is enough, the menu shows what it read last. */
 void ra_patch_update_progress(const rc_runtime_t *rt);
 
+#define RA_PATCH_MAX    128  /**< achievements kept per set, e.g. Galaga 17, Pang 114 */
 #define RA_PATCH_LB_MAX 12   /**< leaderboards kept per set, e.g. Galaga 1, Ms. Pac-Man 10 */
 
 /** @brief One leaderboard of the active set. */
