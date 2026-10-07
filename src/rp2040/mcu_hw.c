@@ -2455,7 +2455,8 @@ void mcu_hw_init(void) {
   tusb_init(BOARD_TUD_RHPORT, &dev_init);
 #endif
 
-  xTaskCreate(pio_usb_task, "usb_task", 2048, NULL, configMAX_PRIORITIES, &pio_usb_task_handle);
+  // game20k: 6 KB of stack, several times what it used with a stick plugged in at power-on
+  xTaskCreate(pio_usb_task, "usb_task", 1536, NULL, configMAX_PRIORITIES, &pio_usb_task_handle);
 
 #ifdef WS2812_PIN
   uint offset = pio_add_program(pio0, &ws2812_program);  
@@ -2554,4 +2555,11 @@ void mcu_hw_upload_core(char *name) {
   // restart companion to cope with new core
   mcu_hw_reset();
 #endif
+}
+
+// game20k: with configCHECK_FOR_STACK_OVERFLOW a stack that ran over stops the firmware
+// with the task's name instead of overwriting the memory next to it
+void vApplicationStackOverflowHook(TaskHandle_t task, char *name) {
+  (void)task;
+  panic("stack overflow in task %s", name);
 }

@@ -952,8 +952,9 @@ int main( void )
   mcu_hw_init();
   telnetd_init();
   
-  // run FPGA com thread
-  xTaskCreate( com_task, "FPGA Com", 4096, NULL, CONFIG_MAX_PRIORITY-1, &com_task_handle );
+  // run FPGA com thread. game20k: 12 KB of stack, about 2.5 times what it used on the Pico
+  // with rcheevos running a set
+  xTaskCreate( com_task, "FPGA Com", 3072, NULL, CONFIG_MAX_PRIORITY-1, &com_task_handle );
 
   mcu_hw_main_loop();
 

@@ -273,6 +273,7 @@ void at_wifi_init(void) {
 
   // start a thread to handle at/wifi io
   rx_queue = xQueueCreate(8, sizeof( unsigned char ) );
-  xTaskCreate(at_wifi_task, (char *)"at_wifi_task", 2048, NULL, configMAX_PRIORITIES-10, NULL);
+  // game20k: 4 KB of stack, it waits for AT commands the Pico 2 W never gets
+  xTaskCreate(at_wifi_task, (char *)"at_wifi_task", 1024, NULL, configMAX_PRIORITIES-10, NULL);
 }
 

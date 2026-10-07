@@ -1646,8 +1646,9 @@ void menu_init(void) {
   // message queue from USB to OSD
   menu_queue = xQueueCreate(10, sizeof( long ) );
   
-  // start a thread for the on screen display    
-  xTaskCreate(menu_task, (char *)"menu_task", 4096, NULL, configMAX_PRIORITIES-3, &menu_handle);
+  // start a thread for the on screen display. game20k: 6 KB of stack, about three times
+  // what the menu used on the Pico with every page open
+  xTaskCreate(menu_task, (char *)"menu_task", 1536, NULL, configMAX_PRIORITIES-3, &menu_handle);
 
   // At this point, the USB may already be ready. But since the
   // menu task wasn't ready by now, it never had a chance to be mounted properly
