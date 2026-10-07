@@ -345,13 +345,15 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 #define RESTART_STOP_MS 12000                /* then this for an upload to stop after its chunk, its data socket times out after 10 s */
 #define SWITCH_HOPS     7                    /* the 8 MB flash holds at most 8 cores of 1 MB */
 
-/* The game for the next start. hops counts the core switches on the way to its
-   board, the check covers it too. */
+/* The game for the next start, by its row in ra_games.c: a game and its regional sets
+   share their RetroAchievements id (gng and makaimurg), the row tells them apart.
+   hops counts the core switches on the way to its board, the check covers it too. */
 static void restart_mark(const ra_game_t *g, uint32_t hops) {
+  uint32_t row = ra_games_row(g);
   watchdog_hw->scratch[0] = RESTART_MAGIC;
-  watchdog_hw->scratch[1] = g->id;
+  watchdog_hw->scratch[1] = row;
   watchdog_hw->scratch[3] = hops;
-  watchdog_hw->scratch[2] = ~(RESTART_MAGIC ^ g->id ^ hops);
+  watchdog_hw->scratch[2] = ~(RESTART_MAGIC ^ row ^ hops);
 }
 
 /* S1 and S2 sit on the FPGA's MODE pins (MODE0 and MODE1, schematic 3923). One
@@ -466,9 +468,9 @@ static void restart_take(void) {
    a core switch the board of the core that came up decides: the game's board
    loads its ROM, another one switches on to the next core of the ring. */
 static void restart_rom(void) {
-  uint32_t magic = marker[0], id = marker[1], check = marker[2], hops = marker[3];
-  if(magic != RESTART_MAGIC || check != ~(RESTART_MAGIC ^ id ^ hops)) return;
-  const ra_game_t *g = ra_games_by_id(id);
+  uint32_t magic = marker[0], row = marker[1], check = marker[2], hops = marker[3];
+  if(magic != RESTART_MAGIC || check != ~(RESTART_MAGIC ^ row ^ hops)) return;
+  const ra_game_t *g = ra_games_at(row);
   if(!g) return;
   if(g->board != ram_mirror_board) {
     // a core of a third board: on to the next one, as long as the ring can be

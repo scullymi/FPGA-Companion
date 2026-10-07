@@ -222,6 +222,14 @@ const ra_game_t *ra_games_by_hash(const char *hex) {
   return NULL;
 }
 
+unsigned ra_games_row(const ra_game_t *g) {
+  return (unsigned)(g - games);
+}
+
+const ra_game_t *ra_games_at(unsigned row) {
+  return row < GAMES_N ? &games[row] : NULL;
+}
+
 const ra_game_t *ra_games_by_id(unsigned id) {
   unsigned i;
   if(!id) return NULL;

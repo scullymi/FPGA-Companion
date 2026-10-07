@@ -59,8 +59,14 @@ typedef struct {
 const ra_game_t *ra_games_by_board(unsigned char board);
 /** @brief The entry with that hash, 32 hex compared without case, NULL when there is none. */
 const ra_game_t *ra_games_by_hash(const char *hex);
-/** @brief The entry with that id, NULL when there is none. */
+/** @brief The entry with that id, NULL when there is none. Several entries share an id
+ *         (a game and its regional sets), this is the first of them. */
 const ra_game_t *ra_games_by_id(unsigned id);
+/** @brief The row of an entry of the table, which tells the entries apart where the id
+ *         does not. g must be an entry of the table. */
+unsigned ra_games_row(const ra_game_t *g);
+/** @brief The entry in that row, NULL beyond the table. */
+const ra_game_t *ra_games_at(unsigned row);
 /** @brief The entry whose card file is name, the set name plus ".rom", case ignored, NULL when there is none. */
 const ra_game_t *ra_games_by_file(const char *name);
 /** @brief The entry one of whose files has that digest, any board, NULL when there is none.
