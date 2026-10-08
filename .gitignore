@@ -55,3 +55,4 @@ build/
 buildall/
 managed_components/
 dependencies.lock
+src/rp2040/build_*/
