@@ -969,14 +969,28 @@ static const config_custom_t games_list = {
   .select = games_list_select
 };
 
-/* Reads the card and opens the page with its first game selected. */
+/* Reads the card and opens the page with the game that runs selected, else the
+   first one. */
 static void menu_games_open(void) {
+  const char *cwd = sdc_get_cwd(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
+  const char *img = sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
+  int sel = 0;
   games_read();
+  // the running file's line, as games_list_select() tells it; lines count from 1
+  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT)) {
+    uint32_t crc = games_name_crc(img);
+    games_item_t it;
+    for(unsigned i = 0; !sel && games_item(i, &it); i++)
+      if(it.crc == crc) sel = (int)i + 1;
+  }
+  if(!sel && games_count()) sel = 1;
+  // scrolled as stepping down to that line would scroll it, see menu_entry_go()
+  int entries = (int)games_count() + 1;
   menu_push();
   menu_state->type     = MENU_TYPE_CUSTOM;
   menu_state->custom   = &games_list;
-  menu_state->selected = games_count() ? 1 : 0;
-  menu_state->scroll   = 0;
+  menu_state->selected = sel;
+  menu_state->scroll   = (entries <= 5 || sel <= 3) ? 0 : (sel < entries - 2) ? sel - 3 : entries - 5;
 }
 
 /* The page on screen without a key: no ROM runs. A message that shows closes onto
