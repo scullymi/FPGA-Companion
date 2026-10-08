@@ -75,6 +75,7 @@ static volatile bool          rom_pending;             // rom_start ran, rom_end
 static volatile TickType_t    rom_started;             // when the stream that runs now began, see ra_patch_rom_streaming()
 static unsigned char          rom_sum[32];             // its SHA-256 once the stream ended
 static bool                   rom_sum_valid;
+static volatile bool          rom_bad;                 // the ROM in the core is damaged, or none came for an old file: no game
 static char                   rom_name_hash[RA_GAMES_HASH_LEN + 1];   // md5 of the image's name (arcade rule), "" when nothing streamed
 
 #define RA_PATCH_BODY_MAX   65536        /**< a whole set, e.g. Galaga has about 15.7 KB, the Perfect Pac subset of Pac-Man 53.6 KB */
@@ -761,6 +762,7 @@ void ra_patch_rom_start(const char *name) {
   taskENTER_CRITICAL();
   memcpy(rom_name_hash, hex, sizeof(rom_name_hash));
   rom_sum_valid = false;
+  rom_bad       = false;
   stream_seq    = pick_seq;
   taskEXIT_CRITICAL();
   mbedtls_sha256_init(&rom_sha);
@@ -771,17 +773,27 @@ void ra_patch_rom_data(const void *data, unsigned len) {
   if(rom_hashing && mbedtls_sha256_update(&rom_sha, data, len) != 0) rom_hashing = false;
 }
 
-void ra_patch_rom_end(void) {
+bool ra_patch_rom_end(const unsigned char want[32]) {
   rom_sum_valid = rom_hashing && mbedtls_sha256_finish(&rom_sha, rom_sum) == 0;
   mbedtls_sha256_free(&rom_sha);
   rom_hashing = false;
   rom_pending = false;
+  // a content that is not what the footer names is no game at all: the core stays
+  // in reset, and a guess by the file's name would start a session for nothing
+  rom_bad = rom_sum_valid && want && memcmp(rom_sum, want, 32) != 0;
   if(rom_sum_valid)
-    debugf("RA: ROM image SHA-256 %02x%02x%02x%02x...", rom_sum[0], rom_sum[1], rom_sum[2], rom_sum[3]);
+    debugf("RA: ROM image SHA-256 %02x%02x%02x%02x...%s", rom_sum[0], rom_sum[1], rom_sum[2], rom_sum[3],
+           rom_bad ? ", not the footer's: damaged, no game" : "");
   else
     debugf("RA: hashing the ROM image failed, it counts as unknown");
   // the core still waits in reset here: the bits settle applies hold from the first frame
   ra_patch_settle();
+  return rom_bad;
+}
+
+void ra_patch_rom_rejected(void) {
+  // only while no game is decided: later the core keeps the ROM it runs
+  if(!settled) rom_bad = true;
 }
 
 void ra_patch_rom_gone(void) {
@@ -803,11 +815,6 @@ void ra_patch_rom_gone(void) {
 }
 
 bool ra_patch_rom_pending(void) { return rom_pending; }
-bool ra_patch_rom_digest(unsigned char sha[32]) {
-  if(!rom_sum_valid) return false;
-  memcpy(sha, rom_sum, 32);
-  return true;
-}
 bool ra_patch_rom_streaming(unsigned limit_ms) {
   return rom_pending && (TickType_t)(xTaskGetTickCount() - rom_started) < pdMS_TO_TICKS(limit_ms);
 }
@@ -1001,7 +1008,7 @@ void ra_patch_settle(void) {
   ra_ident_t ident;
   unsigned char sum[32];
   char name_hash[RA_GAMES_HASH_LEN + 1];
-  bool sum_valid, streaming;
+  bool sum_valid, streaming, bad;
   // the inputs whole: rom_start in menu_task may be writing them when the 15 s
   // timeout of the main loop brings com_task here
   taskENTER_CRITICAL();
@@ -1009,8 +1016,15 @@ void ra_patch_settle(void) {
   memcpy(name_hash, rom_name_hash, sizeof(name_hash));
   sum_valid = rom_sum_valid;
   streaming = rom_pending;
+  bad       = rom_bad;
   taskEXIT_CRITICAL();
   ra_games_select(board, sum_valid ? sum : NULL, name_hash[0] ? name_hash : NULL, streaming, &ident);
+  if(bad) {
+    // a damaged ROM, or none for an old file: no game, neither by the name nor by
+    // the board, so the RA task asks the server nothing ("RA: NO GAME")
+    memset(&ident, 0, sizeof(ident));
+    ident.rom_label = "ROM damaged or old";
+  }
 
   if(settled) {
     // a ROM picked in the OSD after the start: identity, session and card files

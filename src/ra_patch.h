@@ -41,8 +41,17 @@ const char *ra_game_rom_label(void);
 void ra_patch_rom_start(const char *name);
 /** @brief One block of the ROM image as it goes to the core. com_task, from sdc.c. */
 void ra_patch_rom_data(const void *data, unsigned len);
-/** @brief The whole ROM image went to the core: finish the SHA-256 and settle. com_task, from sdc.c, outside sdc_lock. */
-void ra_patch_rom_end(void);
+/** @brief The whole ROM image went to the core: finish the SHA-256 and settle. com_task, from sdc.c, outside sdc_lock.
+ *
+ *  want is the SHA-256 the file's footer names. A content with another one is
+ *  damaged: the settle then decides no game at all. Returns true for a damaged one. */
+bool ra_patch_rom_end(const unsigned char want[32]);
+/** @brief The ROM file was not sent, it is from before the footer (sdc_image_open, menu_task). No FatFs and no settle here.
+ *
+ *  Before the game is decided the core has no ROM then, and the settle decides no
+ *  game instead of the board's. Afterwards the core keeps the ROM it has, and so
+ *  does the game. */
+void ra_patch_rom_rejected(void);
 /** @brief The ROM image is ejected in the OSD (sdc_image_open, menu_task). No FatFs and no settle here; only the ROM block bit moves, the next settle applies "no ROM".
  *
  *  Not for a file that replaces the ROM, whether the core accepts it or not: the
@@ -55,8 +64,6 @@ void ra_patch_rom_gone(void);
  *  up until the new stream starts, and the main loop does not settle by "no ROM"
  *  between the close of the old image and the open of the new one. */
 bool ra_patch_rom_pending(void);
-/** @brief The SHA-256 of the stream that ended last into sha, false when there is none. com_task (game20k: sdc.c compares it with the file's footer). */
-bool ra_patch_rom_digest(unsigned char sha[32]);
 /** @brief True while a ROM streams that began less than limit_ms ago. Any task.
  *
  *  A restart waits for such a stream, so its settle decides the target and the

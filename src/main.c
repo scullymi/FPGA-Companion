@@ -247,7 +247,8 @@ static void banner_login(void) {
                        (why & RA_HC_BLOCK_SET) && now != RA_TASK_REJECTED ? "RA: SOFTCORE TILL ONLINE" :
                        "RA: SOFTCORE";
     banner_mode_due = false;
-    if(now != RA_TASK_NO_ACCOUNT &&
+    // without an account or a game nothing counts, their own banner says so
+    if(now != RA_TASK_NO_ACCOUNT && now != RA_TASK_NO_GAME &&
        !(text == last_text && (xTaskGetTickCount() - last_tick) < pdMS_TO_TICKS(5000))) {
       char warn[RA_PATCH_TITLE_MAX], line[4 + RA_PATCH_TITLE_MAX];
       banner_show(text, mode, true);

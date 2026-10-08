@@ -528,13 +528,11 @@ static void image_send_chunk(int image, uint32_t len) {
     memset(&fil[MAX_DRIVES+image], 0, sizeof(FIL));
 
     // the whole ROM set is in the core: rom_end hands the digest to the game
-    // table and settles the game, before the image action resets the core
-    if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_end();
-
-    // game20k: a content whose SHA-256 is not the footer's is damaged. The name
-    // goes, so the settings cannot keep the file, and the Games page leaves it out
-    unsigned char sum[32];
-    bool damaged = image == RA_PATCH_ROM_IMAGE && ra_patch_rom_digest(sum) && memcmp(sum, rom_sha, 32);
+    // table and settles the game, before the image action resets the core.
+    // game20k: a content whose SHA-256 is not the footer's is damaged, rom_end
+    // then settles no game. The name goes, so the settings cannot keep the file,
+    // and the Games page leaves it out
+    bool damaged = image == RA_PATCH_ROM_IMAGE && ra_patch_rom_end(rom_sha);
     if(damaged) {
       sdc_debugf("IMG %d: %s is damaged, its content is not what its footer says, the core stays in reset",
                  image, image_name[MAX_DRIVES+image] ? image_name[MAX_DRIVES+image] : "?");
@@ -941,6 +939,7 @@ int sdc_image_open(int drive, char *name) {
     games_footer_t ft;
     if(!games_footer_read(&fil[drive], &ft)) {
       sdc_debugf("IMG %d: %s has no valid footer, an old ROM file, not sent", image, fname);
+      if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_rejected();
       f_close(&fil[drive]);
       memset(&fil[drive], 0, sizeof(FIL));
       sdc_unlock();
