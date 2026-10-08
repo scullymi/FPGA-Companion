@@ -125,6 +125,8 @@ add_executable(${PROJECT}
 	../ra_mac.c
 	../ra_queue.c
 	../ra_state.c
+	../games_file.c
+	../games.c
 	# rcheevos: the runtime that evaluates the conditions and the reader for the
 	# set (rapi), no rc_client. rc_validate.c stays out, only the editor needs it.
 	${RCHEEVOS_DIR}/src/rcheevos/alloc.c

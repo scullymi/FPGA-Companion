@@ -55,6 +55,8 @@ void ra_patch_rom_gone(void);
  *  up until the new stream starts, and the main loop does not settle by "no ROM"
  *  between the close of the old image and the open of the new one. */
 bool ra_patch_rom_pending(void);
+/** @brief The SHA-256 of the stream that ended last into sha, false when there is none. com_task (game20k: sdc.c compares it with the file's footer). */
+bool ra_patch_rom_digest(unsigned char sha[32]);
 /** @brief True while a ROM streams that began less than limit_ms ago. Any task.
  *
  *  A restart waits for such a stream, so its settle decides the target and the

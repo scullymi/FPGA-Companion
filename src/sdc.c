@@ -19,6 +19,7 @@
 #endif
 #include "sdc.h"
 #include "ra_patch.h"   // the ROM set is checked against the known files
+#include "games.h"      // game20k: the footer of a ROM file
 #include "menu.h"
 #include "sysctrl.h"
 
@@ -48,6 +49,10 @@ static DWORD *lktbl[MAX_DRIVES];
 
 // information about image data to be sent
 static uint32_t image_bytes2send[MAX_IMAGES];
+// game20k: what of an image goes to the core, the content before its footer, and
+// the SHA-256 the footer of the ROM set gives for it
+static uint32_t image_content[MAX_IMAGES];
+static unsigned char rom_sha[32];
 
 static void sdc_spi_begin(void) {
   mcu_hw_spi_begin();  
@@ -526,6 +531,20 @@ static void image_send_chunk(int image, uint32_t len) {
     // table and settles the game, before the image action resets the core
     if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_end();
 
+    // game20k: a content whose SHA-256 is not the footer's is damaged. The name
+    // goes, so the settings cannot keep the file, and the Games page leaves it out
+    unsigned char sum[32];
+    bool damaged = image == RA_PATCH_ROM_IMAGE && ra_patch_rom_digest(sum) && memcmp(sum, rom_sha, 32);
+    if(damaged) {
+      sdc_debugf("IMG %d: %s is damaged, its content is not what its footer says, the core stays in reset",
+                 image, image_name[MAX_DRIVES+image] ? image_name[MAX_DRIVES+image] : "?");
+      if(image_name[MAX_DRIVES+image]) {
+        games_damaged(image_name[MAX_DRIVES+image]);
+        vPortFree(image_name[MAX_DRIVES+image]);
+        image_name[MAX_DRIVES+image] = NULL;
+      }
+    }
+
     // inform core that the image has "been removed"
     sdc_spi_begin();
     mcu_hw_spi_tx_u08(SPI_SDC_IMAGE);
@@ -533,6 +552,14 @@ static void image_send_chunk(int image, uint32_t len) {
     mcu_hw_spi_tx_u08(image);    
     for(int i=0;i<4;i++) mcu_hw_spi_tx_u08(0);    // send size of 0
     mcu_hw_spi_end();
+
+    // game20k: a damaged ROM never runs, the core stays in reset and the menu
+    // says why. A Reset from the menu starts it all the same
+    if(damaged) {
+      sys_set_val('R', 1);
+      menu_notify(MENU_EVENT_ROM_DAMAGED);
+      return;
+    }
 
     // the image download have either been triggered by the ini file at
     // boot time or by the user. run image action will take care of both
@@ -734,10 +761,11 @@ static void sdc_rom_image_selected(char image, FSIZE_t size) {
 }
 
 static bool sdc_image_start_transfer(int image) {
-  sdc_rom_image_selected(image, fil[MAX_DRIVES+image].obj.objsize);
+  // game20k: the content only, the footer stays on the card
+  sdc_rom_image_selected(image, image_content[image]);
     
   // get number of bytes to send
-  image_bytes2send[(int)image] = fil[image+MAX_DRIVES].obj.objsize;
+  image_bytes2send[(int)image] = image_content[image];
   if(sdc_rom_image_get_buffer(image) < 0) {
     sdc_debugf("IMG %d: Core has rejected image", image);
     // the core keeps the ROM it has, and so does RetroAchievements: a file of the
@@ -906,6 +934,21 @@ int sdc_image_open(int drive, char *name) {
       sdc_unlock();
       return -1;
     }
+
+    // game20k: a ROM file ends with a footer that names its content (games_file.c).
+    // A file without one is from before it, the core never gets it: the card is
+    // rebuilt with make_sdcard.sh
+    games_footer_t ft;
+    if(!games_footer_read(&fil[drive], &ft)) {
+      sdc_debugf("IMG %d: %s has no valid footer, an old ROM file, not sent", image, fname);
+      f_close(&fil[drive]);
+      memset(&fil[drive], 0, sizeof(FIL));
+      sdc_unlock();
+      menu_notify(MENU_EVENT_ROM_OLD);
+      return SDC_IMAGE_OLD;
+    }
+    image_content[(int)image] = ft.content;
+    if(image == RA_PATCH_ROM_IMAGE) memcpy(rom_sha, ft.sha, 32);
 
     // remember current image name
     image_name[drive] = StrDup(name);

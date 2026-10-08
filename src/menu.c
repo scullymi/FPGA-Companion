@@ -35,6 +35,7 @@
 #include "ra_state.h"
 #include "ra_queue.h"
 #include "ra_task.h"
+#include "games.h"
 #include "rc_version.h"
 #include "mcu_hw.h"
 
@@ -908,6 +909,87 @@ static void menu_ra_list_open(void) {
   menu_state->scroll   = 0;
 }
 
+static void menu_pop(void);
+
+/* ================ the Games page ================
+   One line per game on the card, by title (games.c). OK on a line starts it: the
+   Pico restarts into its file, after a core switch when it runs on another board,
+   see restart_step() in main.c. The list is read when the page opens and again
+   when the card changed while it shows. */
+static int games_list_length(void) {
+  return (int)games_count();
+}
+
+static void games_list_draw(void) {
+  const int width = u8g2_GetDisplayWidth(&u8g2);
+  // an upload over FTP may change the card: the menu timer looks for it, see menu_do()
+  menu_timer_enable(true);
+  u8g2_SetFont(&u8g2, font_helvR08_te);
+  if(!games_count()) {
+    u8g2_DrawStr(&u8g2, 1, MENU_LINE_Y + MENU_ENTRY_H, "No games on the card");
+    return;
+  }
+  for(int row = 0; row < 4; row++) {
+    games_item_t it;
+    char title[GAMES_TITLE_MAX + 4];
+    int i = row + menu_state->scroll;
+    if(!games_item((unsigned)i, &it)) break;
+    int y = MENU_LINE_Y + MENU_ENTRY_H * (row + 1);
+    snprintf(title, sizeof(title), "%s", it.title);
+    ra_list_ellipsize(title, width - 2);
+    u8g2_DrawStr(&u8g2, 1, y, title);
+    if(menu_state->selected == i + 1)
+      u8g2_DrawButtonFrame(&u8g2, 0, y, U8G2_BTN_INV, width, 1, 1);
+  }
+}
+
+static void games_list_select(int line) {
+  games_item_t it;
+  games_pick_t pk;
+  const char *cwd = sdc_get_cwd(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
+  const char *img = sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
+  if(!games_item((unsigned)line, &it)) return;
+  // the file that runs already, with no restart pending: nothing to start, the menu closes
+  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT) && games_name_crc(img) == it.crc &&
+     !ra_patch_restart_to() && !games_picked(&pk)) {
+    menu_timer_enable(false);
+    osd_enable(OSD_INVISIBLE);
+    return;
+  }
+  // main.c takes it from here and says so, see MENU_EVENT_RA_RESTART
+  games_pick(&it);
+  menu_timer_enable(false);
+  menu_pop();
+}
+
+static const config_custom_t games_list = {
+  .label  = "Games",
+  .length = games_list_length,
+  .draw   = games_list_draw,
+  .select = games_list_select
+};
+
+/* Reads the card and opens the page with its first game selected. */
+static void menu_games_open(void) {
+  games_read();
+  menu_push();
+  menu_state->type     = MENU_TYPE_CUSTOM;
+  menu_state->custom   = &games_list;
+  menu_state->selected = games_count() ? 1 : 0;
+  menu_state->scroll   = 0;
+}
+
+/* The page on screen without a key: no ROM runs. A message that shows closes onto
+   the page, not into a hidden OSD. */
+static void menu_games_show(void) {
+  if(!cfg || !menu_state) return;
+  if(!(menu_state->type == MENU_TYPE_CUSTOM && menu_state->custom == &games_list))
+    menu_games_open();
+  if(!osd_is_visible()) osd_enable(OSD_VISIBLE);
+  dialog_opened_osd = false;
+  menu_do(0);
+}
+
 // The Account dialog: the account and where it stands, the count, and the
 // most urgent note. Four lines fit the display.
 static void menu_ra_status(void) {
@@ -1188,6 +1270,18 @@ static void menu_fileselector_select(sdc_dir_entry_t *entry) {
     // game20k: the ROM file of a known game of another board, e.g. galaga.rom in
     // the Pac-Man core, needs that board's core. Nothing streams to this one:
     // main.c switches the core and starts the game there, see restart_step()
+    if(drive == MAX_DRIVES + RA_PATCH_ROM_IMAGE) {
+      // a file without a footer is an old one, it neither switches nor streams
+      games_footer_t ft;
+      char path[strlen(sdc_get_cwd(drive)) + strlen(entry->name) + 2];
+      sprintf(path, "%s/%s", sdc_get_cwd(drive), entry->name);
+      if(!games_footer_of(path, &ft)) {
+        debugf("IMG %d: %s has no valid footer, an old ROM file", drive - MAX_DRIVES, path);
+        menu_pop();
+        menu_notify(MENU_EVENT_ROM_OLD);
+        return;
+      }
+    }
     if(drive == MAX_DRIVES + RA_PATCH_ROM_IMAGE && ra_patch_pick_other_board(entry->name)) {
       menu_pop();
       return;
@@ -1332,7 +1426,7 @@ static void menu_select(void) {
   } break;
 
   case CONFIG_MENU_ENTRY_BUTTON:
-    // two buttons the companion answers itself, the action is told by its name.
+    // buttons the companion answers itself, the action is told by its name.
     // The rest goes to the core.
     if(entry->button->action && entry->button->action->name &&
        !strcmp(entry->button->action->name, "netinfo"))
@@ -1346,6 +1440,9 @@ static void menu_select(void) {
     else if(entry->button->action && entry->button->action->name &&
             !strcmp(entry->button->action->name, "ralist"))
       menu_ra_list_open();
+    else if(entry->button->action && entry->button->action->name &&
+            !strcmp(entry->button->action->name, "games"))
+      menu_games_open();
     else if(entry->button->action)
       sys_run_action(entry->button->action);
     break;
@@ -1422,6 +1519,15 @@ void menu_do(int event) {
 	static int ticks;
 	if(++ticks >= 25) {
 	  ticks = 0;
+	  menu_custom_draw((config_custom_t *)menu_state->custom, menu_state->selected, menu_state->scroll);
+	}
+      } else if(menu_state->type == MENU_TYPE_CUSTOM && menu_state->custom == &games_list) {
+	// the card changed while the page shows: read it again, the selection stays in range
+	if(games_stale() && !menu_dialog_is_open()) {
+	  games_read();
+	  int n = (int)games_count();
+	  if(menu_state->selected > n) menu_state->selected = n;
+	  if(menu_state->scroll > (n > 4 ? n - 4 : 0)) menu_state->scroll = n > 4 ? n - 4 : 0;
 	  menu_custom_draw((config_custom_t *)menu_state->custom, menu_state->selected, menu_state->scroll);
 	}
       } else
@@ -1563,16 +1669,34 @@ static void menu_task(__attribute__((unused)) void *parms) {
     if(cmd == MENU_EVENT_RA_RESTART) {
       // game20k: the ROM picked is another game of this board, main.c restarts
       // the Pico into it for its achievements in a few seconds. A game of another
-      // board loads its core first
+      // board loads its core first. A game picked on the Games page goes first
       const ra_game_t *g = ra_patch_restart_to();
-      char message[64];
-      if(g && g->board != ra_game_board()) {
+      games_pick_t pk;
+      char message[80];
+      if(games_picked(&pk)) {
+        snprintf(message, sizeof(message), "%s: %s", pk.title,
+                 pk.board != ra_game_board() ? "loading its core" : "starting");
+        menu_draw_dialog_for("Games", message, pdMS_TO_TICKS(4000));
+      } else if(g && g->board != ra_game_board()) {
         snprintf(message, sizeof(message), "%s: loading its core", g->title);
         menu_draw_dialog_for("Core switch", message, pdMS_TO_TICKS(4000));
       } else {
         snprintf(message, sizeof(message), "%s: restart for its achievements", g ? g->title : "Game");
         menu_draw_dialog_for("RetroAchievements", message, pdMS_TO_TICKS(4000));
       }
+    } else
+    if(cmd == MENU_EVENT_ROM_OLD) {
+      // game20k: a ROM file from before the footer, nothing went to the core
+      menu_draw_dialog_for("Old ROM file", "Rebuild the card\nwith make_sdcard.sh", pdMS_TO_TICKS(6000));
+    } else
+    if(cmd == MENU_EVENT_ROM_DAMAGED) {
+      // game20k: the core stays in reset, the player picks another game
+      menu_draw_dialog_for("ROM file damaged", "Copy the file again.\nThe game does not start.", pdMS_TO_TICKS(6000));
+      menu_games_show();
+    } else
+    if(cmd == MENU_EVENT_GAMES) {
+      // game20k: the core's ROM file is missing, a game is picked instead
+      menu_games_show();
     } else
     if(cmd == MENU_EVENT_CORE_SWITCH_FAILED) {
       // game20k: the running bitstream was built before the core switch

@@ -18,6 +18,8 @@ typedef struct sdc_dir {
 int sdc_init(void);
 /** @brief sdc_image_open(): the core rejected the ROM file (wrong size for this board), it keeps the ROM it has. */
 #define SDC_IMAGE_REJECTED -2
+/** @brief sdc_image_open(): the file has no valid footer (games_file.h), an old ROM file, nothing is sent. */
+#define SDC_IMAGE_OLD -3
 int sdc_image_open(int drive, char *name);
 sdc_dir_entry_t *sdc_readdir(int drive, char *name, const char *exts);
 int sdc_handle_event(void);

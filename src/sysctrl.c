@@ -19,6 +19,7 @@
 #include "mcu_hw.h"
 #include "at_wifi.h"
 #include "ra_task.h"        // ra_task_core_value()
+#include "games.h"          // game20k: games_save_start()
 
 // we are using "puff" to decompress a gzip'd FPGA config as this is a slow, yet
 // very small and memory efficient implementation of the deflate de-compression
@@ -412,8 +413,10 @@ void sys_run_action(config_action_t *action) {
     case CONFIG_ACTION_COMMAND_SAVE:
       sys_debugf("SAVE %s", command->filename);
       // tell the user whether saving worked, it was silent before
-      if(inifile_write(command->filename) == 0)
+      if(inifile_write(command->filename) == 0) {
+        games_save_start();   // game20k: the running ROM file is the start game at power-on
         menu_draw_dialog("Settings", "saved");
+      }
       else
         menu_draw_dialog("Settings", "save failed");
       break;

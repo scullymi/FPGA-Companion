@@ -33,6 +33,9 @@
 #define MENU_EVENT_NETWORK_DISCONNECTED 19
 #define MENU_EVENT_RA_RESTART    20  // game20k: another game, the Pico restarts into it, for one of another board with its core
 #define MENU_EVENT_CORE_SWITCH_FAILED 21  // game20k: the running bitstream does not know the core switch
+#define MENU_EVENT_ROM_OLD       22  // game20k: a ROM file without a footer, nothing was sent
+#define MENU_EVENT_ROM_DAMAGED   23  // game20k: the ROM streamed is not what its footer says, the core stays in reset
+#define MENU_EVENT_GAMES         24  // game20k: no ROM runs, the Games page opens
 
 #define MENU_EVENT_KEY_LATIN1    256  // 256..511
 

@@ -803,6 +803,11 @@ void ra_patch_rom_gone(void) {
 }
 
 bool ra_patch_rom_pending(void) { return rom_pending; }
+bool ra_patch_rom_digest(unsigned char sha[32]) {
+  if(!rom_sum_valid) return false;
+  memcpy(sha, rom_sum, 32);
+  return true;
+}
 bool ra_patch_rom_streaming(unsigned limit_ms) {
   return rom_pending && (TickType_t)(xTaskGetTickCount() - rom_started) < pdMS_TO_TICKS(limit_ms);
 }

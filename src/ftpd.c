@@ -33,6 +33,7 @@
 
 #include "ftpd.h"
 #include "ra_task.h"   /* ra_task_hardcore() */
+#include "games.h"     /* game20k: a ROM file changed, the Games page reads the card again */
 
 #define FTP_PORT             21
 #if defined(PICO_RP2040)
@@ -500,6 +501,7 @@ static void do_stor(ftps_t *fs, const char *path, uint32_t restart_at)
     f_close(&f);
     stor_open--;
     sdc_unlock();
+    games_changed(path);                /* game20k: whole or not, the file changed */
     lwip_close(dfd);
     reply(fs, ok ? "226 Transfer complete." : "426 Transfer aborted.");
 }
@@ -651,6 +653,7 @@ static void session(ftps_t *fs)
                     FRESULT r = mounted ? FR_DENIED : f_unlink(full);
                     sdc_unlock();
                     if (!mounted && r == FR_OK) {
+                        games_changed(path);   /* game20k */
                         reply(fs, "250 Deleted.");
                         continue;
                     }
@@ -721,6 +724,8 @@ static void session(ftps_t *fs)
                     FRESULT r = mounted ? FR_DENIED : f_rename(full_from, full_to);
                     sdc_unlock();
                     if (!mounted && r == FR_OK) {
+                        games_changed(fs->rnfr);   /* game20k: either name may be a ROM file */
+                        games_changed(path);
                         reply(fs, "250 Renamed.");
                         fs->rnfr[0] = 0;
                         continue;
