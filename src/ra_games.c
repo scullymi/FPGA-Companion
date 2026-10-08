@@ -167,6 +167,25 @@ static const ra_rom_t roms_jrpacman[] = {
 };
 static const ra_dip_t dips_jrpacman[] = { { 'L', 2 }, { 'B', 2 } };
 
+// Pac-Man Plus (Namco, Midway licence, 1982) on the Pac-Man board, as scripts/make_rom.py
+// builds pacplus.rom from the MAME set "pacplus": jrpacman.rom's layout with Pac-Man Plus's
+// program and graphics, then a header that names the game and the PROMs. The core decrypts
+// the program at run time. The DIP switches are Pac-Man's (menu lists 'L', 'B', 'C'), this
+// row requires none.
+static const ra_rom_t roms_pacplus[] = {
+  { { 0xf5,0xbd,0x31,0xc1,0xca,0xeb,0xa4,0x50,0x73,0xae,0x03,0xb4,0xae,0xf6,0x63,0x9e,
+      0x6e,0x24,0xff,0x72,0x78,0x39,0xd8,0xe4,0x08,0xc2,0x15,0x95,0x45,0x4f,0x43,0xa5 }, "MAME pacplus" },
+};
+
+// Ponpoko (Sigma, 1982) on the Pac-Man board, as scripts/make_rom.py builds ponpoko.rom from
+// the MAME set "ponpoko": pacplus.rom's layout with Ponpoko's program in both banks. The
+// core sets Ponpoko's DIP switches itself, to FBNeo's defaults, the menu's lists do not
+// reach them.
+static const ra_rom_t roms_ponpoko[] = {
+  { { 0x78,0x2e,0x59,0x4e,0x38,0xd1,0x97,0xc9,0xb5,0x82,0xea,0x49,0x5b,0x25,0xa0,0x5d,
+      0x81,0xbf,0x26,0xc4,0x5e,0x76,0x11,0x8d,0xaf,0x24,0xd6,0x48,0x68,0x8e,0x7c,0x5b }, "MAME ponpoko" },
+};
+
 // Time Pilot (Konami 1982), as scripts/make_rom.py builds timeplt.rom from the MAME set
 // "timeplt". The set asks for the default settings: 3 lives (list 'L' value 3), bonus at
 // 10K and every 50K (list 'B' value 1) and difficulty 4 (list 'F' value 4), MAME's defaults.
@@ -192,6 +211,8 @@ static const ra_game_t games[] = {
   { "puckman", "Puck Man", 24933u, "7775842918a8f43b7f3caf433e8327b7", 2, roms_puckman, 1, dips_puckman, 2 },
   { "mspacman", "Ms. Pac-Man", 11800u, "01052a074f9e7ce8dc823a5dd2155d14", 2, roms_mspacman, 1, dips_mspacman, 1 },
   { "jrpacman", "Jr. Pac-Man", 12191u, "bfb15e976e21c08502545e7b7a42256c", 2, roms_jrpacman, 1, dips_jrpacman, 2 },
+  { "pacplus", "Pac-Man Plus", 11919u, "2518bbca5569a8dfe447eba9628343c8", 2, roms_pacplus, 1, NULL, 0 },
+  { "ponpoko", "Ponpoko", 11918u, "4d7eb05f501d06d1db52565c00599e37", 2, roms_ponpoko, 1, NULL, 0 },
   { "1942",    "1942",     11960u, "519c84155964659375821f7ca576f095", 3, roms_1942,    1, NULL, 0 },
   { "timeplt", "Time Pilot", 11902u, "712417f8d15c9cebd3f2fd22a99aba84", 5, roms_timeplt, 1, dips_timeplt, 3 },
   { "1943",    "1943",     11961u, "c3395dd46c34fa7fd8d729d8cf88b7a8", 6, roms_1943,    1, NULL, 0 },
