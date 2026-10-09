@@ -101,6 +101,14 @@ endif()
 # it includes ra_games.h, which lies next to ra_games.c
 set_source_files_properties(${GAME20K_GAMES_TABLE} PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_LIST_DIR}/..)
 message(STATUS "game20k: games table ${GAME20K_GAMES_TABLE}")
+# the menus of game20k's cores, a C file for menus.c, passed the same way as
+# -DGAME20K_MENU_TABLE=..., without it the build takes the example, which holds no menu
+# of a core.
+if(NOT DEFINED GAME20K_MENU_TABLE)
+  set(GAME20K_MENU_TABLE ${CMAKE_CURRENT_LIST_DIR}/../menus_example.c)
+endif()
+set_source_files_properties(${GAME20K_MENU_TABLE} PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_LIST_DIR}/..)
+message(STATUS "game20k: menu table ${GAME20K_MENU_TABLE}")
 
 add_executable(${PROJECT}
 	../main.c
@@ -128,6 +136,8 @@ add_executable(${PROJECT}
 	../telnetd.c
 	../ra_games.c
 	${GAME20K_GAMES_TABLE}
+	../menus.c
+	${GAME20K_MENU_TABLE}
 	../ra_patch.c
 	../ra_net.c
 	../ra_slim.c

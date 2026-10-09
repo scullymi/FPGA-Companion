@@ -36,6 +36,7 @@
 #include "ra_queue.h"
 #include "ra_task.h"
 #include "games.h"
+#include "menus.h"     // game20k: menus_origin for the Version dialog
 #include "rc_version.h"
 #include "mcu_hw.h"
 
@@ -748,9 +749,10 @@ static void menu_net_status(void) {
 // fourth line is the core's board id and what the ROM file is (game20k).
 static void menu_version_status(void) {
   char t[128];
-  // a build with the fork's example table knows no game, the platform line says so
+  // a build with one of the fork's example tables knows no game or no menu, the platform
+  // line says so
   snprintf(t, sizeof(t), "game20k v%s\n%s%s\nrcheevos %s\nboard %u, %s", GAME20K_VERSION, GAME20K_PLATFORM,
-           strcmp(ra_games_origin, "generated") ? ", example" : "",
+           strcmp(ra_games_origin, "generated") || strcmp(menus_origin, "generated") ? ", example" : "",
            RCHEEVOS_VERSION_STRING, ra_game_board(), ra_game_rom_label());
   menu_draw_dialog_for("Version", t, pdMS_TO_TICKS(8000));
 }
