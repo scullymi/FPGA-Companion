@@ -141,6 +141,7 @@ add_executable(${PROJECT}
 	../ra_patch.c
 	../ra_net.c
 	../ra_slim.c
+	../ra_text.c
 	../ra_task.c
 	../ra_mac.c
 	../ra_queue.c
@@ -242,9 +243,11 @@ target_include_directories(${PROJECT} PRIVATE ${RCHEEVOS_DIR}/include ${RCHEEVOS
 target_compile_definitions(${PROJECT} PRIVATE RC_NO_THREADS=1)
 target_compile_definitions(${PROJECT} PRIVATE
 	GAME20K_VERSION="${GAME20K_VERSION}" GAME20K_PLATFORM="${GAME20K_PLATFORM}")
-# malloc returns NULL when the SDK heap is out instead of stopping the firmware: rcheevos
-# then rejects the achievement, mbedTLS fails the request, both are logged and retried or
-# shown, and the game goes on. A large set once stopped the firmware at every start.
+# malloc returns NULL when the SDK heap is out instead of stopping the firmware. How much a
+# set takes is up to the server, beyond our reach: what finds no room beside the parsed set
+# comes once it is freed, else it stays off and hardcore is blocked (ra_patch.c), a request
+# that finds too little fails and is asked again, and the game goes on. Our own mallocs
+# check for NULL. A large set once stopped the firmware at every start.
 target_compile_definitions(${PROJECT} PRIVATE PICO_MALLOC_PANIC=0)
 target_link_libraries(${PROJECT} PRIVATE pico_cyw43_arch_lwip_sys_freertos)
 if(NOT GAME20K_NO_BLUETOOTH)

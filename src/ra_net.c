@@ -223,7 +223,7 @@ static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, boo
             buf[0] != '{' && buf[0] != '[')
     chunked = ra_net_dechunk(buf, &reply->len);
   // with the SDK heap left after the connection: a set rcheevos holds and a large
-  // reply both live there, a request that finds too little stops the firmware
+  // reply both live there, a request that finds too little fails and is asked again
   if(reply->result == HTTPC_RESULT_OK) {
     debugf("RA: r=%s -> HTTP %lu, %u bytes%s%s%s, %lu ms, heap free %lu/%u", kind, reply->status, reply->len,
            chunked ? " (chunked)" : "", reply->truncated ? " (truncated)" : "",

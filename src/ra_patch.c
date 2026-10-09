@@ -40,6 +40,7 @@
 #include "ra_net.h"
 #include "ra_patch.h"
 #include "ra_slim.h"
+#include "ra_text.h"
 #include "ra_task.h"
 #include "ra_mac.h"
 
@@ -157,7 +158,8 @@ typedef struct {
 static entry_t  set[RA_PATCH_MAX];
 static unsigned set_n;
 // titles and descriptions of the active set, one block sized to the set: Galaga's 17
-// take about 2 KB, fixed fields in the table would take 36 KB for RA_PATCH_MAX
+// take about 2 KB, fixed fields in the table would take 36 KB for RA_PATCH_MAX.
+// NULL while texts_due waits for room.
 static char    *text_pool;
 
 /** What rcheevos says about an achievement of the table, same index. */
@@ -187,6 +189,10 @@ static unsigned      deferred_lb_n;
 static unsigned      oom_off;        // parts of the set that stay off, for lack of memory or room in the table: hardcore is blocked
 static bool          deferred_rp;
 static unsigned char deferred_rp_md5[16];
+// the size of text_pool when it found no room beside the parsed set, 0 when the texts are
+// in place: the table's rows show "" until the parsed set, which holds these very
+// strings, is freed and activate_deferred() fills a block from body[]
+static size_t        texts_due;
 static unsigned char handed_fp[16];   // fingerprint of body[] the handed-over set was parsed from
 
 // the rich presence script that runs, by its md5. com_task only.
@@ -643,18 +649,19 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
   static entry_t next[RA_PATCH_MAX];   // com_task only, too large for its stack
   unsigned i, j, n = 0, rejected = 0, kept = 0;
   size_t pool_size = 0;
-  char *pool, *at;
+  char *pool, *at, *end;
   deferred_ach_n = 0;
 
   // one block for all titles and descriptions of the new set, each cut to what the
-  // menu shows
+  // menu shows. Beside the parsed set the heap may have no room for it: the rows then
+  // start with "", and the block comes once the parsed set is freed, see texts_due
   for(i = 0; i < r->num_achievements; i++)
     if(core_item(&r->achievements[i]))
-      pool_size += strnlen(r->achievements[i].title ? r->achievements[i].title : "",
-                           RA_PATCH_TITLE_MAX - 1) + 1 +
-                   strnlen(r->achievements[i].description ? r->achievements[i].description : "",
-                           RA_PATCH_DESC_MAX - 1) + 1;
-  at = pool = malloc(pool_size ? pool_size : 1);   // pico_malloc stops the firmware when the heap is out
+      pool_size += ra_text_size(r->achievements[i].title, r->achievements[i].description);
+  at = pool = pool_size ? malloc(pool_size) : NULL;
+  end = pool ? pool + pool_size : NULL;
+  texts_due = pool_size && !pool ? pool_size : 0;
+  if(texts_due) debugf("RA: no room for the titles beside the parsed set, %u bytes later", (unsigned)texts_due);
 
   // every achievement of the set once: skip what does not count, stop when the
   // table is full, and hand the condition string of the others to rcheevos.
@@ -691,19 +698,11 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
       }
     }
     // keep id, points, title, description and condition md5, title and description
-    // cut and in the block
-    size_t tl = strnlen(a->title ? a->title : "", RA_PATCH_TITLE_MAX - 1);
-    size_t dl = strnlen(a->description ? a->description : "", RA_PATCH_DESC_MAX - 1);
+    // cut and in the block, "" without one
     next[n].id     = a->id;
     next[n].points = a->points;
-    memcpy(at, a->title ? a->title : "", tl);
-    at[tl] = 0;
-    next[n].title = at;
-    at += tl + 1;
-    memcpy(at, a->description ? a->description : "", dl);
-    at[dl] = 0;
-    next[n].desc = at;
-    at += dl + 1;
+    if(!ra_text_put(&at, end, a->title, a->description, &next[n].title, &next[n].desc))
+      next[n].title = next[n].desc = "";
     memcpy(next[n].md5, sum, sizeof(sum));
     n++;
   }
@@ -875,7 +874,10 @@ static void discard(rc_api_fetch_game_data_response_t *r) {
 static rc_api_fetch_game_data_response_t *parse_new(unsigned *n) {
   rc_api_fetch_game_data_response_t *r = malloc(sizeof(*r));
   unsigned i;
-  if(!r) return NULL;      // a guard only, pico_malloc stops the firmware when the heap is out
+  if(!r) {                 // no set, as when rcheevos' parse finds no memory
+    debugf("RA: set unusable: no memory");
+    return NULL;
+  }
   memset(r, 0, sizeof(*r));
   if(parse_body(r) != 0) {
     discard(r);
@@ -1207,11 +1209,27 @@ bool ra_patch_set_again(void) {
   return read_card();
 }
 
+/* ra_text_each() hands every achievement of body[] here: a row of the table gets its
+   title and description in the block, see texts_due. */
+typedef struct { char *at; const char *end; unsigned rows; } text_fill_t;
+static void text_row(void *arg, unsigned id, const char *title, const char *desc) {
+  text_fill_t *f = arg;
+  unsigned k = ra_patch_index(id);
+  const char *t, *d;
+  if(!k || !ra_text_put(&f->at, f->end, title, desc, &t, &d)) return;
+  taskENTER_CRITICAL();   // other tasks copy a row with interrupts off, see ra_patch_item()
+  set[k - 1].title = t;
+  set[k - 1].desc  = d;
+  taskEXIT_CRITICAL();
+  f->rows++;
+}
+
 /* Activates what activate_set() deferred for lack of memory, once the parsed set
    is freed: from the set's text in body[], one definition at a time on the heap,
    found and decoded by rcheevos' own JSON reader as rc_api would. body[] must
    still hold the text the set was parsed from, and each definition must have the
-   md5 it had there, else it stays off, and the log names what stays off. */
+   md5 it had there, else it stays off, and the log names what stays off. The
+   titles and descriptions come first, before the definitions take memory. */
 static void activate_deferred(rc_runtime_t *rt) {
   rc_json_field_t top[] = { RC_JSON_NEW_FIELD("PatchData") };
   rc_json_field_t pd[]  = { RC_JSON_NEW_FIELD("Leaderboards"), RC_JSON_NEW_FIELD("RichPresencePatch"),
@@ -1223,11 +1241,27 @@ static void activate_deferred(rc_runtime_t *rt) {
   unsigned char fp[16], sum[16];
   uint32_t num, id;
   unsigned i;
-  if(!deferred_ach_n && !deferred_lb_n && !deferred_rp) return;
+  if(!deferred_ach_n && !deferred_lb_n && !deferred_rp && !texts_due) return;
 
   // the text the set came from, else nothing is read from it
   fingerprint(body, body_len, fp);
   if(memcmp(fp, handed_fp, sizeof(fp))) goto out;
+
+  // the titles and descriptions: the freed parsed set held them, so their block fits
+  // now unless the heap is cut up. A row that gets none leaves the set incomplete.
+  if(texts_due) {
+    text_fill_t f = { malloc(texts_due), NULL, 0 };
+    f.end = f.at ? f.at + texts_due : NULL;
+    text_pool = f.at;
+    if(f.at) ra_text_each(body, body_len, text_row, &f);
+    if(f.rows < set_n) {
+      oom_off++;
+      debugf("RA: %u of %u titles stay empty, no room for them", set_n - f.rows, set_n);
+    } else
+      debugf("RA: titles in place");
+    texts_due = 0;
+  }
+
   it.json = body; it.end = body + body_len;
   if(!rc_json_get_array_entry_object(top, 1, &it) || !top[0].value_start) goto out;
   it.json = top[0].value_start; it.end = top[0].value_end;
@@ -1314,7 +1348,9 @@ static void activate_deferred(rc_runtime_t *rt) {
   }
 
 out:
-  oom_off += deferred_ach_n + deferred_lb_n + (deferred_rp ? 1 : 0);
+  oom_off += deferred_ach_n + deferred_lb_n + (deferred_rp ? 1 : 0) + (texts_due ? 1 : 0);
+  if(texts_due) debugf("RA: titles stay empty, the set's text was not there");
+  texts_due = 0;
   for(i = 0; i < deferred_ach_n; i++)
     debugf("RA: achievement %u (%s) stays off, the set's text was not there", set[deferred_ach[i]].id, set[deferred_ach[i]].title);
   for(i = 0; i < deferred_lb_n; i++)
