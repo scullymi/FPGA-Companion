@@ -27,6 +27,10 @@ typedef struct {
 /** @brief Starts a reply. */
 void ra_slim_init(ra_slim_t *s);
 
+/** @brief The reply's header says whether the body is chunked. Before the first
+ *         ra_slim_feed(). Without it, for a set from the card, the first byte decides. */
+void ra_slim_framing(ra_slim_t *s, bool chunked);
+
 /** @brief Takes n more bytes of the reply as they came, writes the slim JSON to buf at *len.
  *
  *  buf holds cap bytes and is NUL-terminated on return. false when the result does not

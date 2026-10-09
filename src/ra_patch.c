@@ -37,7 +37,6 @@
 #include <ff.h>
 #include "debug.h"
 #include "sdc.h"
-#include "ra_net.h"
 #include "ra_patch.h"
 #include "ra_slim.h"
 #include "ra_text.h"
@@ -305,9 +304,6 @@ void ra_patch_update_progress(const rc_runtime_t *rt) {
     taskEXIT_CRITICAL();
   }
 }
-
-/* The set without the chunked framing, see ra_net_dechunk(). */
-static bool strip_chunks(void) { return ra_net_dechunk(body, &body_len); }
 
 /* A set from the card goes through ra_slim like one from the server, in place: framing
    off and the unused fields out. So a file kept before ra_slim compares equal to the
@@ -1157,7 +1153,7 @@ int ra_patch_from_server(unsigned len) {
 
   body_len = len;
   body[len] = 0;
-  if(!handover || !strip_chunks()) {
+  if(!handover) {
     debugf("RA: reply from the server is not a set");
     return -1;
   }

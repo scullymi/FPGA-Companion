@@ -29,6 +29,10 @@ void ra_slim_init(ra_slim_t *s) {
   memset(s, 0, sizeof(*s));
 }
 
+void ra_slim_framing(ra_slim_t *s, bool chunked) {
+  s->frame = chunked ? FRAME_LEN : FRAME_PLAIN;
+}
+
 static int hexval(char c) {
   if(c >= '0' && c <= '9') return c - '0';
   if(c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -138,7 +142,7 @@ bool ra_slim_feed(ra_slim_t *s, const char *in, unsigned n, char *buf, unsigned 
   for(i = 0; i < n && !s->broken; i++) {
     char c = in[i];
     int v;
-    // plain JSON starts with a bracket, chunked framing with a hex length
+    // a file has no header: plain JSON starts with a bracket, chunked framing with a hex length
     if(s->frame == FRAME_START) s->frame = (c == '{' || c == '[') ? FRAME_PLAIN : FRAME_LEN;
     switch(s->frame) {
     case FRAME_PLAIN:

@@ -7,6 +7,7 @@
  *  certificate is checked against ra_ca.h, and a failed check ends the
  *  connection (ALTCP_MBEDTLS_AUTHMODE in lwipopts.h). */
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 
 #include <FreeRTOS.h>
@@ -45,6 +46,7 @@ static unsigned    dst_cap, dst_len;
 static ra_reply_t *out;
 static bool        slim_on;   /* the reply is a set: framing off and unused fields out while it arrives */
 static ra_slim_t   slim;
+static ra_net_framing_t framing;   /* how the reply's header frames its body */
 
 /* RetroAchievements knows a client by its User-Agent, so it names this firmware
    truthfully and never another emulator. Version and platform come from the
@@ -76,6 +78,7 @@ static struct altcp_pcb *alloc_sni(void *arg, u8_t ip_type) {
 static err_t on_recv(__attribute__((unused)) void *arg, struct altcp_pcb *pcb,
                      struct pbuf *p, __attribute__((unused)) err_t err) {
   if(!p) return ERR_OK;
+  framing.got += p->tot_len;
   if(slim_on) {
     // piece by piece through ra_slim, nothing more once the buffer is full
     for(struct pbuf *q = p; q && !out->truncated; q = q->next)
@@ -91,6 +94,19 @@ static err_t on_recv(__attribute__((unused)) void *arg, struct altcp_pcb *pcb,
   }
   altcp_recved(pcb, p->tot_len);
   pbuf_free(p);
+  return ERR_OK;
+}
+
+/* lwIP hands over the whole header before the body, also when it came in several pbufs.
+   The pbufs may carry the first body bytes after hdr_len. */
+static err_t on_headers(__attribute__((unused)) httpc_state_t *c, __attribute__((unused)) void *arg,
+                        struct pbuf *hdr, u16_t hdr_len, __attribute__((unused)) u32_t content_len) {
+  for(struct pbuf *q = hdr; q && hdr_len; q = q->next) {
+    u16_t n = q->len < hdr_len ? q->len : hdr_len;
+    ra_net_framing_feed(&framing, (const char *)q->payload, n);
+    hdr_len -= n;
+  }
+  if(slim_on) ra_slim_framing(&slim, framing.chunked);
   return ERR_OK;
 }
 
@@ -112,12 +128,69 @@ static int hexval(char c) {
   return -1;
 }
 
+void ra_net_framing_init(ra_net_framing_t *f) {
+  memset(f, 0, sizeof(*f));
+  f->length = RA_NET_NO_LENGTH;
+}
+
+/* A header field by name, case ignored, and its value without the space around it. */
+static bool field(const char *line, unsigned n, const char *name, const char **v, unsigned *vn) {
+  unsigned k = (unsigned)strlen(name);
+  if(n <= k || line[k] != ':' || strncasecmp(line, name, k)) return false;
+  *v  = line + k + 1;
+  *vn = n - k - 1;
+  while(*vn && (**v == ' ' || **v == '\t')) { (*v)++; (*vn)--; }
+  while(*vn && ((*v)[*vn - 1] == ' ' || (*v)[*vn - 1] == '\t')) (*vn)--;
+  return true;
+}
+
+/* One header line. Only the two fields that frame the body count, the status line
+   and all others pass. */
+static void framing_line(ra_net_framing_t *f) {
+  bool cut = f->at > sizeof(f->line);
+  unsigned n = cut ? sizeof(f->line) : f->at, vn, i;
+  unsigned long len = 0;
+  const char *v;
+
+  if(field(f->line, n, "Transfer-Encoding", &v, &vn)) {
+    // the codings in the order they were applied, chunked has to be the last
+    i = vn;
+    while(i && v[i - 1] != ',') i--;
+    while(i < vn && (v[i] == ' ' || v[i] == '\t')) i++;
+    f->coded   = true;
+    f->chunked = vn - i == 7 && !strncasecmp(v + i, "chunked", 7);
+  } else if(field(f->line, n, "Content-Length", &v, &vn)) {
+    for(i = 0; i < vn && v[i] >= '0' && v[i] <= '9' && len < 0x0FFFFFFFUL; i++)
+      len = len * 10 + (unsigned long)(v[i] - '0');
+    // digits only, and a second Content-Length the same as the first
+    if(!vn || i < vn || (f->length != RA_NET_NO_LENGTH && f->length != len)) f->bad = true;
+    f->length = len;
+  } else
+    return;
+  if(cut) f->bad = true;    // the value is not all there
+}
+
+void ra_net_framing_feed(ra_net_framing_t *f, const char *in, unsigned n) {
+  for(; n; in++, n--) {
+    if(*in == '\n') {
+      framing_line(f);
+      f->at = 0;
+    } else if(*in != '\r') {
+      if(f->at < sizeof(f->line)) f->line[f->at] = *in;
+      f->at++;
+    }
+  }
+}
+
+bool ra_net_framing_whole(const ra_net_framing_t *f) {
+  return !f->bad && (f->coded || f->length == RA_NET_NO_LENGTH || f->got == f->length);
+}
+
 bool ra_net_dechunk(char *buf, unsigned *len) {
   char *end = buf + *len;
   int pass;
 
   if(*len == 0) return false;
-  if(buf[0] == '{') return true;
   // each chunk is a hex length, CR LF, the data, CR LF, and a length of 0 ends it.
   // Two passes: the first only checks that the framing is whole, the second moves
   // the data down. A body that is not whole chunked framing stays as it came.
@@ -179,6 +252,7 @@ static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, boo
   dst = buf; dst_cap = cap; dst_len = 0; dst[0] = 0; out = reply;
   slim_on = set;
   ra_slim_init(&slim);
+  ra_net_framing_init(&framing);
   kind_of(path, kind, sizeof(kind));
   absolute_time_t t0 = get_absolute_time();
 
@@ -192,6 +266,7 @@ static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, boo
     memset(&conn, 0, sizeof(conn));
     conn.altcp_allocator = &allocator;
     conn.result_fn       = on_done;
+    conn.headers_done_fn = on_headers;
     busy = true;
     e = httpc_get_file_dns(RA_HOST, 443, path, &conn, on_recv, NULL, &req);
     if(e != ERR_OK) busy = false;     // no callback follows then
@@ -211,22 +286,20 @@ static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, boo
   }
 
   unsigned long ms = (unsigned long)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
-  // the server sends some replies chunked, and lwIP's HTTP client passes the
-  // framing through. A whole reply that is not JSON already loses it here, so
-  // every caller gets the plain body. One that is not chunked either stays as it is.
-  bool chunked = false;
-  if(set) {
-    // ra_slim took the framing off already, a reply cut short or not as expected is unusable
-    if(reply->result == HTTPC_RESULT_OK && !reply->truncated && !ra_slim_whole(&slim))
-      reply->broken = true;
-  } else if(reply->result == HTTPC_RESULT_OK && !reply->truncated && reply->len &&
-            buf[0] != '{' && buf[0] != '[')
-    chunked = ra_net_dechunk(buf, &reply->len);
+  // lwIP's HTTP client passes the chunked framing through. A whole reply loses it here
+  // when its header says chunked, a set lost it in ra_slim already. A reply cut short
+  // or not as its header framed it is unusable.
+  if(reply->result == HTTPC_RESULT_OK && !reply->truncated) {
+    bool whole = ra_net_framing_whole(&framing);
+    if(set) whole = whole && ra_slim_whole(&slim);
+    else if(whole && framing.chunked) whole = ra_net_dechunk(buf, &reply->len);
+    reply->broken = !whole;
+  }
   // with the SDK heap left after the connection: a set rcheevos holds and a large
   // reply both live there, a request that finds too little fails and is asked again
   if(reply->result == HTTPC_RESULT_OK) {
     debugf("RA: r=%s -> HTTP %lu, %u bytes%s%s%s, %lu ms, heap free %lu/%u", kind, reply->status, reply->len,
-           chunked ? " (chunked)" : "", reply->truncated ? " (truncated)" : "",
+           framing.chunked ? " (chunked)" : "", reply->truncated ? " (truncated)" : "",
            reply->broken ? " (not whole)" : "", ms,
            (unsigned long)getFreeHeap(), (unsigned)xPortGetFreeHeapSize());
     if(set) debugf("RA: r=%s %lu bytes of unused fields left out", kind, slim.dropped);
