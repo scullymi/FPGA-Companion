@@ -29,14 +29,16 @@ uint32_t getFreeHeap(void);   /* mcu_hw.c: the SDK heap left for mbedTLS and rch
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
    as the first byte of the next transfer. The seven constants are the same for every
-   game and must match ram_mirror_pkg.sv of the game20k FPGA platform. Layout 4: a
-   header of 16 bytes, in it the core's reset count (byte 8), its diagnostic
+   game and must match ram_mirror_pkg.sv of the game20k FPGA platform. Layout 5: a
+   header of 24 bytes, in it the core's reset count (byte 8), its diagnostic
    parameters (byte 9) and their complements (bytes 10 and 11), the board id of the
-   core (byte 12, its complement in 13) and the game RAM in the mirror in units of
-   RAM_MIRROR_PAGE bytes (byte 14, its complement in 15). Each core sends its own
-   length, the buffers here hold the largest one. */
-#define RAM_MIRROR_LAYOUT    0x04                    /* header byte 4 */
-#define RAM_MIRROR_HEAD      16
+   core (byte 12, its complement in 13), the game RAM in the mirror in units of
+   RAM_MIRROR_PAGE bytes (byte 14, its complement in 15) and the core's interface tag
+   (bytes 16 and 17, low byte first, the complements in 18 and 19), which picks the
+   menu (menus.h). Bytes 20 to 23 are 0. Each core sends its own length, the buffers
+   here hold the largest one. */
+#define RAM_MIRROR_LAYOUT    0x05                    /* header byte 4 */
+#define RAM_MIRROR_HEAD      24
 #define RAM_MIRROR_DATA_MAX  22528                   /* largest game RAM a core may announce */
 #define RAM_MIRROR_LOG       1536                    /* oracle log, 512 x 3 bytes */
 #define RAM_MIRROR_TAIL      8                       /* footer: frame, flags, checksum, log count */
@@ -52,6 +54,7 @@ static unsigned char ram_mirror_seen[RAM_MIRROR_DATA_MAX / 8];
    valid header was read; com_task only */
 static unsigned      ram_mirror_data;
 static unsigned char ram_mirror_board;               /* its board id, byte 12, adopted with the length */
+static uint16_t      ram_mirror_tag;                 /* its interface tag, bytes 16 and 17, adopted with them */
 
 /* rcheevos evaluates the achievement conditions over each good snapshot. The set
    is defined on the flat layout the core sends, per game (Galaga: bgram 2048, then
@@ -648,12 +651,13 @@ static void ra_event(const rc_runtime_event_t *ev) {
    header in ram_mirror_buf, or the verdict with SPI ended: 0xE1 magic, 0xE2 layout
    (core and firmware of different releases, said once per layout seen; the banner
    still reaches an older core, the back channel in bytes 0 to 7 is the same), 0xE3
-   bytes 12 to 15 (said once per refused pair seen). Those carry the board id and
-   the length with a complement each: a pair that does not match, a board of 0 or
-   255 (the stuck patterns 00 and FF fail here) or a length outside 1..176 pages is
-   refused and no body is read. The first valid pair is adopted, together with the
-   board id for the game's identity, and a later pair that differs is refused too:
-   the FPGA cannot change without a reconfiguration, which reboots the Pico as well. */
+   bytes 12 to 19 (said once per refused set seen). Those carry the board id, the
+   length and the interface tag with a complement each: a pair that does not match,
+   a board of 0 or 255 (the stuck patterns 00 and FF fail here) or a length outside
+   1..176 pages is refused and no body is read. The first valid set is adopted,
+   together with the board id for the game's identity, and a later set that differs
+   is refused too: the FPGA cannot change without a reconfiguration, which reboots
+   the Pico as well. */
 static unsigned char ram_mirror_header(const unsigned char *hdr_tx) {
   mcu_hw_spi_begin();
   mcu_hw_spi_tx_u08(SPI_TARGET_RAM);
@@ -677,27 +681,33 @@ static unsigned char ram_mirror_header(const unsigned char *hdr_tx) {
   }
   unsigned char board = ram_mirror_buf[12], pages = ram_mirror_buf[14];
   unsigned      data  = (unsigned)pages * RAM_MIRROR_PAGE;
+  uint16_t      tag   = (uint16_t)(ram_mirror_buf[16] | ram_mirror_buf[17] << 8);
   bool valid = ram_mirror_buf[13] == (unsigned char)~board && ram_mirror_buf[15] == (unsigned char)~pages &&
+               ram_mirror_buf[18] == (unsigned char)~ram_mirror_buf[16] &&
+               ram_mirror_buf[19] == (unsigned char)~ram_mirror_buf[17] &&
                board != 0 && board != 255 && pages >= 1 && pages <= RAM_MIRROR_DATA_MAX / RAM_MIRROR_PAGE;
   if(valid && !ram_mirror_data) {
     ram_mirror_data  = data;
     ram_mirror_board = board;
+    ram_mirror_tag   = tag;
     ra_patch_board(board);                 /* whichever of probe or poll sees it first feeds the identity */
-    debugf("RAM mirror: layout %u, board %u, %u data bytes", RAM_MIRROR_LAYOUT, board, data);
-  } else if(!valid || data != ram_mirror_data || board != ram_mirror_board) {
+    debugf("RAM mirror: layout %u, board %u, %u data bytes, interface tag %04x",
+           RAM_MIRROR_LAYOUT, board, data, tag);
+  } else if(!valid || data != ram_mirror_data || board != ram_mirror_board || tag != ram_mirror_tag) {
     /* once per distinct refused value, as the layout branch above does. A flag of
-       its own for "nothing said yet": 00 00 00 00 and FF FF FF FF are values this
-       branch refuses, so neither can serve as the sentinel */
+       its own for "nothing said yet": all 00 and all FF are values this branch
+       refuses, so neither can serve as the sentinel */
     static bool     told_any;
-    static uint32_t told;
-    uint32_t cur = (uint32_t)ram_mirror_buf[12] << 24 | (uint32_t)ram_mirror_buf[13] << 16 |
-                   (uint32_t)ram_mirror_buf[14] << 8  | ram_mirror_buf[15];
-    if(!told_any || told != cur) {
+    static uint32_t told[2];
+    uint32_t cur[2] = { 0, 0 };
+    for(int i = 0; i < 8; i++) cur[i / 4] = cur[i / 4] << 8 | ram_mirror_buf[12 + i];
+    if(!told_any || told[0] != cur[0] || told[1] != cur[1]) {
       told_any = true;
-      told = cur;
-      debugf("RAM mirror: header bytes 12..15 %02x %02x %02x %02x %s, snapshot refused",
-             ram_mirror_buf[12], ram_mirror_buf[13], ram_mirror_buf[14], ram_mirror_buf[15],
-             valid ? "differ from the adopted board and length" : "invalid");
+      told[0] = cur[0];
+      told[1] = cur[1];
+      debugf("RAM mirror: header bytes 12..19 %08lx %08lx %s, snapshot refused",
+             (unsigned long)cur[0], (unsigned long)cur[1],
+             valid ? "differ from the adopted board, length and tag" : "invalid");
     }
     mcu_hw_spi_end(); return ram_mirror_verdict = 0xE3;
   }
