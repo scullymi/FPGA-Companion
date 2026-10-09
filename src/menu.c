@@ -748,7 +748,9 @@ static void menu_net_status(void) {
 // fourth line is the core's board id and what the ROM file is (game20k).
 static void menu_version_status(void) {
   char t[128];
-  snprintf(t, sizeof(t), "game20k v%s\n%s\nrcheevos %s\nboard %u, %s", GAME20K_VERSION, GAME20K_PLATFORM,
+  // a build with the fork's example table knows no game, the platform line says so
+  snprintf(t, sizeof(t), "game20k v%s\n%s%s\nrcheevos %s\nboard %u, %s", GAME20K_VERSION, GAME20K_PLATFORM,
+           strcmp(ra_games_origin, "generated") ? ", example" : "",
            RCHEEVOS_VERSION_STRING, ra_game_board(), ra_game_rom_label());
   menu_draw_dialog_for("Version", t, pdMS_TO_TICKS(8000));
 }

@@ -1,7 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright (C) 2026 scullymi */
 /** @file ra_games.h
- *  @brief The games the firmware knows: their ROM files, ids, hashes and boards, see ra_games.c. */
+ *  @brief The games the firmware knows: their ROM files, ids, hashes and boards, see ra_games.c.
+ *
+ *  The table is a file of its own that CMake takes from GAME20K_GAMES_TABLE. game20k's
+ *  scripts/build_companion.sh passes the one it generates from its ROM manifests, a build
+ *  without it links ra_games_example.c, which holds no game. */
 #ifndef RA_GAMES_H
 #define RA_GAMES_H
 
@@ -37,13 +41,19 @@ typedef struct {
   const char     *set;     /**< MAME set name, the card file is the set name plus ".rom" */
   const char     *title;   /**< for the menu */
   unsigned        id;      /**< the game's id on the server */
-  const char     *hash;    /**< md5 of set, 32 hex, precomputed; check_contracts.py verifies it */
+  const char     *hash;    /**< md5 of set, 32 hex, precomputed by the table's generator */
   unsigned char   board;   /**< header byte 12 of the core that runs it, the manifest's board line */
   const ra_rom_t *roms;    /**< the files hardcore accepts */
   unsigned        rom_n;   /**< how many */
   const ra_dip_t *dips;    /**< switches the set expects, NULL for none */
   unsigned        dip_n;   /**< how many */
 } ra_game_t;
+
+/** @brief The table, one row per game. Several sets may share a board, the digest then picks
+ *         the set, and the first row of a board is the game shown without a ROM. */
+extern const ra_game_t ra_games_rows[];
+extern const unsigned  ra_games_rows_n;   /**< rows in ra_games_rows */
+extern const char      ra_games_origin[]; /**< "generated" for game20k's table, "example" for ra_games_example.c */
 
 /** @brief What ra_games_select() decided for this boot. */
 typedef struct {

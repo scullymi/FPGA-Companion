@@ -92,6 +92,15 @@ endif()
 if(NOT DEFINED GAME20K_PLATFORM)
   set(GAME20K_PLATFORM "Tang Nano 20K")
 endif()
+# the game table, a C file of rows for ra_games.c. scripts/build_companion.sh of game20k
+# passes the one it generates from its ROM manifests with -DGAME20K_GAMES_TABLE=...,
+# without it the build takes the example, which holds no game.
+if(NOT DEFINED GAME20K_GAMES_TABLE)
+  set(GAME20K_GAMES_TABLE ${CMAKE_CURRENT_LIST_DIR}/../ra_games_example.c)
+endif()
+# it includes ra_games.h, which lies next to ra_games.c
+set_source_files_properties(${GAME20K_GAMES_TABLE} PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_LIST_DIR}/..)
+message(STATUS "game20k: games table ${GAME20K_GAMES_TABLE}")
 
 add_executable(${PROJECT}
 	../main.c
@@ -118,6 +127,7 @@ add_executable(${PROJECT}
 	../ftpd.c
 	../telnetd.c
 	../ra_games.c
+	${GAME20K_GAMES_TABLE}
 	../ra_patch.c
 	../ra_net.c
 	../ra_slim.c
