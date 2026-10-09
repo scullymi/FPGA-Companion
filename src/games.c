@@ -4,7 +4,7 @@
  *  @brief The Games page's list, the game picked there and the start game.
  *
  *  The list is every *.rom in the card's root whose footer is valid (games_file.c)
- *  and names a board of the game table (ra_games.c), sorted by title. It is read
+ *  and names a board with a menu in this firmware (menus.h), sorted by title. It is read
  *  in the menu task when the page opens and when the card changed, one footer per
  *  file, and holds only titles and names. The content is checked when it streams
  *  to the core: sdc.c compares the SHA-256 the stream yields with the footer's, a
@@ -25,7 +25,7 @@
 #include <ff.h>
 #include "debug.h"
 #include "sdc.h"
-#include "ra_games.h"
+#include "menus.h"      // the boards this firmware has a core menu for
 #include "ra_patch.h"   // RA_PATCH_ROM_IMAGE
 #include "games.h"
 
@@ -127,12 +127,12 @@ void games_read(void) {
         ok = games_footer_read(&f, &ft);
         f_close(&f);
       }
-      // a file without a valid footer is an old one (or none at all), a board the
-      // table does not know has no core in this firmware's ring
-      if(!ok)                          { old++;     continue; }
-      if(!ra_games_by_board(ft.board)) { foreign++; continue; }
+      // a file without a valid footer is an old one (or none at all), a board
+      // without a menu here has no core in this firmware's ring
+      if(!ok)                             { old++;     continue; }
+      if(!menus_by_board(ft.board, NULL)) { foreign++; continue; }
       uint32_t crc = games_name_crc(fno.fname);
-      if(is_damaged(crc))              { bad++;     continue; }
+      if(is_damaged(crc))                 { bad++;     continue; }
       snprintf(title, sizeof(title), "%s", ft.title[0] ? ft.title : ft.set[0] ? ft.set : fno.fname);
       insert(title, fno.fname, crc, ft.board);
     }
@@ -262,7 +262,7 @@ bool games_start_file(char *name, size_t n, games_footer_t *ft) {
   sdc_unlock();
   if(!found) return false;
   snprintf(path, sizeof(path), "%s/%s", CARD_MOUNTPOINT, name);
-  if(!games_footer_of(path, ft) || !ra_games_by_board(ft->board)) {
+  if(!games_footer_of(path, ft) || !menus_by_board(ft->board, NULL)) {
     debugf("Games: start game %s is missing, old or of an unknown board", name);
     return false;
   }
