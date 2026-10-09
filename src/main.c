@@ -25,6 +25,7 @@ uint32_t getFreeHeap(void);   /* mcu_hw.c: the SDK heap left for mbedTLS and rch
 #include "hardware/watchdog.h"   /* the game to start after a restart, see restart_step() */
 #include "../ftpd.h"             /* a restart waits for the uploads that run */
 #include "../games.h"            /* the Games page's pick and the start game */
+#include "../menus.h"            /* the menus of game20k's cores */
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
@@ -241,6 +242,7 @@ static void banner_login(void) {
                        !ra_task_hardcore_wanted()   ? "RA: SOFTCORE" :
                        (why & RA_HC_BLOCK_CORE)     ? "RA: SOFTCORE TEST CORE" :
                        (why & RA_HC_BLOCK_XML)      ? "RA: SOFTCORE CONFIG.XML" :
+                       (why & RA_HC_BLOCK_MENU)     ? "RA: SOFTCORE MISMATCH" :
                        (why & RA_HC_BLOCK_KEY)      ? "RA: SOFTCORE KEY ERROR" :
                        (why & RA_HC_BLOCK_SIZE)     ? "RA: SOFTCORE SET TOO BIG" :
                        // a wrong game also explains an unknown ROM, so it comes first
@@ -714,20 +716,24 @@ static unsigned char ram_mirror_header(const unsigned char *hdr_tx) {
   return 0;
 }
 
-/* The board id before the game starts: the header only, up to 50 tries 10 ms apart
-   (half a second), at boot before the card's defaults are mounted. ram_spi answers
-   the header from constants while the core is still in reset. On failure (a layout
-   3 core, no answer) the board stays 0, the poll adopts the first valid header it
-   sees later, and the game's identity is decided as "board unknown". hdr_tx all
-   zero: byte 5 is taken only when two transfers agree, and zero is its boot value. */
-static void ram_mirror_probe(void) {
-  unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0 };
+/* Board id and interface tag before the menu and the game: the header only, up to 50
+   tries 10 ms apart (half a second), at boot before the menu is read. ram_spi answers
+   the header from constants while the core is still in reset. On failure (a core of
+   another layout, no answer) the board stays 0, the poll adopts the first valid
+   header it sees later, and the game's identity is decided as "board unknown". hdr_tx
+   all zero: byte 5 is taken only when two transfers agree, and zero is its boot value.
+   Returns 0 for a valid header, else the last verdict: 0xE1 no game20k core, 0xE2 a
+   game20k core of another layout, 0xE3 one with a broken header. */
+static unsigned char ram_mirror_probe(void) {
+  unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0 }, v = 0xE1;
   for(int i = 0; i < 50 && !ram_mirror_data; i++) {
     if(i) vTaskDelay(pdMS_TO_TICKS(10));
-    if(ram_mirror_header(hdr_tx) == 0) mcu_hw_spi_end();   /* the header is all the probe wants */
+    v = ram_mirror_header(hdr_tx);
+    if(v == 0) mcu_hw_spi_end();           /* the header is all the probe wants */
   }
   if(!ram_mirror_data)
     debugf("RAM mirror: no valid layout %u header in 50 tries, the board is unknown", RAM_MIRROR_LAYOUT);
+  return ram_mirror_data ? 0 : v;
 }
 
 /* Read the header first. Byte 7 set means a harvest was running when the transfer
@@ -883,6 +889,15 @@ static void com_task(__attribute__((unused)) void *p ) {
 
     // try to load the global config
     inifile_config_read();
+
+    // game20k: the board id and the interface tag of the core from the RAM mirror
+    // header, before the menu: they pick the menu built into this firmware. The
+    // board also decides with the ROM which game this is. After the menu comes the
+    // handover of the achievement set. The set itself is read in ra_patch_settle()
+    // once board and ROM are known, so a set with a valid tag lets the game start in
+    // hardcore. rcheevos takes it with the first snapshot.
+    unsigned char probe = ram_mirror_probe();
+    bool mismatch = false;   // a game20k core whose menu this firmware lacks: say so once the menu runs
     
     // try to load a config .xml from sd card. sys_get_config_name() always
     // returns /sd/config.xml here: the core id byte stays 0 (game20k)
@@ -907,16 +922,30 @@ static void com_task(__attribute__((unused)) void *p ) {
 
       config_dump();
     } else {
-      // no XML on SD card, try to load from core itself
-      char *cfg_str = sys_get_config();
-      if(cfg_str) {
+      // game20k: no XML on SD card. The firmware's menu for the core's board when
+      // the interface tags agree. Else a core without a game20k header may bring
+      // its own menu (READ_CFG), and the last resort is the basic menu: there is
+      // always an OSD. A game20k core of another release gets the basic menu with
+      // a message, and without hardcore when it has the board but another tag:
+      // its DIP switches may mean something else than this firmware's menu says.
+      const menus_entry_t *m;
+      menus_why_t why = menus_pick(ram_mirror_board, ram_mirror_tag, NULL, &m);
+      const char *c = NULL;
+      if(m) {
+	debugf("Loading the built-in XML config of board %u", ram_mirror_board);
+	c = m->xml;
+      } else if(why == MENUS_NO_HEADER && (c = sys_get_config()) != NULL)
 	debugf("Loading XML config from core");
-	config_init();
-	char *c = cfg_str;
-	while(*c) xml_parse(*c++); 
-	config_dump();
-      } else
-	debugf("No valid config found, neither on sd card nor in core");
+      else {
+	debugf("No menu for this core (board %u, tag %04x, why %d), loading the basic XML config",
+	       ram_mirror_board, ram_mirror_tag, why);
+	c = menus_basic_xml;
+      }
+      mismatch = why != MENUS_FOUND && probe != 0xE1;
+      if(why == MENUS_MISMATCH) ra_task_hardcore_block(RA_HC_BLOCK_MENU, true);
+      config_init();
+      while(*c) xml_parse(*c++);
+      config_dump();
     }
 
     // process any pending interrupt. Filter out irq 1 which is the
@@ -931,13 +960,8 @@ static void com_task(__attribute__((unused)) void *p ) {
     // initialize on-screen-display and menu system
     osd_init();    
     menu_init();
+    if(mismatch) menu_notify(MENU_EVENT_MISMATCH);
 
-    // game20k: the board id of the core from the RAM mirror header, before the
-    // ROM streams: it decides with the ROM which game this is. Then the handover
-    // of the achievement set; the set itself is read in ra_patch_settle() once
-    // board and ROM are known, so a set with a valid tag lets the game start in
-    // hardcore. rcheevos takes it with the first snapshot.
-    ram_mirror_probe();
     if(!ra_patch_init()) debugf("RA: set handover could not be set up, no achievements");
 
     // open disk images, either defaults set in sdc_init or

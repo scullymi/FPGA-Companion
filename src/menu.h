@@ -36,6 +36,7 @@
 #define MENU_EVENT_ROM_OLD       22  // game20k: a ROM file without a footer, nothing was sent
 #define MENU_EVENT_ROM_DAMAGED   23  // game20k: the ROM streamed is not what its footer says, the core stays in reset
 #define MENU_EVENT_GAMES         24  // game20k: no ROM runs, the Games page opens
+#define MENU_EVENT_MISMATCH      25  // game20k: the core is of another release than the firmware, its menu is missing
 
 #define MENU_EVENT_KEY_LATIN1    256  // 256..511
 

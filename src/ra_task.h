@@ -52,6 +52,7 @@ bool ra_task_hardcore(void);
 #define RA_HC_BLOCK_KEY  16u   /**< no device key, unlocks cannot be tagged, see ra_mac.c */
 #define RA_HC_BLOCK_SIZE 64u   /**< a part of the set found no memory and stays off: in hardcore every achievement and leaderboard must run */
 #define RA_HC_BLOCK_GAME 32u   /**< the ROM in the core is not this game's in one of four ways: the board is unknown, the ROM's game does not belong to this board, the ROM was changed to another game after the start, or the server's id differs from the table's */
+#define RA_HC_BLOCK_MENU 128u  /**< the core's interface tag differs from the firmware's for its board: the basic menu runs, the core may read the switches otherwise (menus.h) */
 
 /** @brief The reasons that keep hardcore off although the menu asks for it, RA_HC_BLOCK_*. Any task. */
 unsigned ra_task_hardcore_blocked(void);

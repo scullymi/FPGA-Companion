@@ -1047,6 +1047,7 @@ static void menu_ra_status(void) {
   if(!ra_task_hardcore() && ra_task_hardcore_wanted() && why)
     snprintf(line, sizeof(line), "softcore: %s",
              (why & RA_HC_BLOCK_CORE) ? "test core" : (why & RA_HC_BLOCK_XML) ? "config.xml" :
+             (why & RA_HC_BLOCK_MENU) ? "mismatch" :
              (why & RA_HC_BLOCK_KEY)  ? "key error" : (why & RA_HC_BLOCK_SIZE) ? "set too big" :
              (why & RA_HC_BLOCK_GAME) ? "wrong game" :
              (why & RA_HC_BLOCK_ROM)  ? "ROM unknown" : "till online");
@@ -1715,6 +1716,11 @@ static void menu_task(__attribute__((unused)) void *parms) {
     if(cmd == MENU_EVENT_GAMES) {
       // game20k: the core's ROM file is missing, a game is picked instead
       menu_games_show();
+    } else
+    if(cmd == MENU_EVENT_MISMATCH) {
+      // game20k: core and firmware come from different releases, the basic menu runs
+      menu_draw_dialog_for("Release mismatch", "Firmware and FPGA\ndo not match.\nUpdate both.",
+                           pdMS_TO_TICKS(8000));
     } else
     if(cmd == MENU_EVENT_CORE_SWITCH_FAILED) {
       // game20k: the running bitstream was built before the core switch
