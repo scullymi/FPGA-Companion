@@ -199,7 +199,11 @@ bool ra_net_dechunk(char *buf, unsigned *len) {
     for(;;) {
       unsigned long n = 0;
       char *p = in;
-      while(p < end && hexval(*p) >= 0) { n = n * 16 + (unsigned long)hexval(*p); p++; }
+      while(p < end && hexval(*p) >= 0) {
+        if(n > 0x0FFFFFFFUL) return false;            // more digits than a length holds
+        n = n * 16 + (unsigned long)hexval(*p);
+        p++;
+      }
       if(p == in) return false;                       // no length line: not chunked
       while(p < end && *p != '\n') p++;               // chunk extensions and the CR
       if(p >= end) return false;
