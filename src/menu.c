@@ -916,10 +916,10 @@ static void menu_ra_list_open(void) {
 static void menu_pop(void);
 
 /* ================ the Games page ================
-   One line per game on the card, by title (games.c). OK on a line starts it: the
-   Pico restarts into its file, after a core switch when it runs on another board,
-   see restart_step() in main.c. The list is read when the page opens and again
-   when the card changed while it shows. */
+   One line per game on the card, by title (games.c). OK on a line starts it: a game
+   of this board streams its file to the core in place, one of another board needs a
+   core switch and a restart of the Pico, see restart_step() in main.c. The list is
+   read when the page opens and again when the card changed while it shows. */
 static int games_list_length(void) {
   return (int)games_count();
 }
@@ -960,9 +960,14 @@ static void games_list_select(int line) {
     osd_enable(OSD_INVISIBLE);
     return;
   }
-  // main.c takes it from here and says so, see MENU_EVENT_RA_RESTART
+  // main.c takes it from here. A game of this board streams at once and the menu
+  // closes onto it, a core switch says so, see MENU_EVENT_RA_RESTART
   games_pick(&it);
   menu_timer_enable(false);
+  if(it.board == ra_game_board()) {
+    osd_enable(OSD_INVISIBLE);
+    return;
+  }
   menu_pop();
 }
 
@@ -1686,22 +1691,18 @@ static void menu_task(__attribute__((unused)) void *parms) {
 #endif
 
     if(cmd == MENU_EVENT_RA_RESTART) {
-      // game20k: the ROM picked is another game of this board, main.c restarts
-      // the Pico into it for its achievements in a few seconds. A game of another
-      // board loads its core first. A game picked on the Games page goes first
+      // game20k: the game picked runs on another board, main.c loads its core and
+      // restarts the Pico into it in a few seconds. A game picked on the Games page
+      // goes first. A game of this board needs neither, it streams in place
       const ra_game_t *g = ra_patch_restart_to();
       games_pick_t pk;
       char message[80];
       if(games_picked(&pk)) {
-        snprintf(message, sizeof(message), "%s: %s", pk.title,
-                 pk.board != ra_game_board() ? "loading its core" : "starting");
+        snprintf(message, sizeof(message), "%s: loading its core", pk.title);
         menu_draw_dialog_for("Games", message, pdMS_TO_TICKS(4000));
-      } else if(g && g->board != ra_game_board()) {
+      } else if(g) {
         snprintf(message, sizeof(message), "%s: loading its core", g->title);
         menu_draw_dialog_for("Core switch", message, pdMS_TO_TICKS(4000));
-      } else {
-        snprintf(message, sizeof(message), "%s: restart for its achievements", g ? g->title : "Game");
-        menu_draw_dialog_for("RetroAchievements", message, pdMS_TO_TICKS(4000));
       }
     } else
     if(cmd == MENU_EVENT_ROM_OLD) {
@@ -1729,7 +1730,7 @@ static void menu_task(__attribute__((unused)) void *parms) {
     } else
     if(cmd == MENU_EVENT_NETWORK_GOT_IP || cmd == MENU_EVENT_NETWORK_DISCONNECTED) {
       // game20k: no popup. Address and WiFi name are under Status, and the popup
-      // came after every restart of the Pico, a game switch among them
+      // came after every restart of the Pico, a core switch among them
     } else
   if(cmd == MENU_EVENT_USB_MOUNTED) {
       menu_debugf("USB mount event");

@@ -108,20 +108,20 @@ bool ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n) {
   return fresh > 0 || m != before;
 }
 
-void ra_state_save(void) {
+void ra_state_save(unsigned id) {
   FIL f;
   char line[RA_STATE_LINE_MAX], path[RA_GAMES_PATH_MAX];
   FRESULT r;
   bool ok = true;
 
-  if(!ra_games_path(ra_game_id(), RA_GAMES_STATE_FILE, path, sizeof(path))) return;   // no game, no file
+  if(!ra_games_path(id, RA_GAMES_STATE_FILE, path, sizeof(path))) return;   // no game, no file
   // the whole file anew. A power cut in between leaves a file without a full
   // header, which ra_state_load() ignores, and the server fills it again.
   sdc_lock();
-  r = ra_games_mkdir(ra_game_id());   // cheap when the folder exists
+  r = ra_games_mkdir(id);   // cheap when the folder exists
   if(r == FR_OK) r = f_open(&f, path, FA_WRITE | FA_CREATE_ALWAYS);
   if(r == FR_OK) {
-    snprintf(line, sizeof(line), "# game %u %s\n", ra_game_id(), owner);
+    snprintf(line, sizeof(line), "# game %u %s\n", id, owner);
     ok = f_puts(line, &f) >= 0;
     for(unsigned i = 0; ok && i < hard_n; i++) {
       snprintf(line, sizeof(line), "%u\n", hard[i]);
@@ -137,13 +137,18 @@ void ra_state_save(void) {
   if(r != FR_OK || !ok) debugf("RA: %s not written (error %d)", path, (int)r);
 }
 
-void ra_state_load(const char *user) {
+void ra_state_load(const char *user, unsigned id) {
   FIL f;
   char line[RA_STATE_LINE_MAX], path[RA_GAMES_PATH_MAX];
   unsigned h = 0, s = 0;
 
   snprintf(owner, sizeof(owner), "%s", user);
-  if(!ra_games_path(ra_game_id(), RA_GAMES_STATE_FILE, path, sizeof(path))) {
+  // the lists of the game before go first, so a reader sees them empty until the
+  // new ones are in place
+  taskENTER_CRITICAL();
+  hard_n = soft_n = 0;
+  taskEXIT_CRITICAL();
+  if(!ra_games_path(id, RA_GAMES_STATE_FILE, path, sizeof(path))) {
     debugf("RA: no game yet, no unlocked state to read");
     return;
   }
@@ -163,7 +168,7 @@ void ra_state_load(const char *user) {
     }
     if(!header)
       debugf("RA: %s has no header, ignored", path);   // e.g. cut short by a power cut
-    else if(game == ra_game_id() && !strcasecmp(who, owner)) {
+    else if(game == id && !strcasecmp(who, owner)) {
       // one id per line, an s in front means softcore only. No critical
       // section: the counts are stored last, so a reader sees empty lists
       // until every entry is in place

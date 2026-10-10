@@ -10,7 +10,12 @@
  *
  *  After the login it starts a session and then pings every two minutes with
  *  the rich presence text, as rc_client does, so the server shows what is being
- *  played and keeps the session. */
+ *  played and keeps the session.
+ *
+ *  It works for one game at a time, from a copy of its identity (ra_game_now()),
+ *  and begins a new round when com_task makes another game of this board the
+ *  running one (ra_patch_new_game()): a new session, the lists, the queue count
+ *  and the set. What a request brings back for the game before is dropped. */
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -82,16 +87,21 @@ static volatile unsigned char core_flags;  // header byte 9 of the RAM mirror, 0
 static char              rp_text[RA_RP_MAX];   // rich presence from com_task, under a critical section
 static volatile unsigned frames;           // frames rcheevos evaluated, counted by com_task
 static char              path_buf[RA_PATH_MAX];  // path of session and ping requests, too large for the stack
-static bool              live;             // logged in: session and pings are due
+static bool              live;             // logged in, once per start
+static bool              playing;          // logged in and this round's game known to the server: session and pings are due
 static TickType_t        next_ping;        // when the next ping, or the next try of the session, is due
+static ra_game_now_t     game;             // the game this round of ra_task_main() works for, a copy
+static bool              session;          // the server took the session of that game
+static unsigned          frames_seen;      // frames at the last ping
 
-/** A leaderboard result on its way to the server. It lives in RAM for this boot
-    only, and the game's identity cannot change within a boot, so the running
-    game's hash is the hash it was earned under. */
+/** A leaderboard result on its way to the server. It lives in RAM for this start
+    only, under the hash of the game it was reached in: a switch to another game
+    must not send it under the new one. */
 typedef struct {
   unsigned   id;       /**< leaderboard id */
   int32_t    score;    /**< the value */
   TickType_t tick;     /**< when it was reached, for seconds_since_completion */
+  char       hash[RA_GAMES_HASH_LEN + 1];   /**< the game it was reached in */
 } lb_entry_t;
 static QueueHandle_t      lb_queue;                          // com_task -> RA task
 static StaticQueue_t      lb_queue_ctl;
@@ -151,14 +161,18 @@ static void hc_update(void) {
   }
 }
 
-void ra_task_hardcore_block(unsigned reason, bool on) {
+/* Sets or clears reason, with a generation check in the same piece when any is false. */
+static void hc_block_set(unsigned reason, bool on, bool any, unsigned gen) {
   unsigned before, after;
   taskENTER_CRITICAL();
-  before = hc_block;
-  after = hc_block = on ? (before | reason) : (before & ~reason);
+  before = after = hc_block;
+  if(any || ra_patch_current(gen)) after = hc_block = on ? (before | reason) : (before & ~reason);
   taskEXIT_CRITICAL();
   if(after != before) hc_update();
 }
+
+void ra_task_hardcore_block(unsigned reason, bool on) { hc_block_set(reason, on, true, 0); }
+void ra_task_hardcore_block_for(unsigned gen, unsigned reason, bool on) { hc_block_set(reason, on, false, gen); }
 
 void ra_task_core_flags(unsigned char flags) {
   // set on every snapshot, not only on a change: a bit lost to another task's
@@ -218,7 +232,9 @@ void ra_task_clock_set(void) {
 }
 
 void ra_task_lboard(unsigned id, int32_t score) {
-  lb_entry_t e = { id, score, xTaskGetTickCount() };
+  lb_entry_t e = { id, score, xTaskGetTickCount(), "" };
+  // com_task changes the identity itself, the hash here is whole
+  snprintf(e.hash, sizeof(e.hash), "%s", ra_game_hash());
   if(!lb_queue || xQueueSend(lb_queue, &e, 0) != pdTRUE)
     debugf("RA: leaderboard %u result lost, the RA task does not take it", id);
 }
@@ -278,18 +294,27 @@ static bool wait_event(TickType_t ticks) {
 
 static void keep_alive(void);
 
-/* A pause that still handles every event, and keeps the session alive once logged in. */
+/* True once com_task made another game the running one: the round ends. */
+static bool game_moved(void) { return !ra_patch_current(game.gen); }
+
+/* Waits until another game runs, handling every event meanwhile. */
+static void wait_game(void) {
+  while(!game_moved()) wait_event(portMAX_DELAY);
+}
+
+/* A pause that still handles every event, and keeps the session alive once logged
+   in. It ends early when another game runs. */
 static void pause_ms(uint32_t ms) {
   TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(ms);
   for(;;) {
     keep_alive();
     TickType_t now = xTaskGetTickCount();
     TickType_t left = end - now;
-    if((int32_t)left <= 0) return;
+    if((int32_t)left <= 0 || game_moved()) return;
     // wake for the next ping too, when it comes first. One already due wakes at
     // once, keep_alive() sends it at the top of the loop.
     int32_t to_ping = (int32_t)(next_ping - now);
-    if(live && to_ping < (int32_t)left) left = to_ping > 0 ? (TickType_t)to_ping : 0;
+    if(playing && to_ping < (int32_t)left) left = to_ping > 0 ? (TickType_t)to_ping : 0;
     wait_event(left);
   }
 }
@@ -306,7 +331,7 @@ static bool check_server(void) {
 
   // rcheevos builds the query (r=gameid&m=<hash>), it goes out as GET
   memset(&params, 0, sizeof(params));
-  params.game_hash = ra_game_hash();
+  params.game_hash = game.hash;
   if(rc_api_init_resolve_hash_request(&request, &params) != RC_OK) return false;
   snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
   rc_api_destroy_request(&request);
@@ -324,9 +349,9 @@ static bool check_server(void) {
   server.http_status_code = (int)reply.status;
   if(rc_api_process_resolve_hash_server_response(&response, &server) == RC_OK &&
      response.response.succeeded) {
-    debugf("RA: server reached, hash %s is game %u", ra_game_hash(), (unsigned)response.game_id);
+    debugf("RA: server reached, hash %s is game %u", game.hash, (unsigned)response.game_id);
     // the table's id is checked against the server's, a fallback identity gets its id here
-    ra_patch_resolved((unsigned)response.game_id);
+    ra_patch_resolved(game.gen, (unsigned)response.game_id);
     ok = true;
   }
   rc_api_destroy_resolve_hash_response(&response);
@@ -346,7 +371,7 @@ static login_t login(void) {
   memset(&params, 0, sizeof(params));
   params.username  = user;
   params.api_token = token;
-  params.game_id   = ra_game_id();
+  params.game_id   = game.id;
   if(rc_api_init_ping_request(&request, &params) != RC_OK) return LOGIN_RETRY;
   snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
   rc_api_destroy_request(&request);
@@ -398,8 +423,8 @@ static bool start_session(void) {
   memset(&params, 0, sizeof(params));
   params.username  = user;
   params.api_token = token;
-  params.game_id   = ra_game_id();
-  params.game_hash = ra_game_hash();
+  params.game_id   = game.id;
+  params.game_hash = game.hash;
   params.hardcore  = hardcore;
   if(rc_api_init_start_session_request(&request, &params) != RC_OK) return false;
   int n = snprintf(path_buf, sizeof(path_buf), "/dorequest.php?%s", request.post_data);
@@ -412,7 +437,7 @@ static bool start_session(void) {
   // the reply also lists the account's unlocks, which r=unlocks fetches as well.
   // A list too long for the buffer only cuts the reply, the session stands.
   if(reply.truncated) {
-    debugf("RA: session started (%s), reply cut short", hardcore ? "hardcore" : "softcore");
+    debugf("RA: session started (%s, hash %s), reply cut short", hardcore ? "hardcore" : "softcore", game.hash);
     return true;
   }
   rc_api_start_session_response_t response;
@@ -420,7 +445,7 @@ static bool start_session(void) {
   int rv = rc_api_process_start_session_server_response(&response, &server);
   bool ok = rv == RC_OK && response.response.succeeded;
   if(ok)
-    debugf("RA: session started (%s)", hardcore ? "hardcore" : "softcore");
+    debugf("RA: session started (%s, hash %s)", hardcore ? "hardcore" : "softcore", game.hash);
   else
     debugf("RA: session not started (%s)", response.response.error_message ?
            response.response.error_message : rv != RC_OK ? rc_error_str(rv) : "marked as failed");
@@ -445,9 +470,9 @@ static void ping(void) {
   memset(&params, 0, sizeof(params));
   params.username      = user;
   params.api_token     = token;
-  params.game_id       = ra_game_id();
+  params.game_id       = game.id;
   params.rich_presence = rp[0] ? rp : NULL;
-  params.game_hash     = ra_game_hash();
+  params.game_hash     = game.hash;
   params.hardcore      = hardcore;
   if(rc_api_init_ping_request(&request, &params) != RC_OK) return;
   int n = snprintf(path_buf, sizeof(path_buf), "/dorequest.php?%s", request.post_data);
@@ -476,11 +501,11 @@ static void ping(void) {
 
 /* Once logged in: at each ping time the session, while the server has not taken
    it, else a ping, but only when frames arrived since the last one. Without
-   frames the server lets the session end, as it does with rc_client. */
+   frames the server lets the session end, as it does with rc_client. Nothing once
+   another game runs: its round starts its own session, and the rich presence text
+   is already that game's. */
 static void keep_alive(void) {
-  static bool     session;       // the server took the session
-  static unsigned frames_seen;   // frames at the last ping
-  if(!live) return;
+  if(!playing || game_moved()) return;
   TickType_t now = xTaskGetTickCount();
   if((int32_t)(now - next_ping) < 0) return;
   next_ping = now + pdMS_TO_TICKS(RA_PING_EVERY);
@@ -584,7 +609,9 @@ static submit_t submit(const ra_unlock_t *u) {
              (unsigned)response.achievements_remaining);
     result = SUBMIT_DONE;
   } else if(rv == RC_OK) {
-    bool own = ra_queue_own(u->hash);
+    // the set belongs to the running game: another game's line, or one of this game
+    // once com_task made another game the running one, is not judged against it
+    bool own = ra_queue_own(u->hash) && !game_moved();
     // the set belongs to com_task, it is only read here
     if(own && ra_patch_count() && !ra_patch_index(u->id)) {
       debugf("RA: unlock %u refused (%s), not in the set any more, parked", u->id, why);
@@ -623,7 +650,7 @@ static submit_t submit_lboard(const lb_entry_t *e) {
   params.api_token                = token;
   params.leaderboard_id           = e->id;
   params.score                    = e->score;
-  params.game_hash                = ra_game_hash();
+  params.game_hash                = e->hash;   // the game it was reached in
   params.seconds_since_completion = age;
   if(rc_api_init_submit_lboard_entry_request(&request, &params) != RC_OK) return SUBMIT_RETRY;
   int n = snprintf(path_buf, sizeof(path_buf), "/dorequest.php?%s", request.post_data);
@@ -641,8 +668,8 @@ static submit_t submit_lboard(const lb_entry_t *e) {
   memset(&response, 0, sizeof(response));
   int rv = rc_api_process_submit_lboard_entry_server_response(&response, &server);
   if(rv == RC_OK && response.response.succeeded) {
-    debugf("RA: leaderboard %u: %ld submitted, best %ld, rank %u of %u", e->id, (long)response.submitted_score,
-           (long)response.best_score, (unsigned)response.new_rank, (unsigned)response.num_entries);
+    debugf("RA: leaderboard %u: %ld submitted for hash %s, best %ld, rank %u of %u", e->id, (long)response.submitted_score,
+           e->hash, (long)response.best_score, (unsigned)response.new_rank, (unsigned)response.num_entries);
     taskENTER_CRITICAL();
     lb_result.id      = e->id;
     lb_result.score   = e->score;
@@ -675,7 +702,7 @@ static bool fetch_list(bool hardcore, rc_api_fetch_user_unlocks_response_t *resp
   memset(&params, 0, sizeof(params));
   params.username  = user;
   params.api_token = token;
-  params.game_id   = ra_game_id();
+  params.game_id   = game.id;
   params.hardcore  = hardcore;
   if(rc_api_init_fetch_user_unlocks_request(&request, &params) != RC_OK) return false;
   snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
@@ -715,7 +742,7 @@ static bool fetch_set(void) {
   memset(&params, 0, sizeof(params));
   params.username  = user;
   params.api_token = token;
-  params.game_id   = ra_game_id();
+  params.game_id   = game.id;
   if(rc_api_init_fetch_game_data_request(&request, &params) != RC_OK) return false;
   snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
   rc_api_destroy_request(&request);
@@ -729,23 +756,27 @@ static bool fetch_set(void) {
     debugf("RA: set from the server is larger than %u bytes, not used", cap - 1);
     ok = true;
   } else
-    ok = ra_patch_from_server(reply.len) >= 0;
+    ok = ra_patch_from_server(reply.len, game.gen) >= 0;   // dropped there when the game moved on
   set_in_flight = false;
   return ok;
 }
 
 /* Both lists from the server, or none: the state never mixes a new list with
-   an old one. On success both are kept on the card. */
+   an old one. On success both are kept on the card. Lists that come back once
+   another game runs are dropped, the next round loads that game's. */
 static bool fetch_state(void) {
   rc_api_fetch_user_unlocks_response_t hard, soft;
   memset(&hard, 0, sizeof(hard));     // destroy is safe on a zeroed response
   memset(&soft, 0, sizeof(soft));
   bool ok = fetch_list(true, &hard) && fetch_list(false, &soft);
-  if(ok) {
-    // the card only when something changed, a write holds the SPI bus for the mirror
+  if(ok && game_moved())
+    debugf("RA: lists of game %u dropped, another game runs", game.id);
+  else if(ok) {
+    // the card only when something changed, a write holds the SPI bus for the mirror.
+    // The lists are this round's game's, its id names the file
     bool changed = ra_state_replace(true, hard.achievement_ids, hard.num_achievement_ids);
     changed |= ra_state_replace(false, soft.achievement_ids, soft.num_achievement_ids);
-    if(changed) ra_state_save();
+    if(changed) ra_state_save(game.id);
   }
   rc_api_destroy_fetch_user_unlocks_response(&hard);
   rc_api_destroy_fetch_user_unlocks_response(&soft);
@@ -759,14 +790,16 @@ static void wait_to_retry(uint32_t *backoff, const char *what) {
   *backoff = *backoff < RA_BACKOFF_MAX / 2 ? *backoff * 2 : RA_BACKOFF_MAX;
 }
 
-/* Nothing more to do on the server. Unlocks are still kept. */
+/* Nothing to do on the server for the whole start, the events are still handled. */
 static void sleep_forever(void) {
   for(;;) wait_event(portMAX_DELAY);
 }
 
+static void serve(void);
+
 static void ra_task_main(__attribute__((unused)) void *p) {
-  uint32_t backoff = RA_BACKOFF_MIN;
-  char what[40];
+  uint32_t backoff;
+  bool rejected = false;   // the server refused the account: no new login until the next start
 
   debugf("RA: client %s", ra_user_agent());
   // the device key for the tags on the card: without one, no hardcore
@@ -785,7 +818,9 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   //    too, only nothing goes to the server then.
 
   // 2. without an account there is nothing to do on the server, and unlocks are
-  //    not kept: a guest's would later count for the owner
+  //    not kept: a guest's would later count for the owner. config.ini is read
+  //    once, so this holds for every game of the start. The events still read the
+  //    card set of a later game, see on_event()
   user    = inifile_config_get_str("ra", "user");
   token   = inifile_config_get_str("ra", "token");
   account = user && *user && token && *token;
@@ -794,87 +829,131 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     state = RA_TASK_NO_ACCOUNT;
     sleep_forever();
   }
-  // the state before the queue, its lines count as unlocked too. A fallback
-  // identity (the server resolves the id) has no state file yet: its queue is
-  // opened now, so the owner exists before an unlock can be written, and scanned
-  // again after the state is loaded, see step 4.
-  bool fallback = ra_game_id() == 0;
-  if(!fallback) ra_state_load(user);
-  ra_queue_open(user);
 
-  // nothing to talk to the server about: no ROM on an unknown board, or a game
-  // that does not belong to this board. Queued lines of other games stay on the card.
-  if(!ra_game_hash()[0]) {
-    debugf("RA: no game, nothing to ask the server");
-    state = RA_TASK_NO_GAME;
-    sleep_forever();
-  }
-
-  // 3. certificates are checked against the clock, so wait until NTP has set it.
-  //    Without a time server this can take forever, so say it once in the log.
-  TickType_t tell = xTaskGetTickCount() + pdMS_TO_TICKS(RA_CLOCK_WAIT);
-  bool told = false;
-  state = RA_TASK_CONNECTING;
-  while((unsigned long)time(NULL) < RA_CLOCK_VALID) {
-    TickType_t left = tell - xTaskGetTickCount();
-    if(!told && (int32_t)left <= 0) {
-      debugf("RA: no time from NTP yet, achievements wait for it (see [NTP] IP in config.ini)");
-      told = true;            // said once, now sleep until the clock is set
-      state = RA_TASK_NO_TIME;
-    }
-    wait_event(told ? portMAX_DELAY : left);
-  }
-  state = RA_TASK_CONNECTING;
-
-  // 4. reach the server, with growing pauses while it or the network is down
-  while(!check_server()) {
-    state = RA_TASK_RETRYING;
-    wait_to_retry(&backoff, "server not reached");
-    state = RA_TASK_CONNECTING;
-  }
-  // a fallback identity has its id now, or none: the server does not know the
-  // hash, or it names a game of another board. With an id the state file can be
-  // read, and the queue is scanned once more because ra_state_load replaces the
-  // lists and would drop what the first scan counted as unlocked.
-  if(fallback) {
-    if(!ra_game_id()) {
-      state = RA_TASK_NO_GAME;
-      sleep_forever();
-    }
-    ra_state_load(user);
-    ra_queue_open(user);
-  }
-
-  // 5. log in. A rejected account stays rejected until the next start.
-  debugf("RA: logging in as '%s' (token %u characters, not shown)", user, (unsigned)strlen(token));
-  backoff = RA_BACKOFF_MIN;
+  // 3. one round per game: the one settled at the start, and each one com_task
+  //    makes the running one in place (ra_patch_new_game()). Login and clock
+  //    hold for the whole start, session, lists and queue count are the game's
   for(;;) {
-    login_t r = login();
-    if(r == LOGIN_OK) break;
-    if(r == LOGIN_REJECTED) { state = RA_TASK_REJECTED; sleep_forever(); }
-    state = RA_TASK_RETRYING;
-    wait_to_retry(&backoff, "login failed");
-    state = RA_TASK_CONNECTING;
-  }
-  debugf("RA: logged in");
-  state = RA_TASK_LOGGED_IN;
-  live = true;
-  next_ping = xTaskGetTickCount();   // the session right away
+    ra_game_now(&game);
+    playing = session = false;
+    backoff = RA_BACKOFF_MIN;
+    // the card set of a new game, when no event read it yet. A failed read needs
+    // no mark: the round asks the server for the set anyway
+    set_reread_failed = false;
+    ra_patch_set_again();
 
-  // 6. the account's lists and the game's set from the server, then the
-  //    waiting unlocks one by one, then wait for the next. Once the queue is
-  //    empty after a submission changed the lists, they are asked again. When
-  //    the server does not answer, what the card has stays, the unlocks still
-  //    go out, and the question is asked again after a pause.
+    // the state before the queue, its lines count as unlocked too. A fallback
+    // identity (the server resolves the id) has no state file yet: its queue is
+    // opened now, so the owner exists before an unlock can be written, and scanned
+    // again after the state is loaded, see below
+    bool fallback = game.id == 0;
+    if(!fallback) ra_state_load(user, game.id);
+    ra_queue_game(game.hash, game.id);
+    ra_queue_open(user);
+
+    // nothing to talk to the server about: no ROM on an unknown board, or a game
+    // that does not belong to this board. Queued lines of other games stay on the card.
+    if(!game.hash[0]) {
+      debugf("RA: no game, nothing to ask the server");
+      state = RA_TASK_NO_GAME;
+      wait_game();
+      continue;
+    }
+    if(rejected) {
+      state = RA_TASK_REJECTED;
+      wait_game();
+      continue;
+    }
+
+    // 4. certificates are checked against the clock, so wait until NTP has set it.
+    //    Without a time server this can take forever, so say it once in the log.
+    TickType_t tell = xTaskGetTickCount() + pdMS_TO_TICKS(RA_CLOCK_WAIT);
+    bool told = false;
+    state = live ? RA_TASK_LOGGED_IN : RA_TASK_CONNECTING;
+    while((unsigned long)time(NULL) < RA_CLOCK_VALID && !game_moved()) {
+      TickType_t left = tell - xTaskGetTickCount();
+      if(!told && (int32_t)left <= 0) {
+        debugf("RA: no time from NTP yet, achievements wait for it (see [NTP] IP in config.ini)");
+        told = true;            // said once, now sleep until the clock is set
+        state = RA_TASK_NO_TIME;
+      }
+      wait_event(told ? portMAX_DELAY : left);
+    }
+    state = live ? RA_TASK_LOGGED_IN : RA_TASK_CONNECTING;
+
+    // 5. reach the server with this game's hash, with growing pauses while it or
+    //    the network is down
+    while(!game_moved() && !check_server()) {
+      state = RA_TASK_RETRYING;
+      wait_to_retry(&backoff, "server not reached");
+      state = live ? RA_TASK_LOGGED_IN : RA_TASK_CONNECTING;
+    }
+    if(game_moved()) continue;
+    // a fallback identity has its id now, or none: the server does not know the
+    // hash, or it names a game of another board. With an id the state file can be
+    // read, and the queue is scanned once more because ra_state_load replaces the
+    // lists and would drop what the first scan counted as unlocked.
+    if(fallback) {
+      ra_game_now_t now;
+      ra_game_now(&now);
+      if(now.gen != game.gen) continue;
+      game = now;
+      if(!game.id) {
+        state = RA_TASK_NO_GAME;
+        wait_game();
+        continue;
+      }
+      ra_state_load(user, game.id);
+      ra_queue_game(game.hash, game.id);
+      ra_queue_open(user);
+    }
+
+    // 6. log in, once per start. A rejected account stays rejected until the next start.
+    if(!live) {
+      login_t r = LOGIN_RETRY;
+      debugf("RA: logging in as '%s' (token %u characters, not shown)", user, (unsigned)strlen(token));
+      backoff = RA_BACKOFF_MIN;
+      while(!game_moved() && (r = login()) == LOGIN_RETRY) {
+        state = RA_TASK_RETRYING;
+        wait_to_retry(&backoff, "login failed");
+        state = RA_TASK_CONNECTING;
+      }
+      if(r == LOGIN_RETRY) continue;   // another game runs, its round logs in
+      if(r == LOGIN_REJECTED) {
+        rejected = true;
+        state = RA_TASK_REJECTED;
+        wait_game();
+        continue;
+      }
+      debugf("RA: logged in");
+      live = true;
+    }
+    state = RA_TASK_LOGGED_IN;
+    playing = true;
+    next_ping = xTaskGetTickCount();   // the session right away
+    serve();
+  }
+}
+
+/* Logged in, for the round's game: the account's lists and the game's set from the
+   server, then the waiting unlocks one by one, then wait for the next. Once the
+   queue is empty after a submission changed the lists, they are asked again. When
+   the server does not answer, what the card has stays, the unlocks still go out,
+   and the question is asked again after a pause. Leaderboard results and unlocks
+   of the game before go out too, each under its own hash. Returns when another
+   game runs. */
+static void serve(void) {
+  uint32_t backoff = RA_BACKOFF_MIN;
+  char what[40];
   bool state_due = true, state_failed = false, state_stale = false;
   bool set_due = true, set_failed = false;
   TickType_t retry_at = 0;            // when failed fetches are asked again
   bool       retry_set = false;       // ... and that time is set
-  backoff = RA_BACKOFF_MIN;
   for(;;) {
     ra_unlock_t u;
+    if(game_moved()) return;          // the next round is the new game's
     keep_alive();
-    // a card set asked for again (the boot's ROM is back after another game's
+    // a card set asked for again (the game's ROM is back after another game's
     // file) was not on the card, or had no valid tag: the server's set once more,
     // ra_patch_from_server() writes and hands it over anew
     if(set_reread_failed) { set_reread_failed = false; set_due = true; retry_set = false; }

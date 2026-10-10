@@ -18,7 +18,8 @@
  *  and skipped like a torn one, never sent. A line whose tag does not check out
  *  is set aside to the parked file and never sent.
  *  Without a device key, tagged lines wait. A line is the running game's when it
- *  carries its hash, see ra_queue_own(). Firmware that reads 127 characters per
+ *  carries its hash, see ra_queue_own(): the game the RA task works for, whose
+ *  lists ra_state holds (ra_queue_game()). Firmware that reads 127 characters per
  *  line splits a line with a hash into a bad fragment and a garbage fragment:
  *  going back to it loses what is still queued.
  *  Once the server has it, the line is marked done in place: its first digit
@@ -37,7 +38,7 @@
 #include "debug.h"
 #include "sdc.h"
 #include "ra_task.h"
-#include "ra_patch.h"   // ra_game_hash(): the running game, stamped into every new unlock
+#include "ra_patch.h"   // ra_game_hash(): the running game, stamped into every new unlock in com_task
 #include "ra_state.h"
 #include "ra_queue.h"
 #include "ra_mac.h"
@@ -62,6 +63,8 @@ static QueueHandle_t handover;                  // com_task -> RA task
 static StaticQueue_t handover_ctl;
 static uint8_t       handover_mem[RA_QUEUE_HANDOVER * sizeof(ra_unlock_t)];
 static char          owner[RA_QUEUE_USER_MAX];  // the account unlocks are kept for
+static char          own_hash[RA_GAMES_HASH_LEN + 1];   // the game ra_state's lists belong to, see ra_queue_game()
+static unsigned      own_id;                    // ... and its id, 0 until the server resolved a fallback identity
 static unsigned      pending;                   // this account's lines not done, plus ram[]
 static ra_unlock_t   ram[RA_QUEUE_RAM];         // unlocks the card did not take
 static volatile unsigned ram_n;                 // volatile: ra_queue_in_transit() reads it from com_task
@@ -89,7 +92,8 @@ QueueHandle_t ra_queue_init(void) {
 void ra_queue_add(unsigned id, bool hardcore) {
   ra_unlock_t u = { id, (unsigned long)time(NULL), hardcore, "" };
   if(u.when < RA_CLOCK_VALID) u.when = 0;
-  // the running game: the only one that can produce an unlock this boot. Not while
+  // the running game: the only one whose set runs. com_task changes the identity
+  // itself, so the hash is whole and the one the set was activated for. Not while
   // another game's ROM is in the core, its set is off and a trigger from the RAM
   // of that ROM is no unlock of this game
   if(ra_patch_foreign_rom()) {
@@ -107,15 +111,20 @@ void ra_queue_add(unsigned id, bool hardcore) {
     debugf("RA: unlock %u lost, the RA task does not take it", id);
 }
 
+void ra_queue_game(const char *hash, unsigned id) {
+  snprintf(own_hash, sizeof(own_hash), "%s", hash);
+  own_id = id;
+}
+
 bool ra_queue_own(const char *hash) {
   const ra_game_t *g;
-  if(!strcmp(hash, ra_game_hash())) return true;
+  if(!strcmp(hash, own_hash)) return true;
   // the hash of the table game the server resolved a fallback identity to (a
   // clone set's name): ra_patch_resolved() takes such an id only on the game's
   // own board. The reverse, a line stamped with a fallback hash and read back
   // under the table game, stays foreign: only the server knows that link
   g = ra_games_by_hash(hash);
-  return g && ra_game_id() && g->id == ra_game_id();
+  return g && own_id && g->id == own_id;
 }
 
 /* Appends one line. If a power cut left the last line without its newline, the
@@ -229,9 +238,9 @@ static int parse(const char *line, ra_unlock_t *u, char *user) {
 
 /* Reads the file. The first line not done goes to head, head_at, head_line and
    head_user, and its kind is returned, -1 on a card error. This account's lines
-   are counted on the way, those of the running game also count as unlocked: the
-   state lists are that game's. A malformed line counts as unreadable (LINE_BAD),
-   marked done on its turn. A blank line is skipped and never marked: the '#'
+   are counted on the way, those of the game ra_queue_game() named also count as
+   unlocked: the state lists are that game's. A malformed line counts as
+   unreadable (LINE_BAD), marked done on its turn. A blank line is skipped and never marked: the '#'
    would land on its newline and join it with the next line. A file with only done
    and blank lines is deleted, that cannot lose anything. */
 static int scan(void) {
@@ -304,15 +313,19 @@ static void take_one(bool keep) {
     debugf("RA: unlock %u not kept, no account", u.id);
     return;
   }
-  // what the account already has in this mode, or in hardcore, is not sent again
-  if(ra_state_known(u.id) || (!u.hardcore && ra_state_softcore_only(u.id))) {
+  // what the account already has in this mode, or in hardcore, is not sent again.
+  // The lists are those of the game ra_queue_game() named: an unlock of another
+  // game, e.g. one earned right before a switch, is neither checked against them
+  // nor added to them, it is queued, the server answers a second one "User already has"
+  bool own = ra_queue_own(u.hash);
+  if(own && (ra_state_known(u.id) || (!u.hardcore && ra_state_softcore_only(u.id)))) {
     debugf("RA: unlock %u already unlocked, not queued", u.id);
     return;
   }
   flush_ram();
   FRESULT r = append_unlock(RA_QUEUE_FILE, &u);
   if(r == FR_OK) {
-    ra_state_add(u.id, u.hardcore);   // on the card, so from now on it counts as unlocked
+    if(own) ra_state_add(u.id, u.hardcore);   // on the card, so from now on it counts as unlocked
     pending++;
     debugf("RA: %s unlock %u queued (%u pending)%s", u.hardcore ? "hardcore" : "softcore", u.id,
            pending, u.when ? "" : ", clock not set, unlock time unknown");

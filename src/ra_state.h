@@ -10,10 +10,11 @@
 
 #define RA_STATE_MAX 128  /**< ids kept per list, hardcore and softcore each, as many as a set holds (RA_PATCH_MAX) */
 
-/** @brief Reads the state of this account and game from the card. RA task only, once after the game is known.
+/** @brief Reads the state of this account and the game with that id from the card. RA task only, once per game after its id is known.
  *
- *  Does nothing but log while ra_game_id() is 0. Replaces both lists. */
-void ra_state_load(const char *user);
+ *  Does nothing but log while id is 0. Replaces both lists: they are that game's
+ *  until the next load. */
+void ra_state_load(const char *user, unsigned id);
 
 /** @brief Replaces one list with the server's. RA task only.
  *
@@ -21,8 +22,8 @@ void ra_state_load(const char *user);
  *  server's own pseudo achievements are left out. True when the list changed. */
 bool ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n);
 
-/** @brief Writes both lists to the card. RA task only, after both were replaced. */
-void ra_state_save(void);
+/** @brief Writes both lists to the card as the state of the game with that id. RA task only, after both were replaced. */
+void ra_state_save(unsigned id);
 
 /** @brief Counts an unlock as unlocked in its mode, e.g. once it is queued. RA task only.
  *

@@ -26,13 +26,17 @@ typedef enum {
 /** @brief The task's state. Any task, it is a single word. */
 ra_task_state_t ra_task_state(void);
 
-/** @brief Starts the task. Once, from com_task after the card and config.ini are ready. */
+/** @brief Starts the task. Once, from com_task after the card and config.ini are ready.
+ *
+ *  It works for one game at a time and begins anew when ra_patch_new_game() makes
+ *  another game of this board the running one: session, lists, queue count and the
+ *  server's set. Login, the clock and a rejected account hold for the whole start. */
 void ra_task_start(void);
 
 /** @brief Tells the task that the clock is set. From sntp_set_system_time(). */
 void ra_task_clock_set(void);
 
-/** @brief Wakes the task so it looks around: e.g. for a card set asked for again, ra_patch_set_again(). Any task.
+/** @brief Wakes the task so it looks around: e.g. for a card set asked for again, ra_patch_set_again(), or a new game. Any task.
  *
  *  Through the clock's semaphore, the task checks time() itself, so an extra wake
  *  costs nothing. Nothing happens before ra_task_start(). */
@@ -66,6 +70,13 @@ bool ra_task_hardcore_wanted(void);
  *  hardcore comes back as the mode switch does: at once while the core is in reset,
  *  otherwise after a reset of the running game. */
 void ra_task_hardcore_block(unsigned reason, bool on);
+
+/** @brief As ra_task_hardcore_block(), but only while the game of generation gen runs. Any task.
+ *
+ *  For what a task found out for one game, e.g. a set with a valid tag: the check
+ *  and the change are one piece, so a new game that set its own blocks meanwhile
+ *  (ra_patch_new_game()) keeps them. */
+void ra_task_hardcore_block_for(unsigned gen, unsigned reason, bool on);
 
 /** @brief Header byte 9 of the RAM mirror: the core's diagnostic parameters. com_task, each snapshot.
  *
@@ -105,7 +116,8 @@ typedef struct {
 /** @brief Hands a leaderboard result to the RA task, which submits it. com_task only, never blocks.
  *
  *  Only in hardcore: RetroAchievements keeps leaderboard entries as hardcore ones,
- *  and only from a client it has approved.
+ *  and only from a client it has approved. The result carries the hash of the game
+ *  that runs now and goes out under it, also after a switch to another game.
  *  Kept in RAM until the server has it, as rc_client does. */
 void ra_task_lboard(unsigned id, int32_t score);
 

@@ -28,7 +28,8 @@ QueueHandle_t ra_queue_init(void);
 /** @brief Hands an unlock over to the RA task. From com_task, never blocks.
  *
  *  hardcore is the mode the achievement was earned in. The game is the running
- *  one, ra_game_hash(): the only game that can produce an unlock this boot. Dropped
+ *  one, ra_game_hash(): the only one whose set runs. The line keeps that hash when
+ *  another game runs by the time it is sent. Dropped
  *  with a log line while another game's ROM is in the core (ra_patch_foreign_rom())
  *  or without a game hash. */
 void ra_queue_add(unsigned id, bool hardcore);
@@ -38,18 +39,26 @@ void ra_queue_add(unsigned id, bool hardcore);
  *  as long as it can. */
 unsigned ra_queue_in_transit(void);
 
-/** @brief True when a line with this game hash is the running game's. RA task only.
+/** @brief Names the game the RA task works for, whose lists ra_state holds now. RA task only, with each ra_state_load().
+ *
+ *  hash and id as ra_game_now() gave them, id 0 for a fallback identity the server
+ *  has not resolved yet. */
+void ra_queue_game(const char *hash, unsigned id);
+
+/** @brief True when a line with this game hash is the game's ra_queue_game() named. RA task only.
  *
  *  Its own hash, or the hash of the table game the server resolved a fallback
- *  identity to (ra_game_id()). The reverse, a line stamped with a fallback hash
- *  read back under the table game, stays foreign: only the server knows that link. */
+ *  identity to (the id). The reverse, a line stamped with a fallback hash read back
+ *  under the table game, stays foreign: only the server knows that link. Only such
+ *  a line is checked against ra_state's lists and counted there. */
 bool ra_queue_own(const char *hash);
 
 /** @brief Opens the queue for this account and counts its waiting unlocks. RA task only.
  *
  *  Every line on the card names the account it was earned with. Lines of another
- *  account are never sent, they are set aside. Lines of the running game count as
- *  unlocked (ra_state_add), so a second call after ra_state_load() counts them again. */
+ *  account are never sent, they are set aside. Lines of the game ra_queue_game()
+ *  named count as unlocked (ra_state_add), so a second call after ra_state_load()
+ *  counts them again. */
 void ra_queue_open(const char *user);
 
 /** @brief Takes one unlock from the handover queue and writes it to the card.

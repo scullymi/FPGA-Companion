@@ -5,6 +5,8 @@
 
 #include "../mcu_hw.h"
 uint32_t getFreeHeap(void);   /* mcu_hw.c: the SDK heap left for mbedTLS and rcheevos */
+uint32_t getTotalHeap(void);  /* mcu_hw.c: the SDK heap, all of it */
+#include <malloc.h>           /* game20k: mallinfo(), the SDK heap's top after a game switch */
 
 #include "../config.h"
 #include "../sysctrl.h"
@@ -62,6 +64,7 @@ static uint16_t      ram_mirror_tag;                 /* its interface tag, bytes
    wram1..3 of 1024 each), so an address is the offset in the snapshot. */
 static rc_runtime_t   ra_rt;
 static bool           ra_ready;
+static unsigned       ra_gen;               /* the game generation ra_rt is made for, ra_patch_generation() */
 static unsigned char  ra_triggered;         /* achievements triggered, saturating */
 static unsigned char  ra_last;              /* last one, 1-based position in the set */
 static unsigned short ra_us;                /* evaluation time of the last snapshot */
@@ -329,29 +332,29 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
   }
 }
 
-/* A ROM picked after the start can be a known ROM of another game of this board,
-   e.g. puckman.rom in the Pac-Man core: its own set, session and card folder come
-   only with a start (ra_patch_restart_to()). The Pico restarts into it: the menu
-   says so for a few seconds. Unlocks still in the handover reach the card,
+/* A game of another board, e.g. galaga.rom picked in the Pac-Man core
+   (ra_patch_pick_other_board()), needs its core: the Pico restarts into it. The
+   menu says so for a few seconds. Unlocks still in the handover reach the card,
    leaderboard results the server, as far as that takes at most 10 s, a ROM picked
    meanwhile ends its stream (each within 10 s of its start), and a running FTP
    upload then stops after its chunk.
    The game's id goes into the watchdog's scratch registers 0 to 3, which the SDK
-   leaves to the program and which a reboot keeps, and the Pico restarts.
-   restart_take() moves them out at the very start, restart_rom() loads that game's
-   ROM instead of image0 of the ini, once: power off brings back the saved game,
-   "Save settings" keeps the new one, as before. The newest pick wins until the
-   marker is written, see ra_patch_restart_to().
-   A game of another board, e.g. galaga.rom picked in the Pac-Man core
-   (ra_patch_pick_other_board()), needs its core first: the same steps, but
-   before the restart the core pulls RECONFIG_N (Z = 0xA5, see game20k_top.sv) and
-   the FPGA loads the next core of the flash ring (fpga/common/slots.txt). The
-   Pico restarts while it loads, waits for it at the start as after power on, and
-   restart_rom() finds the board it wanted or switches on to the next core. Power
-   on loads the first core of the ring again.
+   leaves to the program and which a reboot keeps. The core pulls RECONFIG_N
+   (Z = 0xA5, see game20k_top.sv) and the FPGA loads the next core of the flash
+   ring (fpga/common/slots.txt). The Pico restarts while it loads, waits for it at
+   the start as after power on, and ring_hops() goes on to the board it wanted.
+   restart_take() moves the marker out at the very start, restart_rom() loads that
+   game's ROM instead of image0 of the ini, once: power off brings back the saved
+   game, "Save settings" keeps the new one, as before. The newest pick wins until
+   the marker is written, see ra_patch_restart_to(). Power on loads the first core
+   of the ring again.
    A game picked on the Games page goes the same way, as a file: magic RESTART_FILE,
    the CRC-32 of its file name instead of the id, and its board with the hops, so a
-   game without a row in the table (no achievement set) starts as well. */
+   game without a row in the table (no achievement set) starts as well.
+   A game of the running core's board needs no restart, see play_here(). A known
+   ROM of another game of this board picked under "ROM set", e.g. puckman.rom in
+   the Pac-Man core, never comes here: its stream is all it takes, and the settle
+   at its end makes it the game (ra_patch_new_game()). */
 #define RESTART_MAGIC   0x67323072u          /* "g20r" */
 #define RESTART_FILE    0x67323066u          /* "g20f" */
 #define RESTART_SHOW_MS 3000                 /* the menu's message first */
@@ -408,6 +411,32 @@ static bool core_switch(void) {
   return !sys_status_is_valid();
 }
 
+/* game20k: a game of the running core's board, picked on the Games page, streams in
+   place: its ROM goes to the core as a pick under "ROM set" does, the core waits in
+   reset until it is whole, and the settle at its end makes it the game, a known ROM
+   of another game with its own set, session and card folder (ra_patch_new_game()).
+   The pick is fixed before its file is looked up, so a newer one waits for the next
+   pass, and dropped once the stream runs: from then on the stream is the newest pick. */
+static void play_here(bool file, const games_pick_t *pk, const ra_game_t *g) {
+  const int drive = MAX_DRIVES + RA_PATCH_ROM_IMAGE;
+  char path[FF_LFN_BUF + 6], name[FF_LFN_BUF + 1];   /* "/sd/" plus a file name, and the name */
+  if(!(file ? games_pick_commit(pk->seq) : ra_patch_restart_commit(g))) return;
+  bool found = file ? games_find(pk->crc, path, sizeof(path))
+                    : snprintf(path, sizeof(path), "%s/%s.rom", CARD_MOUNTPOINT, g->set) < (int)sizeof(path);
+  int r = 1;
+  if(found) {
+    // cwd and name as restart_rom() sets them for a start, "Save settings" keeps them.
+    // sdc_image_open() frees the name it holds, so it gets a copy
+    sdc_set_default(drive, path);
+    snprintf(name, sizeof(name), "%s", sdc_get_image_name(drive) ? sdc_get_image_name(drive) : "");
+    r = name[0] ? sdc_image_open(drive, name) : 1;
+  }
+  if(file) games_pick_cancel();
+  else     ra_patch_restart_cancel();
+  if(r) debugf("%s: %s not streamed (%d), the game goes on", file ? "Games" : "RA", found ? path : "the file", r);
+  else  debugf("%s: %s streams to the core, no restart", file ? "Games" : "RA", path);
+}
+
 static void restart_step(void) {
   static TickType_t start;
   static uintptr_t  shown;           /* the target the message and the wait are for, 0 for none */
@@ -429,6 +458,17 @@ static void restart_step(void) {
   unsigned char board = file ? pk.board : g->board;
   const char *title = file ? pk.title : g->title;
   TickType_t now = xTaskGetTickCount();
+  // game20k: this board, no restart. A wait for another target ends with it
+  if(board == ram_mirror_board) {
+    if(shown) {
+      ftpd_hold_uploads(false);
+      ftpd_stop_uploads(false);
+    }
+    start = 0;
+    shown = 0;
+    play_here(file, &pk, g);
+    return;
+  }
   if(!start || key != shown) {       /* a new target: its message, and the wait starts over */
     start = now ? now : 1;
     shown = key;
@@ -470,10 +510,6 @@ static void restart_step(void) {
            ra_queue_in_transit(), ra_task_lboard_pending());
   if(file) restart_mark_file(pk.crc, board, (uint32_t)ram_mirror_board << 16);
   else     restart_mark(g, (uint32_t)ram_mirror_board << 16);
-  if(board == ram_mirror_board) {
-    debugf("%s: restart for %s", file ? "Games" : "RA", title);
-    mcu_hw_reset();
-  }
   debugf("Core switch for %s, board %u", title, board);
   if(core_switch()) mcu_hw_reset();
   // the bitstream has no switch: the game goes on, and the menu says why
@@ -488,7 +524,7 @@ static void restart_step(void) {
   else     ra_patch_restart_cancel();
   menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
   // the ROM now in the core decides again: a known ROM of another game of this
-  // board, streamed while the switch was the target, asks for its restart. A stream
+  // board, streamed while the switch was the target, becomes the game. A stream
   // that still runs settles by itself when it ends
   if(!ra_patch_rom_pending()) ra_patch_settle();
 }
@@ -768,6 +804,20 @@ static unsigned char ram_mirror_probe(void) {
   return ram_mirror_data ? 0 : v;
 }
 
+/* game20k: the heaps after a game switch, once per switch: free in all and the
+   largest piece, so ten switches show whether they cut the heap up. The SDK heap
+   (rcheevos, mbedTLS, the parsed set) tells its largest piece only at the top, the
+   chunk there and what was never taken from the system: a free chunk below may be
+   larger, mallinfo() does not say. */
+static void ra_heap_log(void) {
+  struct mallinfo m = mallinfo();
+  HeapStats_t h;
+  vPortGetHeapStats(&h);
+  debugf("RA: game switch %u, SDK heap free %lu, top %lu, %u free chunks, FreeRTOS heap free %u, largest %u",
+         ra_gen, (unsigned long)getFreeHeap(), (unsigned long)(getTotalHeap() - m.arena + m.keepcost),
+         (unsigned)m.ordblks, (unsigned)h.xAvailableHeapSpaceInBytes, (unsigned)h.xSizeOfLargestFreeBlockInBytes);
+}
+
 /* Read the header first. Byte 7 set means a harvest was running when the transfer
    started: the shadow is half old, half new, so skip it and retry on the next poll.
    That is normal, the verdict stays. From the verdict byte on, the FPGA starts no
@@ -847,7 +897,22 @@ static void ram_mirror_poll(void) {
 
   /* rcheevos only sees a snapshot that passed every check. The set comes from
      the RA task, which reads it from the card, and is activated here once it
-     is there. */
+     is there. game20k: another game of this board (ra_patch_new_game()) gets a
+     new rcheevos before its first frame: memrefs are freed only with the runtime,
+     and nothing of the old game's achievements, leaderboards, challenges or rich
+     presence carries over. */
+  if(ra_gen != ra_patch_generation()) {
+    ra_gen = ra_patch_generation();
+    if(ra_ready) rc_runtime_destroy(&ra_rt);
+    ra_ready     = false;
+    ra_triggered = 0;
+    ra_last      = 0;
+    ra_oob       = 0;
+    ra_rp_frames = 0;
+    memset(ra_primed, 0, sizeof(ra_primed));
+    ra_task_set_richpresence("");      /* the old game's text never reaches a ping of the new one */
+    ra_heap_log();
+  }
   if(!ra_ready) {
     rc_runtime_init(&ra_rt);
     ra_ready = true;
