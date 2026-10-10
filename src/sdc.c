@@ -94,12 +94,20 @@ static void sdc_spi_begin(void) {
 //                           SDC_REPLY_BUSY is polled once a tick with the bus
 //                           free in between, so the menu, HID and the RAM mirror
 //                           keep running while a slow card is busy
+//   SDC_IMAGE_YIELD_MS      game20k: an image upload hands the CPU on for a tick
+//                           after this long. The FPGA asks for the next chunk as
+//                           soon as one is in, so com_task, above the other tasks,
+//                           would hold the CPU for the whole upload, seconds for a
+//                           large ROM. The WiFi driver gives a request to its chip
+//                           500 ms and then takes it as failed: at the start it
+//                           would lose the chip's own MAC address
 #define SDC_BUSY_TIMEOUT_MS   1000
 #define SDC_READY_TIMEOUT_MS  3000
 #define SDC_WRITE_TIMEOUT_MS  5000
 #define SDC_SLOW_REPORT_MS    200
 #define SDC_CORE_RW_TIMEOUT_MS 1000
 #define SDC_HOLD_MS           1
+#define SDC_IMAGE_YIELD_MS    10
 
 // game20k: replies of the fpga while the MCU waits for its sector (SPI_SDC_MCU_READ,
 // _WRITE and _POLL). Any other value means busy: 0x01 from a core without
@@ -579,6 +587,13 @@ static void image_send_chunk(int image, uint32_t len) {
   mcu_hw_spi_end();
   
   sdc_unlock();
+
+  // game20k: a tick for the other tasks every SDC_IMAGE_YIELD_MS of upload
+  static TickType_t yielded;
+  if(xTaskGetTickCount() - yielded >= pdMS_TO_TICKS(SDC_IMAGE_YIELD_MS)) {
+    vTaskDelay(1);
+    yielded = xTaskGetTickCount();
+  }
 
   // check if last block has been sent
   if(!image_bytes2send[image]) {
