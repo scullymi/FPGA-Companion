@@ -2,7 +2,7 @@
 /* Copyright (C) 2026 scullymi */
 /** @file ra_slim.h
  *  @brief Takes the chunked framing off a set while it arrives and leaves out the fields
- *         nothing here reads, see ra_slim.c. */
+ *         nothing here reads, and reads how a reply's header frames its body, see ra_slim.c. */
 #ifndef RA_SLIM_H
 #define RA_SLIM_H
 
@@ -41,5 +41,36 @@ bool ra_slim_feed(ra_slim_t *s, const char *in, unsigned n, char *buf, unsigned 
 /** @brief The reply is whole: plain JSON, or chunked framing up to its last chunk, and
  *         nothing was broken. */
 bool ra_slim_whole(const ra_slim_t *s);
+
+#define RA_NET_NO_LENGTH 0xFFFFFFFFUL   /**< ra_net_framing_t.length without a Content-Length */
+
+/** @brief How the header frames the body (RFC 9112, 6.3), see ra_net_framing_init(). */
+typedef struct {
+  char          line[48];    /**< the current header line without CR, cut at its size */
+  unsigned      at;          /**< bytes of the current line, those cut included */
+  bool          coded;       /**< a Transfer-Encoding came, Content-Length does not count */
+  bool          chunked;     /**< chunked is its last coding */
+  bool          bad;         /**< a framing field that cannot be read */
+  unsigned long length;      /**< Content-Length, RA_NET_NO_LENGTH without one */
+  unsigned long got;         /**< body bytes received */
+} ra_net_framing_t;
+
+/** @brief Starts a header: no Transfer-Encoding, no Content-Length. */
+void ra_net_framing_init(ra_net_framing_t *f);
+
+/** @brief Reads n more bytes of the header, status line included, in pieces of any size. */
+void ra_net_framing_feed(ra_net_framing_t *f, const char *in, unsigned n);
+
+/** @brief The header could be read and the body came as long as it said. A coded body
+ *         ends with the connection, its chunked framing is checked where it comes off.
+ *         Otherwise Content-Length counts, without one the end of the connection. */
+bool ra_net_framing_whole(const ra_net_framing_t *f);
+
+/** @brief Removes the chunked transfer framing from a body, in place.
+ *
+ *  lwIP's HTTP client passes it through. Only for a body whose header says chunked.
+ *  len is updated and the body stays NUL-terminated. false, and the body as it
+ *  came, when it is not whole chunked framing. */
+bool ra_net_dechunk(char *buf, unsigned *len);
 
 #endif /* RA_SLIM_H */

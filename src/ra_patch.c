@@ -43,7 +43,7 @@
 #include "ra_task.h"
 #include "ra_mac.h"
 
-uint32_t getFreeHeap(void);   // mcu_hw.c, or the weak stand-in in ra_net.c: the SDK heap left
+uint32_t getFreeHeap(void);   // mcu_hw.c: the SDK heap left
 
 /* The identity of this boot's game, written once by ra_patch_settle() in com_task
    and read by every task through the accessors. The game table (ra_games.c) names

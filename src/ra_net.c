@@ -7,7 +7,6 @@
  *  certificate is checked against ra_ca.h, and a failed check ends the
  *  connection (ALTCP_MBEDTLS_AUTHMODE in lwipopts.h). */
 #include <string.h>
-#include <strings.h>
 #include <stdio.h>
 
 #include <FreeRTOS.h>
@@ -22,13 +21,11 @@
 #include "rc_version.h"
 
 #include "debug.h"
-// the SDK heap left and the FreeRTOS heap left, for the log. Weak stand-ins that give 0:
-// the firmware's mcu_hw.c and FreeRTOS define the real ones, the host test links neither
-__attribute__((weak)) uint32_t getFreeHeap(void) { return 0; }
-__attribute__((weak)) size_t xPortGetFreeHeapSize(void) { return 0; }
 #include "ra_ca.h"
 #include "ra_net.h"
 #include "ra_slim.h"
+
+uint32_t getFreeHeap(void);   // mcu_hw.c: the SDK heap left, for the log
 
 #define RA_HOST "retroachievements.org"   /**< the server, and the name its certificate must carry */
 
@@ -119,109 +116,6 @@ static void on_done(__attribute__((unused)) void *arg, httpc_result_t result,
   req  = NULL;
   busy = false;
   xSemaphoreGive(done);
-}
-
-static int hexval(char c) {
-  if(c >= '0' && c <= '9') return c - '0';
-  if(c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if(c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
-
-void ra_net_framing_init(ra_net_framing_t *f) {
-  memset(f, 0, sizeof(*f));
-  f->length = RA_NET_NO_LENGTH;
-}
-
-/* A header field by name, case ignored, and its value without the space around it. */
-static bool field(const char *line, unsigned n, const char *name, const char **v, unsigned *vn) {
-  unsigned k = (unsigned)strlen(name);
-  if(n <= k || line[k] != ':' || strncasecmp(line, name, k)) return false;
-  *v  = line + k + 1;
-  *vn = n - k - 1;
-  while(*vn && (**v == ' ' || **v == '\t')) { (*v)++; (*vn)--; }
-  while(*vn && ((*v)[*vn - 1] == ' ' || (*v)[*vn - 1] == '\t')) (*vn)--;
-  return true;
-}
-
-/* One header line. Only the two fields that frame the body count, the status line
-   and all others pass. */
-static void framing_line(ra_net_framing_t *f) {
-  bool cut = f->at > sizeof(f->line);
-  unsigned n = cut ? sizeof(f->line) : f->at, vn, i;
-  unsigned long len = 0;
-  const char *v;
-
-  if(field(f->line, n, "Transfer-Encoding", &v, &vn)) {
-    // the codings in the order they were applied, chunked has to be the last
-    i = vn;
-    while(i && v[i - 1] != ',') i--;
-    while(i < vn && (v[i] == ' ' || v[i] == '\t')) i++;
-    f->coded   = true;
-    f->chunked = vn - i == 7 && !strncasecmp(v + i, "chunked", 7);
-  } else if(field(f->line, n, "Content-Length", &v, &vn)) {
-    for(i = 0; i < vn && v[i] >= '0' && v[i] <= '9' && len < 0x0FFFFFFFUL; i++)
-      len = len * 10 + (unsigned long)(v[i] - '0');
-    // digits only, and a second Content-Length the same as the first
-    if(!vn || i < vn || (f->length != RA_NET_NO_LENGTH && f->length != len)) f->bad = true;
-    f->length = len;
-  } else
-    return;
-  if(cut) f->bad = true;    // the value is not all there
-}
-
-void ra_net_framing_feed(ra_net_framing_t *f, const char *in, unsigned n) {
-  for(; n; in++, n--) {
-    if(*in == '\n') {
-      framing_line(f);
-      f->at = 0;
-    } else if(*in != '\r') {
-      if(f->at < sizeof(f->line)) f->line[f->at] = *in;
-      f->at++;
-    }
-  }
-}
-
-bool ra_net_framing_whole(const ra_net_framing_t *f) {
-  return !f->bad && (f->coded || f->length == RA_NET_NO_LENGTH || f->got == f->length);
-}
-
-bool ra_net_dechunk(char *buf, unsigned *len) {
-  char *end = buf + *len;
-  int pass;
-
-  if(*len == 0) return false;
-  // each chunk is a hex length, CR LF, the data, CR LF, and a length of 0 ends it.
-  // Two passes: the first only checks that the framing is whole, the second moves
-  // the data down. A body that is not whole chunked framing stays as it came.
-  for(pass = 0; pass < 2; pass++) {
-    char *in = buf, *out = buf;
-    for(;;) {
-      unsigned long n = 0;
-      char *p = in;
-      while(p < end && hexval(*p) >= 0) {
-        if(n > 0x0FFFFFFFUL) return false;            // more digits than a length holds
-        n = n * 16 + (unsigned long)hexval(*p);
-        p++;
-      }
-      if(p == in) return false;                       // no length line: not chunked
-      while(p < end && *p != '\n') p++;               // chunk extensions and the CR
-      if(p >= end) return false;
-      p++;                                            // the LF
-      if(n == 0) break;                               // the last chunk
-      if((unsigned long)(end - p) < n) return false;  // cut short
-      if(pass) memmove(out, p, n);
-      out += n;
-      in = p + n;
-      if(in < end && *in == '\r') in++;
-      if(in < end && *in == '\n') in++;
-    }
-    if(pass) {
-      *out = 0;
-      *len = (unsigned)(out - buf);
-    }
-  }
-  return true;
 }
 
 /* the kind of request, the r= parameter, for the log */
