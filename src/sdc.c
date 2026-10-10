@@ -384,6 +384,25 @@ static DSTATUS Translate_Result_Code(int result) { return result; }
 #endif
 #endif
 
+// game20k: wait up to 2 s for the SD card of the core, status 0x8x, at boot and after a
+// core switch within one start of the Pico (the new core initialises its card anew).
+// Returns 0 when ready, -1 on the timeout. status is the last one read
+int sdc_wait_ready(unsigned char *status) {
+  int timeout = 200;
+  do {
+    sdc_spi_begin();  
+    mcu_hw_spi_tx_u08(SPI_SDC_STATUS);
+    *status = mcu_hw_spi_tx_u08(0);
+    mcu_hw_spi_end();
+
+    if((*status & 0xf0) != 0x80) {
+      timeout--;
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+  } while(timeout && ((*status & 0xf0) != 0x80));
+  return timeout ? 0 : -1;
+}
+
 static int fs_init() {
   FRESULT res_msc;
 
@@ -418,24 +437,12 @@ static int fs_init() {
   // wait for SD card to become available
   // TODO: display error in OSD
   unsigned char status;
-  int timeout = 200;
-  do {
-    sdc_spi_begin();  
-    mcu_hw_spi_tx_u08(SPI_SDC_STATUS);
-    status = mcu_hw_spi_tx_u08(0);
-    mcu_hw_spi_end();
-
-    if((status & 0xf0) != 0x80) {
-      timeout--;
-      vTaskDelay(pdMS_TO_TICKS(10));
-    }
-  } while(timeout && ((status & 0xf0) != 0x80));
   // getting here with a timeout either means that there
   // is no matching core on the FPGA or that there is no
   // SD card inserted
   
   // switch rgb led to green
-  if(!timeout) {
+  if(sdc_wait_ready(&status)) {
     sdc_debugf("SD not ready, status = %d", status);
     sys_set_rgb(0x400000);  // red, failed
     return -1;

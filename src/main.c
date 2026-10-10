@@ -910,6 +910,83 @@ static void ram_mirror_poll(void) {
 /*---            main FPGA communication task            ----*/
 /*-----------------------------------------------------------*/
 
+/* game20k: a switch to a core of another board hops the ring here, right after the
+   first look at the header and before anything of the core is set up (menu,
+   settings, ROM): one start of the Pico for the whole way instead of one per hop.
+   The way is that of restart_rom(), back to the board of the pick after a whole
+   round without the game's board. Each hop pulls RECONFIG_N (Z), waits for the next
+   core and its card and reads the new board. The marker in the scratch registers
+   follows each hop, so a core that does not come up ends in a restart that goes on
+   from there as before. The marker in RAM ends at the board reached, restart_rom()
+   then loads the ROM or says why not. probe takes the verdict of the header of
+   the last core loaded. */
+static void ring_hops(unsigned char *probe) {
+  uint32_t magic = marker[0], id = marker[1], hops = marker[3];
+  const ra_game_t *g = NULL;
+  unsigned char board;
+  if(marker[2] != ~(magic ^ id ^ hops)) return;
+  if(magic == RESTART_MAGIC) {
+    if(!(g = ra_games_at(id))) return;
+    board = g->board;
+  } else if(magic == RESTART_FILE) {
+    board = (unsigned char)(hops >> 8);
+    hops &= ~0xff00u;
+  } else
+    return;
+  const char *title = g ? g->title : "the game picked";
+  for(;;) {
+    if(!HOPS_ORIGIN(hops) && !HOPS_COUNT(hops)) hops |= (uint32_t)ram_mirror_board << 16;
+    bool back = hops & HOPS_BACK;
+    unsigned char target = back ? HOPS_ORIGIN(hops) : board;
+    // the board reached, no header, or the end of the way: restart_rom() takes over
+    if(!ram_mirror_board || target == ram_mirror_board) break;
+    // back at the board of the pick: the whole round had no core of the game's board,
+    // and the way back ends right here
+    if(!back && HOPS_COUNT(hops) && ram_mirror_board == HOPS_ORIGIN(hops)) {
+      debugf("Core switch: no core of board %u for %s in the whole ring", board, title);
+      hops = HOPS_BACK | (hops & 0xff0000u);
+      break;
+    }
+    if(HOPS_COUNT(hops) >= SWITCH_HOPS) {
+      if(back || !HOPS_ORIGIN(hops)) break;
+      debugf("Core switch: no core of board %u for %s, back to board %u", board, title, HOPS_ORIGIN(hops));
+      hops = HOPS_BACK | (hops & 0xff0000u);
+      target = HOPS_ORIGIN(hops);
+    } else
+      hops++;
+    if(g) restart_mark(g, hops);
+    else  restart_mark_file(id, board, hops);
+    for(;;) {                    /* S1 and S2 read under the lock, right before Z */
+      sdc_lock();
+      if(!buttons_held()) break;
+      sdc_unlock();
+      vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    debugf("Core switch for %s, board %u, on from board %u within this start", title, target, ram_mirror_board);
+    if(!core_switch()) {         /* the bitstream does not know Z: restart_rom() says so */
+      sdc_unlock();
+      watchdog_hw->scratch[0] = 0;
+      return;
+    }
+    unsigned char status;
+    if(!sys_wait4fpga() || sdc_wait_ready(&status)) {
+      debugf("Core switch: no core or no card after the hop, restart");
+      mcu_hw_reset();            /* the marker carries the way on */
+    }
+    sdc_unlock();
+    // the new core's cold boot, as at the start of the Pico
+    sys_handle_interrupts(sys_irq_ctrl(0xff), true);
+    ram_mirror_data = 0;
+    ram_mirror_board = 0;
+    ram_mirror_tag = 0;
+    ram_mirror_resets = -1;
+    *probe = ram_mirror_probe();
+  }
+  marker[3] = magic == RESTART_FILE ? hops | (uint32_t)board << 8 : hops;
+  marker[2] = ~(magic ^ id ^ marker[3]);
+  watchdog_hw->scratch[0] = 0;
+}
+
 TaskHandle_t com_task_handle = NULL;
 
 static void com_task(__attribute__((unused)) void *p ) {
@@ -933,6 +1010,8 @@ static void com_task(__attribute__((unused)) void *p ) {
     // once board and ROM are known, so a set with a valid tag lets the game start in
     // hardcore. rcheevos takes it with the first snapshot.
     unsigned char probe = ram_mirror_probe();
+    start_game();             /* game20k: at power-on the start game of Save settings */
+    ring_hops(&probe);        /* a game of another board: its core first, see ring_hops() */
     bool mismatch = false;   // a game20k core whose menu this firmware lacks: say so once the menu runs
     
     // try to load a config .xml from sd card. sys_get_config_name() always
@@ -1003,7 +1082,6 @@ static void com_task(__attribute__((unused)) void *p ) {
     // open disk images, either defaults set in sdc_init or
     // user configure ones from the ini file. This will also
     // start rom image transfers if specified in the ini file
-    start_game();             /* game20k: at power-on the start game of Save settings */
     restart_rom();            /* a game picked before a restart of the Pico goes first */
     sdc_mount_defaults();
 

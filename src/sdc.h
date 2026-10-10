@@ -16,6 +16,7 @@ typedef struct sdc_dir {
 } sdc_dir_entry_t;
 
 int sdc_init(void);
+int sdc_wait_ready(unsigned char *status);   // game20k: the card of the core, see sdc.c
 /** @brief sdc_image_open(): the core rejected the ROM file (wrong size for this board), it keeps the ROM it has. */
 #define SDC_IMAGE_REJECTED -2
 /** @brief sdc_image_open(): the file has no valid footer (games_file.h), an old ROM file, nothing is sent. */
