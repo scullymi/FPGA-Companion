@@ -137,7 +137,7 @@ static void hc_update(void) {
     if(!core_running)
       hardcore = true;          // no game runs, the next one starts in hardcore
     else {
-      hardcore_due = true;      // a running game is reset first, see the R=0 path
+      hardcore_due = true;      // a running game is reset first, see ra_task_game_start()
       reset = true;
     }
   }
@@ -171,24 +171,24 @@ void ra_task_core_flags(unsigned char flags) {
 
 void ra_task_core_value(char id, int value) {
   if(id == 'R') {
+    // the game starts when the core reports the end of the reset, see ra_task_game_start()
     core_running = !(value & 1);
-    if(!core_running) return;
-    // a reset ends: rcheevos starts over before the next frame, and the game
-    // starts anew, in hardcore if that was asked for. The reset is flagged first:
-    // com_task runs above this task and must not evaluate a frame in hardcore
-    // with the hit counts of the game before.
-    ra_patch_core_reset();
-    bool on;
-    taskENTER_CRITICAL();
-    on = hardcore_due && hc_wanted && !hc_block;   // a reason may have come up meanwhile
-    hardcore_due = false;
-    if(on) hardcore = true;
-    taskEXIT_CRITICAL();
-    if(on) debugf("RA: hardcore from this game on");
   } else if(id == 'H') {
     hc_wanted = value != 0;
     hc_update();
   }
+}
+
+void ra_task_game_start(void) {
+  // rcheevos has just started over, and this snapshot is the new game's first:
+  // hardcore asked for while the game ran begins here
+  bool on;
+  taskENTER_CRITICAL();
+  on = hardcore_due && hc_wanted && !hc_block;   // a reason may have come up meanwhile
+  hardcore_due = false;
+  if(on) hardcore = true;
+  taskEXIT_CRITICAL();
+  if(on) debugf("RA: hardcore from this game on");
 }
 unsigned ra_task_lboard_pending(void) {
   // in this order: a result leaves the queue only after lb_taking is set, and

@@ -96,8 +96,9 @@ void sys_set_val(char id, int8_t value) {
   mcu_hw_spi_tx_u08(value);           // value itself
   mcu_hw_spi_end();  
 
-  // the achievements follow the core: every reset from here (the menu's reset, a
-  // DIP switch, a new ROM) and the mode 'H' of the core's menu
+  // the achievements follow the core: whether it is held in reset from here (the
+  // menu's reset, a DIP switch, a new ROM) and the mode 'H' of the core's menu. The
+  // game start itself comes from the core's reset count, see ra_task_game_start().
   ra_task_core_value(id, value);
 }
 

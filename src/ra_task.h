@@ -74,11 +74,19 @@ void ra_task_core_flags(unsigned char flags);
 
 /** @brief A value the Companion sends to the core, from sys_set_val(). Any task.
  *
- *  'R' is the core's reset: when it ends, rcheevos starts over. 'H' is the mode.
+ *  'R' is the core's reset, it tells whether a game runs. 'H' is the mode.
  *  Softcore applies at once. Hardcore applies at once while the core is in reset,
  *  e.g. at the start, and otherwise the game is reset first, as RetroAchievements
  *  asks: a game that started in softcore never continues in hardcore. */
 void ra_task_core_value(char id, int value);
+
+/** @brief A game starts: the core's reset count changed (RAM mirror header byte 8). com_task only.
+ *
+ *  The count covers every reset, the Companion's 'R' as well as S1, so this is
+ *  the one place where a game start counts. com_task calls it after rcheevos
+ *  started over and before it evaluates the snapshot. A hardcore reset asked for
+ *  by ra_task_core_value() or ra_task_hardcore_block() makes hardcore start here. */
+void ra_task_game_start(void);
 
 /** @brief Hands the rich presence text of the running game to the task. com_task only.
  *

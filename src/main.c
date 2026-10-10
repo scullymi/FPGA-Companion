@@ -202,7 +202,7 @@ static void banner_step(unsigned char *hdr) {
 static void banner_login(void) {
   static ra_task_state_t shown = RA_TASK_STARTING;
   static bool offline_told;                /* the offline message once, until the login */
-  static int  mode_shown = -1;
+  static int  mode_shown = -1;             /* the mode the last mode banner named, -1 before the first */
   ra_task_state_t now = ra_task_state();
   int mode = ra_task_hardcore();
   if(now != shown) {
@@ -224,19 +224,17 @@ static void banner_login(void) {
       banner_show("RA: OFFLINE UNLOCKS KEPT", false, false);
     }
   }
-  if(mode != mode_shown) {
-    mode_shown = mode;
-    banner_mode_due = true;
-  }
+  // a change against the mode the player was told asks again. Before the first
+  // banner there is none: at the boot the settle lifts the blocks of ROM, game and
+  // set, and the first game start names the mode that results.
+  if(mode_shown >= 0 && mode != mode_shown) banner_mode_due = true;
   // once the task knows whether there is an account: without one nothing counts.
-  // Softcore although the menu asks for hardcore names the reason. The same text
-  // again within a few seconds is left out: a reset from the menu also changes the
-  // core's reset count, both ask for this banner. While a ROM streams to the core
-  // the banner waits: the stream blocks hardcore until its digest is checked, a
-  // second later, and the settle after it names the mode that counts.
+  // Softcore although the menu asks for hardcore names the reason. A game start
+  // that switches to hardcore also changes the mode: both set the one flag before
+  // it is read here, the banner shows once. While a ROM streams to the core the
+  // banner waits: the stream blocks hardcore until its digest is checked, a second
+  // later, and the settle after it names the mode that counts.
   if(banner_mode_due && now != RA_TASK_STARTING && !ra_patch_rom_pending()) {
-    static const char *last_text;
-    static TickType_t  last_tick;
     unsigned why = ra_task_hardcore_blocked();
     const char *text = mode ? "RA: HARDCORE" :
                        !ra_task_hardcore_wanted()   ? "RA: SOFTCORE" :
@@ -252,13 +250,11 @@ static void banner_login(void) {
                        (why & RA_HC_BLOCK_SET) && now != RA_TASK_REJECTED ? "RA: SOFTCORE TILL ONLINE" :
                        "RA: SOFTCORE";
     banner_mode_due = false;
+    mode_shown = mode;
     // without an account or a game nothing counts, their own banner says so
-    if(now != RA_TASK_NO_ACCOUNT && now != RA_TASK_NO_GAME &&
-       !(text == last_text && (xTaskGetTickCount() - last_tick) < pdMS_TO_TICKS(5000))) {
+    if(now != RA_TASK_NO_ACCOUNT && now != RA_TASK_NO_GAME) {
       char warn[RA_PATCH_TITLE_MAX], line[4 + RA_PATCH_TITLE_MAX];
       banner_show(text, mode, true);
-      last_text = text;
-      last_tick = xTaskGetTickCount();
       // in hardcore the server's warning follows, as rc_client shows it. While
       // RetroAchievements has not approved this client, it keeps the unlocks as
       // casual, and the player sees that next to the mode the device plays in.
@@ -723,13 +719,19 @@ static unsigned char ram_mirror_header(const unsigned char *hdr_tx) {
    header it sees later, and the game's identity is decided as "board unknown". hdr_tx
    all zero: byte 5 is taken only when two transfers agree, and zero is its boot value.
    Returns 0 for a valid header, else the last verdict: 0xE1 no game20k core, 0xE2 a
-   game20k core of another layout, 0xE3 one with a broken header. */
+   game20k core of another layout, 0xE3 one with a broken header.
+   game20k: the probe also takes the core's reset count (byte 8, valid with its
+   complement in byte 10) as the reference. The reset the boot ends comes later,
+   so the poll sees it as the first game start, see ram_mirror_poll(). */
 static unsigned char ram_mirror_probe(void) {
   unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0 }, v = 0xE1;
-  for(int i = 0; i < 50 && !ram_mirror_data; i++) {
+  for(int i = 0; i < 50 && (!ram_mirror_data || ram_mirror_resets < 0); i++) {
     if(i) vTaskDelay(pdMS_TO_TICKS(10));
     v = ram_mirror_header(hdr_tx);
-    if(v == 0) mcu_hw_spi_end();           /* the header is all the probe wants */
+    if(v == 0) {
+      if(ram_mirror_buf[10] == (unsigned char)~ram_mirror_buf[8]) ram_mirror_resets = ram_mirror_buf[8];
+      mcu_hw_spi_end();                    /* the header is all the probe wants */
+    }
   }
   if(!ram_mirror_data)
     debugf("RAM mirror: no valid layout %u header in 50 tries, the board is unknown", RAM_MIRROR_LAYOUT);
@@ -822,9 +824,10 @@ static void ram_mirror_poll(void) {
   }
   /* The core counts the ends of its resets, S1 on the Nano as well as the menu's
      reset (byte 8, taken when the harvest ended). A new count is a new game: rcheevos
-     starts over before it sees this snapshot. The first snapshot only sets the
-     reference. Byte 9, the core's diagnostic parameters, decides whether hardcore
-     is possible at all, before the first frame is evaluated. */
+     starts over before it sees this snapshot, and only here, the Companion's own
+     reset ('R') counts the same way. The probe took the reference, without one the
+     first snapshot is the start. Byte 9, the core's diagnostic parameters, decides
+     whether hardcore is possible at all, before the first frame is evaluated. */
   /* Bytes 10 and 11 carry the complements of 8 and 9: the checksum covers only the
      body, and a wrong bit here would reset rcheevos or block hardcore for nothing.
      A pair that does not match is left out for this snapshot. */
@@ -832,7 +835,7 @@ static void ram_mirror_poll(void) {
      ram_mirror_buf[11] == (unsigned char)~ram_mirror_buf[9]) {
     int resets = ram_mirror_buf[8];
     if(resets != ram_mirror_resets) {
-      if(ram_mirror_resets >= 0) ra_patch_core_reset();
+      ra_patch_core_reset();
       ram_mirror_resets = resets;
     }
     ra_task_core_flags(ram_mirror_buf[9]);
@@ -842,7 +845,10 @@ static void ram_mirror_poll(void) {
      set leaves less for the next request, so the log shows what is left */
   if(what & RA_PATCH_NEW_SET) debugf("RA: set active, SDK heap free %lu, FreeRTOS heap free %u",
                                      (unsigned long)getFreeHeap(), (unsigned)xPortGetFreeHeapSize());
-  if(what & RA_PATCH_RESET) banner_mode_due = true;          /* a game starts */
+  if(what & RA_PATCH_RESET) {                                /* a game starts */
+    ra_task_game_start();                                    /* hardcore due begins with this frame */
+    banner_mode_due = true;
+  }
   if(what) memset(ra_primed, 0, sizeof(ra_primed));   /* after a reset nothing is primed, a new set moves the positions */
   absolute_time_t t0 = get_absolute_time();
   rc_runtime_do_frame(&ra_rt, ra_event, ra_peek, NULL, NULL);
