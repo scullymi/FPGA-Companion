@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright (C) 2026 scullymi */
 /** @file ra_slim.c
- *  @brief Takes the chunked framing off a set while it arrives and leaves out the fields
- *         nothing here reads.
+ *  @brief Takes the chunked framing off a reply while it arrives and leaves out the fields
+ *         of a set nothing here reads.
  *
  *  A set from r=patch carries for every achievement two badge addresses and two rarity
  *  values. They make up about a quarter of a large set, and the set has to fit into
@@ -11,8 +11,8 @@
  *  then the JSON. A pair that is left out is cut back out of the buffer once its key is
  *  known, together with the comma before it, or, first in its object, the comma after it.
  *
- *  Also the parts of a reply that need no network: how its header frames the body
- *  (ra_net_framing_*()) and the chunked framing off a whole body (ra_net_dechunk()). */
+ *  Every other reply only loses its framing (keep). How a reply's header frames its body
+ *  is read here as well (ra_net_framing_*()), it needs no network. */
 #include <string.h>
 #include <strings.h>
 
@@ -65,6 +65,7 @@ static bool unused_key(const char *key, unsigned n) {
 
 /* One byte of the JSON, the framing is off already. false when the buffer is full. */
 static bool json(ra_slim_t *s, char c, char *buf, unsigned cap, unsigned *len) {
+  if(s->keep) return put(c, buf, cap, len);
   switch(s->json) {
   case JSON_STR:
     if(c == '\\') s->json = JSON_STR_ESC;
@@ -245,42 +246,4 @@ void ra_net_framing_feed(ra_net_framing_t *f, const char *in, unsigned n) {
 
 bool ra_net_framing_whole(const ra_net_framing_t *f) {
   return !f->bad && (f->coded || f->length == RA_NET_NO_LENGTH || f->got == f->length);
-}
-
-bool ra_net_dechunk(char *buf, unsigned *len) {
-  char *end = buf + *len;
-  int pass;
-
-  if(*len == 0) return false;
-  // each chunk is a hex length, CR LF, the data, CR LF, and a length of 0 ends it.
-  // Two passes: the first only checks that the framing is whole, the second moves
-  // the data down. A body that is not whole chunked framing stays as it came.
-  for(pass = 0; pass < 2; pass++) {
-    char *in = buf, *out = buf;
-    for(;;) {
-      unsigned long n = 0;
-      char *p = in;
-      while(p < end && hexval(*p) >= 0) {
-        if(n > 0x0FFFFFFFUL) return false;            // more digits than a length holds
-        n = n * 16 + (unsigned long)hexval(*p);
-        p++;
-      }
-      if(p == in) return false;                       // no length line: not chunked
-      while(p < end && *p != '\n') p++;               // chunk extensions and the CR
-      if(p >= end) return false;
-      p++;                                            // the LF
-      if(n == 0) break;                               // the last chunk
-      if((unsigned long)(end - p) < n) return false;  // cut short
-      if(pass) memmove(out, p, n);
-      out += n;
-      in = p + n;
-      if(in < end && *in == '\r') in++;
-      if(in < end && *in == '\n') in++;
-    }
-    if(pass) {
-      *out = 0;
-      *len = (unsigned)(out - buf);
-    }
-  }
-  return true;
 }

@@ -41,8 +41,7 @@ static void (*on_event)(QueueSetMemberHandle_t);   /* its handler for everything
 static char       *dst;
 static unsigned    dst_cap, dst_len;
 static ra_reply_t *out;
-static bool        slim_on;   /* the reply is a set: framing off and unused fields out while it arrives */
-static ra_slim_t   slim;
+static ra_slim_t   slim;      /* takes the framing off while the reply arrives, and a set's unused fields */
 static ra_net_framing_t framing;   /* how the reply's header frames its body */
 
 /* RetroAchievements knows a client by its User-Agent, so it names this firmware
@@ -76,19 +75,10 @@ static err_t on_recv(__attribute__((unused)) void *arg, struct altcp_pcb *pcb,
                      struct pbuf *p, __attribute__((unused)) err_t err) {
   if(!p) return ERR_OK;
   framing.got += p->tot_len;
-  if(slim_on) {
-    // piece by piece through ra_slim, nothing more once the buffer is full
-    for(struct pbuf *q = p; q && !out->truncated; q = q->next)
-      if(!ra_slim_feed(&slim, (const char *)q->payload, q->len, dst, dst_cap, &dst_len))
-        out->truncated = true;
-  } else {
-    unsigned room = dst_cap - 1 - dst_len;
-    unsigned take = p->tot_len < room ? p->tot_len : room;
-    if(take < p->tot_len) out->truncated = true;
-    pbuf_copy_partial(p, dst + dst_len, take, 0);
-    dst_len += take;
-    dst[dst_len] = 0;
-  }
+  // piece by piece through ra_slim, nothing more once the buffer is full
+  for(struct pbuf *q = p; q && !out->truncated; q = q->next)
+    if(!ra_slim_feed(&slim, (const char *)q->payload, q->len, dst, dst_cap, &dst_len))
+      out->truncated = true;
   altcp_recved(pcb, p->tot_len);
   pbuf_free(p);
   return ERR_OK;
@@ -103,7 +93,7 @@ static err_t on_headers(__attribute__((unused)) httpc_state_t *c, __attribute__(
     ra_net_framing_feed(&framing, (const char *)q->payload, n);
     hdr_len -= n;
   }
-  if(slim_on) ra_slim_framing(&slim, framing.chunked);
+  ra_slim_framing(&slim, framing.chunked);
   return ERR_OK;
 }
 
@@ -148,8 +138,8 @@ static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, boo
 
   memset(reply, 0, sizeof(*reply));
   dst = buf; dst_cap = cap; dst_len = 0; dst[0] = 0; out = reply;
-  slim_on = set;
   ra_slim_init(&slim);
+  slim.keep = !set;
   ra_net_framing_init(&framing);
   kind_of(path, kind, sizeof(kind));
   absolute_time_t t0 = get_absolute_time();
@@ -184,15 +174,10 @@ static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, boo
   }
 
   unsigned long ms = (unsigned long)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
-  // lwIP's HTTP client passes the chunked framing through. A whole reply loses it here
-  // when its header says chunked, a set lost it in ra_slim already. A reply cut short
-  // or not as its header framed it is unusable.
-  if(reply->result == HTTPC_RESULT_OK && !reply->truncated) {
-    bool whole = ra_net_framing_whole(&framing);
-    if(set) whole = whole && ra_slim_whole(&slim);
-    else if(whole && framing.chunked) whole = ra_net_dechunk(buf, &reply->len);
-    reply->broken = !whole;
-  }
+  // lwIP's HTTP client passes the chunked framing through, ra_slim took it off. A reply
+  // cut short or not as its header framed it is unusable.
+  if(reply->result == HTTPC_RESULT_OK && !reply->truncated)
+    reply->broken = !ra_net_framing_whole(&framing) || !ra_slim_whole(&slim);
   // with the SDK heap left after the connection: a set rcheevos holds and a large
   // reply both live there, a request that finds too little fails and is asked again
   if(reply->result == HTTPC_RESULT_OK) {

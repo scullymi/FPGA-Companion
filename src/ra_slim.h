@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Copyright (C) 2026 scullymi */
 /** @file ra_slim.h
- *  @brief Takes the chunked framing off a set while it arrives and leaves out the fields
- *         nothing here reads, and reads how a reply's header frames its body, see ra_slim.c. */
+ *  @brief Takes the chunked framing off a reply while it arrives, leaves out the fields of a
+ *         set nothing here reads, and reads how a reply's header frames its body, see ra_slim.c. */
 #ifndef RA_SLIM_H
 #define RA_SLIM_H
 
@@ -22,6 +22,7 @@ typedef struct {
   unsigned      sig_at;     /**< buffer offset of the last character outside strings that is not space */
   unsigned      before_str; /**< sig_at when the last string began */
   unsigned long dropped;    /**< bytes left out, for the log */
+  bool          keep;       /**< every field stays, only the framing comes off: a reply that is no set */
 } ra_slim_t;
 
 /** @brief Starts a reply. */
@@ -38,7 +39,7 @@ void ra_slim_framing(ra_slim_t *s, bool chunked);
  *  itself, in one call with *len 0: the output never overtakes the input. */
 bool ra_slim_feed(ra_slim_t *s, const char *in, unsigned n, char *buf, unsigned cap, unsigned *len);
 
-/** @brief The reply is whole: plain JSON, or chunked framing up to its last chunk, and
+/** @brief The reply is whole: a plain body, or chunked framing up to its last chunk, and
  *         nothing was broken. */
 bool ra_slim_whole(const ra_slim_t *s);
 
@@ -65,12 +66,5 @@ void ra_net_framing_feed(ra_net_framing_t *f, const char *in, unsigned n);
  *         ends with the connection, its chunked framing is checked where it comes off.
  *         Otherwise Content-Length counts, without one the end of the connection. */
 bool ra_net_framing_whole(const ra_net_framing_t *f);
-
-/** @brief Removes the chunked transfer framing from a body, in place.
- *
- *  lwIP's HTTP client passes it through. Only for a body whose header says chunked.
- *  len is updated and the body stays NUL-terminated. false, and the body as it
- *  came, when it is not whole chunked framing. */
-bool ra_net_dechunk(char *buf, unsigned *len);
 
 #endif /* RA_SLIM_H */
