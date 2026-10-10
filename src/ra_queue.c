@@ -13,13 +13,10 @@
  *  card cannot make an unlock hardcore, and the hash is inside the tagged text, so
  *  an edited game fails the tag like an edited mode. Without a device key the
  *  line ends after the hash and counts as softcore when it is read back.
- *  Lines without a hash, "id unixtime user mode [tag]", are Galaga's: the firmware
- *  that wrote them knew no other game, the tag is checked under RA_QUEUE_LABEL_V1.
- *  The shape decides, the token after the mode is none, 64 characters (a tag) or
- *  32 lowercase hex (a hash); a token of another shape makes the line unreadable,
- *  it is marked done and skipped like a torn one. The two labels cannot verify
- *  each other's line, so a hash cannot be inserted or removed unnoticed. A line
- *  whose tag does not check out is set aside to the parked file and never sent.
+ *  The token after the mode must be the hash, 32 lowercase hex. A line without
+ *  one, or with a token of another shape there, is malformed: it is marked done
+ *  and skipped like a torn one, never sent. A line whose tag does not check out
+ *  is set aside to the parked file and never sent.
  *  Without a device key, tagged lines wait. A line is the running game's when it
  *  carries its hash, see ra_queue_own(). Firmware that reads 127 characters per
  *  line splits a line with a hash into a bad fragment and a garbage fragment:
@@ -48,8 +45,7 @@
 #define RA_QUEUE_FILE     "/sd/ra_pending.txt"   /**< one line "id unixtime user mode hash tag" per unlock, '#' in front once done */
 #define RA_QUEUE_PARKED   "/sd/ra_parked.txt"    /**< unlocks that are not sent: refused for good, or of another account */
 #define RA_QUEUE_LINE_MAX 160                    /**< 10+1+10+1+31+1+1+1+32+1+64+1 = 154 characters at most, and the NUL */
-#define RA_QUEUE_LABEL    "g20k-q2"              /**< what the tag of a queue line with a hash is made over, keeps it apart from other tags */
-#define RA_QUEUE_LABEL_V1 "g20k-q1"              /**< the label of lines without a hash, read forever, never written */
+#define RA_QUEUE_LABEL    "g20k-q2"              /**< what the tag of a queue line is made over, keeps it apart from other tags */
 #define RA_QUEUE_USER_MAX 32                     /**< longest user name kept */
 #define RA_QUEUE_RAM      8                      /**< unlocks kept in RAM while the card fails */
 #define RA_QUEUE_DONE     '#'                    /**< written over the first digit of a line that is done */
@@ -101,8 +97,8 @@ void ra_queue_add(unsigned id, bool hardcore) {
     return;
   }
   snprintf(u.hash, sizeof(u.hash), "%s", ra_game_hash());
-  // a set is active only with an identity, so the hash is there by construction;
-  // a line without one would read back as Galaga's or as forged
+  // a set is active only with an identity, so the hash is there by construction.
+  // A line without one would read back as malformed
   if(!u.hash[0]) {
     debugf("RA: unlock %u without a game, dropped", id);
     return;
@@ -180,18 +176,16 @@ static FRESULT mark_done(FSIZE_t at) {
   return r;
 }
 
-/* "id unixtime user mode hash tag" with its newline, mode, hash and tag may be
+/* "id unixtime user mode hash tag" with its newline, mode and tag may be
    missing. A line a power cut left without its end, or anything else, is
-   PARSE_BAD. The token after the mode decides the shape: none or 64 characters is
-   a line without a hash, Galaga's, checked under RA_QUEUE_LABEL_V1; 32 lowercase
-   hex is the hash, then none or a tag under RA_QUEUE_LABEL; a 32-character token
-   that is not lowercase hex, or a token of any other length, is PARSE_JUNK: the
-   line is malformed, nothing waits for it. The mode counts only with a tag that
-   checks out. Without a tag the line is softcore. A tag that does not check out,
-   or one that cannot be checked because there is no device key, makes it
-   PARSE_FORGED. A 64-character tag edited down to 32 characters looks like a
-   hash: the line then reads as untagged with that hash, softcore, and the server
-   refuses it until it is parked after RA_REFUSE_MAX refusals. */
+   PARSE_BAD. The token after the mode must be the hash, 32 lowercase hex, then
+   none or a tag under RA_QUEUE_LABEL. Any other token there, or none, is
+   PARSE_JUNK: the line is malformed, nothing waits for it. The mode counts only
+   with a tag that checks out. Without a tag the line is softcore. A tag that does
+   not check out, or one that cannot be checked because there is no device key,
+   makes it PARSE_FORGED. A 64-character tag edited down to 32 characters looks
+   like a hash: the line then reads as untagged with that hash, softcore, and the
+   server refuses it until it is parked after RA_REFUSE_MAX refusals. */
 static int parse(const char *line, ra_unlock_t *u, char *user) {
   size_t len = strlen(line);
   if(len < 2 || line[len - 1] != '\n' || line[0] < '0' || line[0] > '9') return PARSE_BAD;
@@ -210,20 +204,16 @@ static int parse(const char *line, ra_unlock_t *u, char *user) {
   if(mode) end++;
   while(*end == ' ') end++;
   u->hardcore = false;
-  // the hash, when the next token has its length: a line without one is Galaga's
-  const char *label = RA_QUEUE_LABEL_V1;
-  snprintf(u->hash, sizeof(u->hash), "%s", RA_GAMES_V1_HASH);
+  // the hash
   n = strcspn(end, " \r\n");
-  if(n == RA_GAMES_HASH_LEN) {
-    for(size_t i = 0; i < n; i++)
-      if(!((end[i] >= '0' && end[i] <= '9') || (end[i] >= 'a' && end[i] <= 'f'))) return PARSE_JUNK;
-    memcpy(u->hash, end, n);
-    u->hash[n] = 0;
-    label = RA_QUEUE_LABEL;
-    end += n;
-    while(*end == ' ') end++;
-    n = strcspn(end, " \r\n");
-  }
+  if(n != RA_GAMES_HASH_LEN) return PARSE_JUNK;
+  for(size_t i = 0; i < n; i++)
+    if(!((end[i] >= '0' && end[i] <= '9') || (end[i] >= 'a' && end[i] <= 'f'))) return PARSE_JUNK;
+  memcpy(u->hash, end, n);
+  u->hash[n] = 0;
+  end += n;
+  while(*end == ' ') end++;
+  n = strcspn(end, " \r\n");
   if(*end == '\r' || *end == '\n') return PARSE_OK;   // no tag: softcore
   // the tag, over the text before the space in front of it
   size_t text = (size_t)(end - line);
@@ -232,7 +222,7 @@ static int parse(const char *line, ra_unlock_t *u, char *user) {
   if(n != RA_MAC_HEX) return PARSE_JUNK;
   memcpy(tag, end, RA_MAC_HEX);
   tag[RA_MAC_HEX] = 0;
-  if(!ra_mac_check(label, line, text, tag)) return PARSE_FORGED;
+  if(!ra_mac_check(RA_QUEUE_LABEL, line, text, tag)) return PARSE_FORGED;
   u->hardcore = mode == 'h';
   return PARSE_OK;
 }

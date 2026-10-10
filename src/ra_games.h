@@ -14,8 +14,7 @@
 #include <ff.h>
 
 #define RA_GAMES_HASH_LEN 32       /**< md5 in hex, what the server knows a game by */
-#define RA_GAMES_V1_ID    12138u   /**< card files and queue lines without a game are Galaga's: the firmware before this one knew no other game */
-#define RA_GAMES_V1_HASH  "b8140b5e33c53b0f7dd3cc368951a4dd"   /**< md5("galaga"), the hash of RA_GAMES_V1_ID */
+#define RA_GAMES_V1_ID    12138u   /**< card files without a game are Galaga's: the firmware before this one knew no other game */
 #define RA_GAMES_DIR      "/sd/ra"   /**< one folder per game below it, named by the game's id */
 #define RA_GAMES_PATH_MAX 40         /**< "/sd/ra/4294967295/patch.json.new" is 32 characters, 33 with the NUL */
 

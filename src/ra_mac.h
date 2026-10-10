@@ -38,7 +38,7 @@ bool ra_mac_ready(void);
 
 /** @brief The tag over label and data as lowercase hex into hex[RA_MAC_HEX + 1].
  *
- *  label keeps the kinds apart, e.g. "g20k-q1" for a queue line. False when there
+ *  label keeps the kinds apart, e.g. "g20k-q2" for a queue line. False when there
  *  is no key. */
 bool ra_mac_tag(const char *label, const void *data, size_t len, char *hex);
 
