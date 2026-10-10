@@ -65,15 +65,19 @@ static void sdc_spi_begin(void) {
 //   SDC_BUSY_TIMEOUT_MS     the card is still busy with a transfer for the core
 //                           when the MCU wants a sector of its own
 //   SDC_READY_TIMEOUT_MS    one sector read of the MCU, from the request until the
-//                           fpga reports it done. This is the bound a slow card
-//                           can run into, so it is generous: if it fires on a
-//                           card that is merely slow, the fpga still finishes
-//                           the sector while the MCU has given up, and the two
-//                           are out of step from then on. A controller that
-//                           never answers is caught all the same. A read right
-//                           after a failed write also waits while the fpga
-//                           initializes the card again, CMD0 alone takes about
-//                           340 ms of that
+//                           fpga reports it done. A core that answers
+//                           SDC_REPLY_BUSY ends every read itself, done or
+//                           failed, within three attempts and the new init of
+//                           the card after a failed one, well within this bound.
+//                           An older core tries a read again without end, there
+//                           this is the bound a slow card can run into, so it is
+//                           generous: if it fires on a card that is merely slow,
+//                           the fpga still finishes the sector while the MCU has
+//                           given up, and the two are out of step from then on.
+//                           A controller that never answers is caught all the
+//                           same. A read right after a failed write also waits
+//                           while the fpga initializes the card again, CMD0 alone
+//                           takes about 340 ms of that
 //   SDC_WRITE_TIMEOUT_MS    the same for one sector write of the MCU. It covers
 //                           the fpga's own bound on the busy time of the card
 //                           (WBUSY_TMO in sd_rw.v, 12.5M SD clocks, about 1.3 s
@@ -84,16 +88,52 @@ static void sdc_spi_begin(void) {
 //                           before it reaches the bounds above
 //   SDC_CORE_RW_TIMEOUT_MS  the core does its own io on a sector the MCU told
 //                           it about
+//   SDC_HOLD_MS             game20k: how long the MCU keeps the SPI bus while it
+//                           waits for its sector. A sector is usually there well
+//                           within it. After that, a core that answers
+//                           SDC_REPLY_BUSY is polled once a tick with the bus
+//                           free in between, so the menu, HID and the RAM mirror
+//                           keep running while a slow card is busy
 #define SDC_BUSY_TIMEOUT_MS   1000
 #define SDC_READY_TIMEOUT_MS  3000
 #define SDC_WRITE_TIMEOUT_MS  5000
 #define SDC_SLOW_REPORT_MS    200
 #define SDC_CORE_RW_TIMEOUT_MS 1000
+#define SDC_HOLD_MS           1
+
+// game20k: replies of the fpga while the MCU waits for its sector (SPI_SDC_MCU_READ,
+// _WRITE and _POLL). Any other value means busy: 0x01 from a core without
+// SPI_SDC_MCU_POLL, 0xff while the request is still going in
+#define SDC_REPLY_DONE    0x00   // a read sends its 512 bytes next
+#define SDC_REPLY_FAILED  0x02   // the fpga gave up on the read, no data follows
+#define SDC_REPLY_BUSY    0x03   // busy, SPI_SDC_MCU_POLL may continue the wait
 
 static LBA_t clst2sect(DWORD clst) {
   clst -= 2;
   if (clst >= fs.n_fatent - 2)   return 0;
   return fs.database + (LBA_t)fs.csize * clst;
+}
+
+// game20k: wait for the sector the open SPI transfer has just requested, and return the
+// last reply: SDC_REPLY_DONE, SDC_REPLY_FAILED, or a busy one after the timeout. The
+// transfer is open on return. The SD lock stays with the caller throughout: it keeps
+// FatFs, which is not reentrant, to one task, and with it the single MCU sector of the
+// fpga (one request, one buffer, one error flag), which another request would overwrite
+// before this one is collected. Only the bus is free between polls
+static unsigned char sdc_wait(TickType_t t0, TickType_t timeout) {
+  unsigned char reply;
+  while((reply = mcu_hw_spi_tx_u08(0)) != SDC_REPLY_DONE && reply != SDC_REPLY_FAILED) {
+    TickType_t t = xTaskGetTickCount() - t0;
+    if(t > timeout) break;
+    if(reply == SDC_REPLY_BUSY && t > pdMS_TO_TICKS(SDC_HOLD_MS)) {
+      mcu_hw_spi_end();
+      vTaskDelay(1);
+      sdc_spi_begin();
+      mcu_hw_spi_tx_u08(SPI_SDC_MCU_POLL);
+      mcu_hw_spi_tx_u08(0);   // the status byte, the reply follows
+    }
+  }
+  return reply;
 }
 
 int sdc_read_sector(unsigned long sector, unsigned char *buffer) {
@@ -126,12 +166,15 @@ int sdc_read_sector(unsigned long sector, unsigned char *buffer) {
 
   // wait for ready, bounded so a stalled fpga can't hang the mcu forever
   t0 = xTaskGetTickCount();
-  while(mcu_hw_spi_tx_u08(0)) {
-    if((xTaskGetTickCount() - t0) > pdMS_TO_TICKS(SDC_READY_TIMEOUT_MS)) {
-      mcu_hw_spi_end();
+  status = sdc_wait(t0, pdMS_TO_TICKS(SDC_READY_TIMEOUT_MS));
+  if(status != SDC_REPLY_DONE) {
+    mcu_hw_spi_end();
+    // game20k: a read the fpga gave up on is an error, not a timeout
+    if(status == SDC_REPLY_FAILED)
+      sdc_debugf("SDC: read error on sector %lu", sector);
+    else
       sdc_debugf("SDC: read timeout on sector %lu", sector);
-      return -1;
-    }
+    return -1;
   }
   // tell if this sector was slow, a slow card should show up in the log
   // long before it runs into the timeout above
@@ -182,12 +225,10 @@ int sdc_write_sector(unsigned long sector, const unsigned char *buffer) {
   // wait for ready, bounded so a stalled fpga can't hang the mcu forever
   // and so a sector that never completes is reported instead of assumed ok
   t0 = xTaskGetTickCount();
-  while(mcu_hw_spi_tx_u08(0)) {
-    if((xTaskGetTickCount() - t0) > pdMS_TO_TICKS(SDC_WRITE_TIMEOUT_MS)) {
-      mcu_hw_spi_end();
-      sdc_debugf("SDC: write timeout on sector %lu", sector);
-      return -1;
-    }
+  if(sdc_wait(t0, pdMS_TO_TICKS(SDC_WRITE_TIMEOUT_MS)) != SDC_REPLY_DONE) {
+    mcu_hw_spi_end();
+    sdc_debugf("SDC: write timeout on sector %lu", sector);
+    return -1;
   }
   // tell if this sector was slow, see the read path
   if((xTaskGetTickCount() - t0) > pdMS_TO_TICKS(SDC_SLOW_REPORT_MS))
