@@ -1277,15 +1277,23 @@ void tuh_cdc_umount_cb(uint8_t idx) {
 
 #include "hardware/watchdog.h"
 
+#define WIFI_LEAVE_MAX_MS 500   // a restart never hangs on the chip, see mcu_hw_reset()
+
 void mcu_hw_reset(void) {
   debugf("HW reset");
 #ifdef ENABLE_WIFI
   // Leave the access point before the restart (core switch, reset from the menu), else it
   // still holds the association and drops the first authentication after the restart. The
-  // short wait lets the chip send the disassociation.
+  // chip reports the disassociation (CYW43_EV_DISASSOC), the driver then takes the link
+  // down, and the restart waits for that. The bound only covers a chip that never reports.
   if((network_status & NETWORK_STATUS_WIFI) && (network_status & NETWORK_STATUS_UP)) {
+    struct netif *n = &cyw43_state.netif[CYW43_ITF_STA];
+    TickType_t t0 = xTaskGetTickCount();
     cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
-    busy_wait_ms(50);
+    while(netif_is_link_up(n) && xTaskGetTickCount() - t0 < pdMS_TO_TICKS(WIFI_LEAVE_MAX_MS))
+      vTaskDelay(1);   // the cyw43 context task, below the callers, takes the event meanwhile
+    debugf("WiFi: %s after %lu ms", netif_is_link_up(n) ? "no disassociation reported" : "left",
+           (unsigned long)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS));
   }
 #endif
   watchdog_reboot(0, 0, 10);
@@ -1376,6 +1384,8 @@ static void mcu_hw_wifi_init(void) {
   // After a reset the access point may still hold the old association. Some (UniFi U7,
   // Qualcomm driver) then drop the first authentication while they clear it. Phones send
   // it again within 200 ms. The chip does the same once it may retry the join (default 0).
+  // The cause lies in the access point: mcu_hw_reset() leaves it first, but a power cut,
+  // the reset button or flashing cannot.
   if(wifi_set_iovar_u32("assoc_retry_max", 3))
     debugf("WiFi: assoc_retry_max not set");
 
@@ -1393,18 +1403,15 @@ static void mcu_hw_wifi_init(void) {
   bluetooth_init();
 #endif
 
-  // after a cold start com_task reads config.ini only once the FPGA
-  // is up, so wait for it before deciding whether to connect
-  {
-    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(20000);
-    bool waited = false;
-    while(!inifile_config_is_read() && xTaskGetTickCount() < deadline) {
-      if(!waited) { debugf("WiFi: waiting for the configuration from the card"); waited = true; }
-      vTaskDelay(pdMS_TO_TICKS(250));
-    }
-    if(waited)
-      debugf("WiFi: configuration %s",
-             inifile_config_is_read() ? "is available" : "did not arrive, deadline expired");
+  // after a cold start com_task reads config.ini only once the FPGA is up, so wait for
+  // it before deciding whether to connect. Without a card or a config.ini that is soon,
+  // without an FPGA never, and com_task restarts the Pico when one shows up. Bluetooth
+  // runs meanwhile: on FreeRTOS the cyw43 context task does its work, bluetooth_run()
+  // below only sleeps.
+  if(!inifile_config_is_read()) {
+    debugf("WiFi: waiting for the configuration from the card");
+    inifile_config_wait();
+    debugf("WiFi: configuration is available");
   }
 
   // connect to wifi immediately if configured through config file
@@ -1533,33 +1540,36 @@ void mcu_hw_wifi_scan(void) {
     vTaskDelay(pdMS_TO_TICKS(10));
 }
 
-// Joins and waits for the link. When the chip retries a failed authentication, the driver
-// reports the failure for a few milliseconds before the retry succeeds, and
-// cyw43_arch_wifi_connect_timeout_ms() takes it as final. Here a failure counts only once
-// it has held for a second. No network yet: join again, as the SDK does.
+// Joins and waits for the link. A rejected authentication sets BADAUTH in the driver
+// (CYW43_EV_AUTH), and the chip's next authentication (assoc_retry_max) takes it back.
+// cyw43_arch_wifi_connect_timeout_ms() returns on that first BADAUTH. Here only the end of
+// the join counts: the link with an address, or FAIL, which the driver sets when the chip
+// gives the join up (CYW43_EV_SET_SSID). A wrong key ends with the timeout. No network
+// yet: join again, as the SDK does.
 static int wifi_join(const char *ssid, const char *key, uint32_t timeout_ms) {
   int err = cyw43_arch_wifi_connect_async(ssid, key, CYW43_AUTH_WPA2_AES_PSK);
   if(err) return err;
 
-  TickType_t start = xTaskGetTickCount(), fail_since = 0;
-  bool failing = false;
+  TickType_t start = xTaskGetTickCount();
+  int last = CYW43_LINK_JOIN;
   for(;;) {
     int status = cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
     TickType_t now = xTaskGetTickCount();
+    if(status != last) {
+      debugf("WiFi: link status %d after %lu ms", status,
+             (unsigned long)((now - start) * portTICK_PERIOD_MS));
+      last = status;
+    }
     if(status == CYW43_LINK_UP)
       return PICO_OK;
+    if(status == CYW43_LINK_FAIL)
+      return PICO_ERROR_CONNECT_FAILED;
     if(status == CYW43_LINK_NONET) {
-      failing = false;
       err = cyw43_arch_wifi_connect_async(ssid, key, CYW43_AUTH_WPA2_AES_PSK);
       if(err) return err;
-    } else if(status < 0) {
-      if(!failing) { failing = true; fail_since = now; }
-      else if(now - fail_since >= pdMS_TO_TICKS(1000))
-        return status == CYW43_LINK_BADAUTH ? PICO_ERROR_BADAUTH : PICO_ERROR_CONNECT_FAILED;
-    } else
-      failing = false;
+    }
     if(now - start >= pdMS_TO_TICKS(timeout_ms))
-      return PICO_ERROR_TIMEOUT;
+      return status == CYW43_LINK_BADAUTH ? PICO_ERROR_BADAUTH : PICO_ERROR_TIMEOUT;
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
