@@ -358,6 +358,13 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 #define RESTART_WAIT_MS 10000                /* then at most this for unlocks and results */
 #define RESTART_STOP_MS 12000                /* then this for an upload to stop after its chunk, its data socket times out after 10 s */
 #define SWITCH_HOPS     7                    /* the 8 MB flash holds at most 8 cores of 1 MB */
+/* game20k: the hops word in scratch register 3: the switches so far in bits 0 to 7
+   (a file's board above them in 8 to 15), the board the pick was made in in 16 to
+   23, and HOPS_BACK once the ring had no core of the game's board and the way goes
+   back to that board */
+#define HOPS_COUNT(w)   ((w) & 0xffu)
+#define HOPS_ORIGIN(w)  ((unsigned char)((w) >> 16))
+#define HOPS_BACK       (1u << 24)
 
 /* The game for the next start, by its row in ra_games.c: a game and its regional sets
    share their RetroAchievements id (gng and makaimurg), the row tells them apart.
@@ -461,8 +468,8 @@ static void restart_step(void) {
   if(ra_queue_in_transit() || ra_task_lboard_pending())
     debugf("RA: restart with %u unlocks and %u leaderboard results not yet out",
            ra_queue_in_transit(), ra_task_lboard_pending());
-  if(file) restart_mark_file(pk.crc, board, 0);
-  else     restart_mark(g, 0);
+  if(file) restart_mark_file(pk.crc, board, (uint32_t)ram_mirror_board << 16);
+  else     restart_mark(g, (uint32_t)ram_mirror_board << 16);
   if(board == ram_mirror_board) {
     debugf("%s: restart for %s", file ? "Games" : "RA", title);
     mcu_hw_reset();
@@ -533,30 +540,53 @@ static void restart_rom(void) {
   } else if(magic == RESTART_FILE) {
     // id is the CRC of the file name, the board rides above the hops
     board = (unsigned char)(hops >> 8);
-    hops &= 0xff;
+    hops &= ~0xff00u;
     title = "the game picked";
   } else
     return;
-  if(board != ram_mirror_board) {
+  // the start game at power on was picked in the core that came up first
+  if(!HOPS_ORIGIN(hops) && !HOPS_COUNT(hops)) hops |= (uint32_t)ram_mirror_board << 16;
+  bool back = hops & HOPS_BACK;
+  unsigned char target = back ? HOPS_ORIGIN(hops) : board;
+  if(target != ram_mirror_board) {
     // a core of a third board: on to the next one, as long as the ring can be
     // longer. Without a valid header the board is unknown, nothing to compare
-    if(!ram_mirror_board || hops >= SWITCH_HOPS) {
-      debugf("Core switch: no core of board %u for %s after %lu switches", board, title, (unsigned long)hops);
+    if(!ram_mirror_board) {
+      debugf("Core switch: no core of board %u for %s, the header has no board", target, title);
       return;
     }
-    if(g) restart_mark(g, hops + 1);
-    else  restart_mark_file(id, board, hops + 1);
+    if(HOPS_COUNT(hops) >= SWITCH_HOPS) {
+      if(back || !HOPS_ORIGIN(hops)) {
+        debugf("Core switch: no core of board %u for %s after %lu switches", target, title,
+               (unsigned long)HOPS_COUNT(hops));
+        return;
+      }
+      // a whole round without the game's board: back to the board it was picked in
+      debugf("Core switch: no core of board %u for %s, back to board %u", board, title, HOPS_ORIGIN(hops));
+      hops = HOPS_BACK | (hops & 0xff0000u);
+      target = HOPS_ORIGIN(hops);
+    } else
+      hops++;
+    if(g) restart_mark(g, hops);
+    else  restart_mark_file(id, board, hops);
     for(;;) {                    /* S1 and S2 read under the lock, right before Z */
       sdc_lock();
       if(!buttons_held()) break;
       sdc_unlock();
       vTaskDelay(pdMS_TO_TICKS(20));
     }
-    debugf("Core switch for %s, board %u, on from board %u", title, board, ram_mirror_board);
+    debugf("Core switch for %s, board %u, on from board %u", title, target, ram_mirror_board);
     if(core_switch()) mcu_hw_reset();
     watchdog_hw->scratch[0] = 0;
     sdc_unlock();
     debugf("Core switch: the core did not reload, its bitstream does not know Z");
+    return;
+  }
+  if(back) {
+    // back in the core the game was picked in, with the ini's ROM: the flash has
+    // no core of the game's board (fewer cores flashed than slots.txt lists)
+    debugf("Core switch: back at board %u, the flash has no core of board %u", target, board);
+    banner_show("SYS: CORE NOT IN FLASH", false, false);
     return;
   }
   char path[FF_LFN_BUF + 6];     /* "/sd/" plus a file name */
