@@ -533,6 +533,22 @@ static void md5_of(const char *s, unsigned char *sum) {
   md5_finish(&md5, sum);
 }
 
+/* rcheevos (12.5) does not survive a malloc that fails inside an activation: its early
+   returns leak the parse scratch, and a scratch allocation that failed is used as a
+   pointer, which on the RP2350 reads the boot ROM at address 0 and ends in a bus fault
+   later. That is a defect of rcheevos and outside this firmware. So beside the parsed
+   set an item is activated only when its worst case is free as one block, else it waits
+   until the parsed set is freed, see activate_deferred(). The worst case is a bound over
+   every set in use, measured on a 64-bit host where rcheevos' structures are larger than
+   here: RA_PATCH_ROOM_BASE plus RA_PATCH_ROOM_PER_CHAR per character of the definition. */
+#define RA_PATCH_ROOM_BASE     8192u
+#define RA_PATCH_ROOM_PER_CHAR 20u
+static bool room_for(const char *definition) {
+  void *p = malloc(RA_PATCH_ROOM_BASE + RA_PATCH_ROOM_PER_CHAR * strlen(definition ? definition : ""));
+  free(p);
+  return p != NULL;
+}
+
 /* rcheevos frees the old script before it allocates the new one. When the new
    one's buffer finds no memory, it leaves an entry with the md5 set but neither
    buffer nor script pointer set. The next call with the same script takes that
@@ -562,7 +578,7 @@ static int activate_richpresence(rc_runtime_t *rt, const char *script) {
   }
   md5_of(script, sum);
   if(rp_on && memcmp(sum, rp_md5, sizeof(sum)) == 0) return RC_OK;
-  int rv = rc_runtime_activate_richpresence(rt, script, NULL, 0);
+  int rv = room_for(script) ? rc_runtime_activate_richpresence(rt, script, NULL, 0) : RC_OUT_OF_MEMORY;
   if(rv == RC_OUT_OF_MEMORY) drop_half_richpresence(rt);
   if(rv == RC_OK) {
     memcpy(rp_md5, sum, sizeof(rp_md5));
@@ -600,7 +616,7 @@ static unsigned activate_lboards(rc_runtime_t *rt, const rc_api_fetch_game_data_
     if(j < lb_n)
       (*kept)++;
     else {
-      int rv = rc_runtime_activate_lboard(rt, l->id, l->definition, NULL, 0);
+      int rv = room_for(l->definition) ? rc_runtime_activate_lboard(rt, l->id, l->definition, NULL, 0) : RC_OUT_OF_MEMORY;
       if(rv == RC_OUT_OF_MEMORY && deferred_lb_n < RA_PATCH_LB_MAX) {
         // again once the parsed set is freed, with what the table needs kept here
         lb_entry_t *d = &deferred_lb[deferred_lb_n++];
@@ -683,7 +699,8 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
       // it fires only after the condition was false once. NULL, 0 are the Lua
       // arguments, unused. A string it cannot parse is not activated and does not
       // enter the table.
-      int rv = rc_runtime_activate_achievement(rt, a->id, a->definition, NULL, 0);
+      int rv = room_for(a->definition) ? rc_runtime_activate_achievement(rt, a->id, a->definition, NULL, 0)
+                                       : RC_OUT_OF_MEMORY;
       // without memory it enters the table and comes once the parsed set is freed
       if(rv == RC_OUT_OF_MEMORY) deferred_ach[deferred_ach_n++] = n;
       else if(rv != RC_OK) {
