@@ -251,6 +251,10 @@ static void sys_reboot(__attribute__((unused)) TimerHandle_t arg) {
 }
 #endif
 
+// game20k: a core loaded while the Pico runs is set up in place (main.c), true when
+// that worked. Without it, or when it fails, the MCU resets as before
+__attribute__((weak)) bool sys_core_changed(void) { return false; }
+
 static void sys_handle_event(bool ignore_coldboot) {
   // the FPGAs cold boot flag was set indicating that the
   // FPGA has be reloaded while the MCU was running. Reset
@@ -331,6 +335,7 @@ static void sys_handle_event(bool ignore_coldboot) {
       }
       else	
 #endif
+      if(!sys_core_changed())
 	mcu_hw_reset();
     }
   }

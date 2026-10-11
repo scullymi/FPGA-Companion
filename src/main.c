@@ -1191,18 +1191,12 @@ static void core_start(void) {
     debugf("Image upload in progress, delaying ready action");
 }
 
-/* game20k: the core switch without a restart of the Pico, from restart_step() with
-   the menu task parked and the way in the scratch registers. ring_hops() loads the
-   cores of the way. The new core is then set up as the start sets one up: the old
-   core's images and game go, its menu is freed, the new one is parsed and built
-   with the variables and the ini of the new core, and its game streams. WiFi, the
-   login, the clock, FTP and telnet stay. False when the running bitstream does not
-   know Z: nothing changed, the card lock is free again. */
-static bool core_up(void) {
-  TickType_t t0 = xTaskGetTickCount();
-  unsigned char probe;
-  for(int i = 0; i < 4; i++) marker[i] = watchdog_hw->scratch[i];
-  if(!ring_hops(&probe)) return false;
+/* game20k: a new core is up, set it up as the start sets one up: the old core's
+   images and game go, its menu is freed, the new one is parsed and built with the
+   variables and the ini of the new core, and its game streams. WiFi, the login,
+   the clock, FTP and telnet stay. The menu task is parked, probe is the verdict on
+   the new core's header, t0 when the switch began. */
+static void core_setup(unsigned char probe, TickType_t t0) {
   sdc_lock();
   sdc_forget_images();
   sdc_unlock();
@@ -1227,8 +1221,45 @@ static bool core_up(void) {
   menu_rebuild();
   if(mismatch) menu_notify(MENU_EVENT_MISMATCH);
   core_start();
-  debugf("Core switch: board %u up %lu ms after the pick was fixed, no restart", ram_mirror_board,
+  debugf("Core switch: board %u up after %lu ms, no restart", ram_mirror_board,
          (unsigned long)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS));
+}
+
+/* game20k: the core switch without a restart of the Pico, from restart_step() with
+   the menu task parked and the way in the scratch registers. ring_hops() loads the
+   cores of the way, core_setup() the last one. False when the running bitstream
+   does not know Z: nothing changed, the card lock is free again. */
+static bool core_up(void) {
+  TickType_t t0 = xTaskGetTickCount();
+  unsigned char probe;
+  for(int i = 0; i < 4; i++) marker[i] = watchdog_hw->scratch[i];
+  if(!ring_hops(&probe)) return false;
+  core_setup(probe, t0);
+  return true;
+}
+
+/* game20k: a core loaded from outside while the Pico runs, e.g. by openFPGALoader
+   over the BL616 of the Nano. Only the cold boot bit tells it, sysctrl.c asks here
+   instead of a reset. The core is up already: once its card is ready it is set up
+   as after a core switch, with the ROM of its ini, and a pick that waited for a
+   switch is dropped. False when the menu task does not stop in time, the reset
+   follows then. No card leaves the way to the start as well, by a reset. */
+bool sys_core_changed(void) {
+  TickType_t t0 = xTaskGetTickCount();
+  unsigned char status;
+  if(!menu_park()) return false;
+  debugf("Core switch: a core was loaded from outside, set up without a restart");
+  sdc_lock();
+  if(sdc_wait_ready(&status)) {
+    debugf("Core switch: no card on the new core, restart");
+    mcu_hw_reset();
+  }
+  sdc_unlock();
+  games_pick_cancel();
+  ra_patch_restart_cancel();
+  marker[0] = 0;                 /* no game picked: restart_rom() leaves the ini's ROM */
+  ram_mirror_forget();
+  core_setup(ram_mirror_probe(), t0);
   return true;
 }
 

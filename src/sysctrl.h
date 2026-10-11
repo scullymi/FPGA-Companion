@@ -32,6 +32,7 @@ void sys_jtagsel(char);
 
 void sys_run_action(config_action_t *);
 void sys_run_action_by_name(char *);
+bool sys_core_changed(void);   // game20k: the FPGA was reloaded, see sysctrl.c
 const char *sys_get_config_name(void);
 
 void sys_port_write(unsigned char, const unsigned char*, int);
