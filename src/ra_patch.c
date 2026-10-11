@@ -60,7 +60,8 @@ static const char *volatile rom_label = "";            // what the ROM file is, 
 static volatile unsigned generation;                   // the games of this start, see ra_patch_generation()
 static volatile unsigned char board;                   // header byte 12, 0 until a valid header was read
 static bool             settled;                       // ra_patch_settle() ran
-static bool             table_wrong;                   // the server's id differs from the table's: RA_HC_BLOCK_GAME stays
+static bool             new_core;                      // a core switch ran, the next settle makes the new core's game, see ra_patch_new_core()
+static bool             table_wrong;                  // the server's id differs from the table's: RA_HC_BLOCK_GAME stays
 static bool             foreign_rom;                   // the ROM in the core is another game's than the running one, see ra_patch_settle()
 static const ra_game_t *volatile restart_to;           // the game a restart starts, see ra_patch_restart_to()
 static volatile bool   restart_committed;             // restart_step() writes the marker now: picks no longer change the target
@@ -886,8 +887,9 @@ bool ra_patch_pick_other_board(const char *name) {
   taskENTER_CRITICAL();   // the settle may change the target meanwhile, see ra_patch_settle()
   if(restart_committed)
     // the switch is under way: a game of another board comes too late and is
-    // dropped. Any other file goes on to sdc_image_open(), which waits for the card
-    // lock: it streams only if the switch fails, else the Pico restarts first
+    // dropped. Any other file goes on to sdc_image_open(). A switch without a
+    // restart parks the menu task first, so no pick comes then. In the restart
+    // that is its fallback the file waits for the card lock, and the Pico goes first
     taken = g && board && g->board != board;
   else if(g && board && g->board != board) {
     restart_to = g;       // the newest pick wins
@@ -1103,8 +1105,12 @@ void ra_patch_settle(void) {
     // and card files: the two block bits and the label of the Version dialog follow
     // it, and a file of another game switches the set off, ra_patch_apply_pending()
     // takes it out of rcheevos, until the game's ROM is back in the core.
+    // After a core switch the new core's ROM makes the game whatever it is, as the
+    // first settle does: the running "no game" is the old core's end, not a game
+    // whose ROM may come back.
     bool same  = ident.game == game && !strcmp(ident.hash, game_hash);
-    bool other = !same && ident.game && ident.rom_ok && ident.board_ok;
+    bool other = !same && (new_core || (ident.game && ident.rom_ok && ident.board_ok));
+    new_core = false;
     // the newest pick wins: a ROM that streamed to this core takes a pending core
     // switch back, unless a game of another board was picked after this stream
     // began or the switch is under way (restart_step() in main.c)
@@ -1195,7 +1201,8 @@ void ra_patch_new_game(const ra_ident_t *ident) {
   ra_task_hardcore_block(RA_HC_BLOCK_ROM | RA_HC_BLOCK_SET | RA_HC_BLOCK_GAME, true);
   ra_task_hardcore_block(RA_HC_BLOCK_SIZE, false);
   debugf("RA: board %u, ROM %s: game %s in place of %s, id %u, hash %s", board, rom_label,
-         ident->game ? ident->game->set : "unknown to the table", was, game_id, game_hash[0] ? game_hash : "none");
+         ident->game ? ident->game->set : ident->hash[0] ? "unknown to the table" : "none", was, game_id,
+         game_hash[0] ? game_hash : "none");
   ra_task_hardcore_block(RA_HC_BLOCK_ROM,  !ident->rom_ok);
   ra_task_hardcore_block(RA_HC_BLOCK_GAME, !ident->board_ok);
   if(game_id) {
@@ -1208,6 +1215,25 @@ void ra_patch_new_game(const ra_ident_t *ident) {
   // for the new game (session, lists, the server's set)
   set_again = true;
   ra_task_wake();
+}
+
+bool ra_patch_new_core_pending(void) { return new_core; }
+
+void ra_patch_new_core(void) {
+  ra_ident_t none;
+  // a stream the switch cut never ends: its digest goes, as at an eject
+  if(rom_hashing) mbedtls_sha256_free(&rom_sha);
+  rom_hashing = false;
+  taskENTER_CRITICAL();
+  rom_pending      = false;
+  rom_sum_valid    = false;
+  rom_bad          = false;
+  rom_name_hash[0] = 0;
+  taskEXIT_CRITICAL();
+  memset(&none, 0, sizeof(none));
+  none.rom_label = "no ROM";
+  ra_patch_new_game(&none);
+  new_core = true;
 }
 
 void ra_patch_resolved(unsigned gen, unsigned server_id) {

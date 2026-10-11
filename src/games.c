@@ -11,8 +11,8 @@
  *  file that fails stays off the list until the card changes.
  *
  *  A game picked on the page reaches main.c as the CRC-32 of its file name and its
- *  board: restart_step() restarts the Pico, with a core switch for another board,
- *  and restart_rom() finds the file again by that CRC. The start game is a file
+ *  board: restart_step() switches the core for another board, and restart_rom()
+ *  finds the file again by that CRC. The start game is a file
  *  name in GAMES_START_FILE: config.ini belongs to the user and holds secrets, the
  *  ini of a core is read only by that core, so the start game has a file of its own
  *  that every core reads at power-on. */
@@ -228,7 +228,7 @@ void games_save_start(void) {
   FIL f;
   FRESULT r;
   sdc_lock();
-  // the restart finds a start game of another board in the root only
+  // power-on finds a start game of another board in the root only
   if(!cwd || !img || strcmp(cwd, CARD_MOUNTPOINT)) {
     r = f_unlink(GAMES_START_FILE);
     if(r == FR_OK) debugf("Games: no ROM in the card's root, the start game is removed");

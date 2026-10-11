@@ -31,12 +31,13 @@
 #define MENU_EVENT_BLUETOOTH_PIN_CODE_REQUEST 17
 #define MENU_EVENT_NETWORK_GOT_IP       18
 #define MENU_EVENT_NETWORK_DISCONNECTED 19
-#define MENU_EVENT_RA_RESTART    20  // game20k: another game, the Pico restarts into it, for one of another board with its core
+#define MENU_EVENT_RA_RESTART    20  // game20k: a game of another board, its core loads in a few seconds
 #define MENU_EVENT_CORE_SWITCH_FAILED 21  // game20k: the running bitstream does not know the core switch
 #define MENU_EVENT_ROM_OLD       22  // game20k: a ROM file without a footer, nothing was sent
 #define MENU_EVENT_ROM_DAMAGED   23  // game20k: the ROM streamed is not what its footer says, the core stays in reset
 #define MENU_EVENT_GAMES         24  // game20k: no ROM runs, the Games page opens
 #define MENU_EVENT_MISMATCH      25  // game20k: the core is of another release than the firmware, its menu is missing
+#define MENU_EVENT_PARK          26  // game20k: another core comes up, the menu task waits, see menu_park()
 
 #define MENU_EVENT_KEY_LATIN1    256  // 256..511
 
@@ -59,5 +60,13 @@ void menu_joystick_state(unsigned char state);
 void menu_button_state(unsigned char state);
 void menu_run_current_image_action(void);
 void menu_draw_dialog(const char *title, const char *msg);
+
+// game20k: another core without a restart of the Pico, from com_task. menu_park()
+// stops the menu task and returns false when it did not stop in time. Then either
+// menu_resume() lets it go on with the old menu, or menu_rebuild() builds the menu
+// of the config parsed meanwhile and lets it go on with that.
+bool menu_park(void);
+void menu_resume(void);
+void menu_rebuild(void);
 
 #endif // MENU_H

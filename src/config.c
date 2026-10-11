@@ -40,6 +40,30 @@ static int config_depth;
 
 config_t *cfg = NULL;
 
+/* game20k: every allocation of the parsed config hangs in one chain, the link in
+   front of each block, so config_free() returns all of it when another core comes
+   up without a restart of the Pico. The macro below sends every pvPortMalloc of
+   this file here. */
+static void **config_allocs;
+
+static void *config_alloc(size_t size) {
+  void **p = pvPortMalloc(sizeof(void *) + size);
+  if(!p) return NULL;
+  *p = config_allocs;
+  config_allocs = p;
+  return p + 1;
+}
+#define pvPortMalloc(size) config_alloc(size)
+
+void config_free(void) {
+  while(config_allocs) {
+    void **next = *config_allocs;
+    vPortFree(config_allocs);
+    config_allocs = next;
+  }
+  cfg = NULL;
+}
+
 void config_init(void) {
   xml_init();  // reset xml parser
 

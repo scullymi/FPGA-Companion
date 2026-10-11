@@ -208,7 +208,11 @@ static void banner_login(void) {
   static int  mode_shown = -1;             /* the mode the last mode banner named, -1 before the first */
   ra_task_state_t now = ra_task_state();
   int mode = ra_task_hardcore();
-  if(now != shown) {
+  // game20k: the "no game" between a core switch and the settle of the new core's
+  // ROM is no news, nor is the one the RA task still reports once a game with an
+  // id runs. Left out, shown stays, and the login after it is not told twice
+  bool passing = now == RA_TASK_NO_GAME && (ra_patch_new_core_pending() || ra_game_id());
+  if(now != shown && !passing) {
     shown = now;
     // messages are white, the mark is green when all is well and grey when not
     if(now == RA_TASK_LOGGED_IN) {
@@ -333,25 +337,29 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 }
 
 /* A game of another board, e.g. galaga.rom picked in the Pac-Man core
-   (ra_patch_pick_other_board()), needs its core: the Pico restarts into it. The
-   menu says so for a few seconds. Unlocks still in the handover reach the card,
-   leaderboard results the server, as far as that takes at most 10 s, a ROM picked
-   meanwhile ends its stream (each within 10 s of its start), and a running FTP
-   upload then stops after its chunk.
+   (ra_patch_pick_other_board()), needs its core. The menu says so for a few
+   seconds. Unlocks still in the handover reach the card, leaderboard results the
+   server, as far as that takes at most 10 s, a ROM picked meanwhile ends its stream
+   (each within 10 s of its start), and a running FTP upload then stops after its
+   chunk.
    The game's id goes into the watchdog's scratch registers 0 to 3, which the SDK
    leaves to the program and which a reboot keeps. The core pulls RECONFIG_N
    (Z = 0xA5, see game20k_top.sv) and the FPGA loads the next core of the flash
-   ring (fpga/common/slots.txt). The Pico restarts while it loads, waits for it at
-   the start as after power on, and ring_hops() goes on to the board it wanted.
-   restart_take() moves the marker out at the very start, restart_rom() loads that
+   ring (fpga/common/slots.txt). ring_hops() goes on to the board wanted and
+   core_up() sets the core up as the start does: menu, ini, the game's ROM. WiFi,
+   the RetroAchievements login, FTP and telnet stay. restart_rom() loads that
    game's ROM instead of image0 of the ini, once: power off brings back the saved
    game, "Save settings" keeps the new one, as before. The newest pick wins until
    the marker is written, see ra_patch_restart_to(). Power on loads the first core
    of the ring again.
+   The Pico restarts instead when the menu task does not stop in time, and when a
+   core of the way does not come up: then it waits for the core at the start as
+   after power on, restart_take() moves the marker out at the very start, and
+   ring_hops() goes on from there.
    A game picked on the Games page goes the same way, as a file: magic RESTART_FILE,
    the CRC-32 of its file name instead of the id, and its board with the hops, so a
    game without a row in the table (no achievement set) starts as well.
-   A game of the running core's board needs no restart, see play_here(). A known
+   A game of the running core's board needs no core switch, see play_here(). A known
    ROM of another game of this board picked under "ROM set", e.g. puckman.rom in
    the Pac-Man core, never comes here: its stream is all it takes, and the settle
    at its end makes it the game (ra_patch_new_game()). */
@@ -437,7 +445,11 @@ static void play_here(bool file, const games_pick_t *pk, const ra_game_t *g) {
   else  debugf("%s: %s streams to the core, no restart", file ? "Games" : "RA", path);
 }
 
-static void restart_step(void) {
+static bool core_up(void);
+
+/* Returns true when another core came up without a restart: the poll that called
+   it ends, the next one reads the new core. */
+static bool restart_step(void) {
   static TickType_t start;
   static uintptr_t  shown;           /* the target the message and the wait are for, 0 for none */
   // a pick on the Games page goes first, else the game a ROM picked under "ROM set" asks for
@@ -451,7 +463,7 @@ static void restart_step(void) {
     }
     start = 0;
     shown = 0;
-    return;
+    return false;
   }
   // a pick is told apart by its count, odd so it never equals an entry's address
   uintptr_t key = file ? ((uintptr_t)pk.seq << 1) | 1 : (uintptr_t)g;
@@ -467,55 +479,78 @@ static void restart_step(void) {
     start = 0;
     shown = 0;
     play_here(file, &pk, g);
-    return;
+    return false;
   }
   if(!start || key != shown) {       /* a new target: its message, and the wait starts over */
     start = now ? now : 1;
     shown = key;
     ftpd_hold_uploads(true);         /* no new upload, the restart would cut it */
     menu_notify(MENU_EVENT_RA_RESTART);
-    return;
+    return false;
   }
   TickType_t since = now - start;
-  if(since < pdMS_TO_TICKS(RESTART_SHOW_MS)) return;
+  if(since < pdMS_TO_TICKS(RESTART_SHOW_MS)) return false;
   // unlocks and leaderboard results live in RAM until the card or the server
   // has them, an upload runs until its file is closed, a ROM picked last streams
   // until its settle decides the target: wait for them, but not for ever
   bool late = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS);
   bool cut  = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS + RESTART_STOP_MS);
   if((ra_queue_in_transit() || ra_task_lboard_pending()) && !late)
-    return;
+    return false;
   if(ra_patch_rom_streaming(RESTART_WAIT_MS))   /* its own limit: also a pick made late wins */
-    return;
+    return false;
   // an upload still running then stops after its chunk with 426, its file closed
   // whole: wait for that too, only a stalled one is cut
   if(late) ftpd_stop_uploads(true);
   if(ftpd_uploads() && !cut)
-    return;
-  // the last checks under the card lock, where they hold until the Pico goes:
-  // every card operation ends whole, an upload opens its file and a ROM starts to
-  // stream only under the lock, S1 and S2 are read right before Z and not before a
-  // wait for the lock. The target is fixed last, a pick can change it until then
+    return false;
+  if(buttons_held()) return false;   /* read again under the lock, this spares the menu a stop */
+  // game20k: the menu task stops before the card lock, it may need the card to end
+  // what it does, and from then on no pick and no menu of the old core runs. A
+  // menu task that does not stop in time leaves the way with a restart
+  bool parked = menu_park();
+  // the last checks under the card lock, where they hold until the switch: every
+  // card operation ends whole, an upload opens its file and a ROM starts to stream
+  // only under the lock, S1 and S2 are read right before Z and not before a wait
+  // for the lock. The target is fixed last, a pick can change it until then
   sdc_lock();
   bool held = board != ram_mirror_board && buttons_held();
   bool busy = ra_patch_rom_streaming(RESTART_WAIT_MS) || (!cut && ftpd_uploads());
   if(held || busy || !(file ? games_pick_commit(pk.seq) : ra_patch_restart_commit(g))) {
     sdc_unlock();
-    return;
+    if(parked) menu_resume();
+    return false;
   }
-  if(ftpd_uploads())
+  if(!parked && ftpd_uploads())
     debugf("FTP: the restart cuts %u upload(s) in the middle", ftpd_uploads());
-  if(ra_queue_in_transit() || ra_task_lboard_pending())
+  if(!parked && (ra_queue_in_transit() || ra_task_lboard_pending()))
     debugf("RA: restart with %u unlocks and %u leaderboard results not yet out",
            ra_queue_in_transit(), ra_task_lboard_pending());
   if(file) restart_mark_file(pk.crc, board, (uint32_t)ram_mirror_board << 16);
   else     restart_mark(g, (uint32_t)ram_mirror_board << 16);
-  debugf("Core switch for %s, board %u", title, board);
-  if(core_switch()) mcu_hw_reset();
-  // the bitstream has no switch: the game goes on, and the menu says why
-  watchdog_hw->scratch[0] = 0;
-  sdc_unlock();
+  if(parked) {
+    // the way of ring_hops() from the running core, the marker in the scratch
+    // registers carries it on if a core does not come up
+    sdc_unlock();
+    debugf("Core switch for %s, board %u, without a restart", title, board);
+    if(core_up()) {
+      start = 0;
+      shown = 0;
+      ftpd_hold_uploads(false);
+      ftpd_stop_uploads(false);
+      if(file) games_pick_cancel();
+      else     ra_patch_restart_cancel();
+      return true;
+    }
+  } else {
+    debugf("Core switch for %s, board %u", title, board);
+    if(core_switch()) mcu_hw_reset();
+    // the bitstream has no switch: the game goes on, and the menu says why
+    watchdog_hw->scratch[0] = 0;
+    sdc_unlock();
+  }
   debugf("Core switch: the core did not reload, its bitstream does not know Z");
+  if(parked) menu_resume();
   start = 0;
   shown = 0;
   ftpd_hold_uploads(false);
@@ -527,6 +562,7 @@ static void restart_step(void) {
   // board, streamed while the switch was the target, becomes the game. A stream
   // that still runs settles by itself when it ends
   if(!ra_patch_rom_pending()) ra_patch_settle();
+  return false;
 }
 
 /* The marker as the Pico found it at its start. restart_take() moves it out of
@@ -804,6 +840,17 @@ static unsigned char ram_mirror_probe(void) {
   return ram_mirror_data ? 0 : v;
 }
 
+/* game20k: another core came up, its header is read anew as at the start */
+static void ram_mirror_forget(void) {
+  ram_mirror_data    = 0;
+  ram_mirror_board   = 0;
+  ram_mirror_tag     = 0;
+  ram_mirror_resets  = -1;
+  ram_mirror_frame   = -1;
+  ram_mirror_verdict = 0xA5;
+  ra_patch_board(0);
+}
+
 /* game20k: the heaps after a game switch, once per switch: free in all and the
    largest piece, so ten switches show whether they cut the heap up. The SDK heap
    (rcheevos, mbedTLS, the parsed set) tells its largest piece only at the top, the
@@ -837,7 +884,7 @@ static void ram_mirror_poll(void) {
   // the banner, one character per poll in bytes 6 and 7
   banner_login();
   banner_lboard();
-  restart_step();
+  if(restart_step()) return;   /* another core came up, the next poll reads it */
   banner_step(hdr_tx);
 
   /* Verdict: 0xA5 ok, otherwise the failed check. 0xE1 magic, 0xE2 layout, 0xE3
@@ -984,20 +1031,23 @@ static void ram_mirror_poll(void) {
    follows each hop, so a core that does not come up ends in a restart that goes on
    from there as before. The marker in RAM ends at the board reached, restart_rom()
    then loads the ROM or says why not. probe takes the verdict of the header of
-   the last core loaded. */
-static void ring_hops(unsigned char *probe) {
+   the last core loaded. True when another core came up.
+   A switch while a game runs comes here as well, see restart_step(): the marker
+   it wrote is the way, the first hop goes from the running core. */
+static bool ring_hops(unsigned char *probe) {
   uint32_t magic = marker[0], id = marker[1], hops = marker[3];
   const ra_game_t *g = NULL;
   unsigned char board;
-  if(marker[2] != ~(magic ^ id ^ hops)) return;
+  bool hopped = false;
+  if(marker[2] != ~(magic ^ id ^ hops)) return false;
   if(magic == RESTART_MAGIC) {
-    if(!(g = ra_games_at(id))) return;
+    if(!(g = ra_games_at(id))) return false;
     board = g->board;
   } else if(magic == RESTART_FILE) {
     board = (unsigned char)(hops >> 8);
     hops &= ~0xff00u;
   } else
-    return;
+    return false;
   const char *title = g ? g->title : "the game picked";
   for(;;) {
     if(!HOPS_ORIGIN(hops) && !HOPS_COUNT(hops)) hops |= (uint32_t)ram_mirror_board << 16;
@@ -1031,7 +1081,7 @@ static void ring_hops(unsigned char *probe) {
     if(!core_switch()) {         /* the bitstream does not know Z: restart_rom() says so */
       sdc_unlock();
       watchdog_hw->scratch[0] = 0;
-      return;
+      return hopped;
     }
     unsigned char status;
     if(!sys_wait4fpga() || sdc_wait_ready(&status)) {
@@ -1041,15 +1091,145 @@ static void ring_hops(unsigned char *probe) {
     sdc_unlock();
     // the new core's cold boot, as at the start of the Pico
     sys_handle_interrupts(sys_irq_ctrl(0xff), true);
-    ram_mirror_data = 0;
-    ram_mirror_board = 0;
-    ram_mirror_tag = 0;
-    ram_mirror_resets = -1;
+    ram_mirror_forget();
     *probe = ram_mirror_probe();
+    hopped = true;
   }
   marker[3] = magic == RESTART_FILE ? hops | (uint32_t)board << 8 : hops;
   marker[2] = ~(magic ^ id ^ marker[3]);
   watchdog_hw->scratch[0] = 0;
+  return hopped;
+}
+
+/* game20k: the menu of the core that runs, parsed into cfg, at the start and after
+   a core switch (core_up()). Returns true for a game20k core whose menu this
+   firmware lacks: the menu says so once it runs. */
+static bool core_config(unsigned char probe) {
+  bool mismatch = false;
+
+  // try to load a config .xml from sd card. sys_get_config_name() always
+  // returns /sd/config.xml here: the core id byte stays 0 (game20k). Under the
+  // card lock: after a core switch FTP may be at the card meanwhile
+  FIL fil;
+  sdc_lock();
+  if(f_open(&fil, sys_get_config_name(), FA_OPEN_EXISTING | FA_READ) == FR_OK) {
+    config_init();
+
+    UINT br; char c;
+    debugf("Loading XML config from file");
+    // a menu of one's own can set the DIP switches without a reset, and it is
+    // what decides the mode: no hardcore with it (the core also takes DIP
+    // switches only while in reset)
+    ra_task_hardcore_block(RA_HC_BLOCK_XML, true);
+
+    // read byte by byte. Slow but that doesn't hurt ...
+    FRESULT r = f_read(&fil, &c, 1, &br);
+    while(r == FR_OK && br) {
+      xml_parse(c);
+      r = f_read(&fil, &c, 1, &br);
+    }
+    f_close(&fil);
+    sdc_unlock();
+
+    config_dump();
+  } else {
+    sdc_unlock();
+    // game20k: no XML on SD card. The firmware's menu for the core's board when
+    // the interface tags agree. Else a core without a game20k header may bring
+    // its own menu (READ_CFG), and the last resort is the basic menu: there is
+    // always an OSD. A game20k core of another release gets the basic menu with
+    // a message, and without hardcore when it has the board but another tag:
+    // its DIP switches may mean something else than this firmware's menu says.
+    const menus_entry_t *m;
+    menus_why_t why = menus_pick(ram_mirror_board, ram_mirror_tag, NULL, &m);
+    const char *c = NULL;
+    if(m) {
+      debugf("Loading the built-in XML config of board %u", ram_mirror_board);
+      c = m->xml;
+    } else if(why == MENUS_NO_HEADER && (c = sys_get_config()) != NULL)
+      debugf("Loading XML config from core");
+    else {
+      debugf("No menu for this core (board %u, tag %04x, why %d), loading the basic XML config",
+             ram_mirror_board, ram_mirror_tag, why);
+      c = menus_basic_xml;
+    }
+    mismatch = why != MENUS_FOUND && probe != 0xE1;
+    ra_task_hardcore_block(RA_HC_BLOCK_MENU, why == MENUS_MISMATCH);   // the core before may have set it
+    config_init();
+    while(*c) xml_parse(*c++);
+    config_dump();
+  }
+  return mismatch;
+}
+
+/* game20k: the images of the menu's init action, the game picked before, the
+   settle and the ready action, at the start and after a core switch. */
+static void core_start(void) {
+  // open disk images, either defaults set in sdc_init or
+  // user configure ones from the ini file. This will also
+  // start rom image transfers if specified in the ini file
+  restart_rom();            /* a game picked before a core switch goes first */
+  sdc_mount_defaults();
+
+  // game20k: no ROM in the core, its file is missing, old or rejected: the
+  // Games page opens instead of a dark screen with a closed menu
+  if(!sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE)) menu_notify(MENU_EVENT_GAMES);
+
+  // game20k: no image0 in the ini, or the core rejected it (the transfer is
+  // closed then): the game is decided now, before the ready action, from the
+  // board alone. With a stream running, its last chunk settles.
+  if(!sdc_image_upload_in_progress()) ra_patch_settle();
+
+  // finally run the ready action. This will usually get the core out of reset
+  // On setups not using core configs, just release FPGA from reset
+  // But this should actually never be the case nowadays.
+  // TODO: An image upload may still be in progress ...
+  if(!sdc_image_upload_in_progress()) {
+    if(!cfg) sys_set_val('R', 0);
+    else     sys_run_action_by_name("ready");
+  } else
+    debugf("Image upload in progress, delaying ready action");
+}
+
+/* game20k: the core switch without a restart of the Pico, from restart_step() with
+   the menu task parked and the way in the scratch registers. ring_hops() loads the
+   cores of the way. The new core is then set up as the start sets one up: the old
+   core's images and game go, its menu is freed, the new one is parsed and built
+   with the variables and the ini of the new core, and its game streams. WiFi, the
+   login, the clock, FTP and telnet stay. False when the running bitstream does not
+   know Z: nothing changed, the card lock is free again. */
+static bool core_up(void) {
+  TickType_t t0 = xTaskGetTickCount();
+  unsigned char probe;
+  for(int i = 0; i < 4; i++) marker[i] = watchdog_hw->scratch[i];
+  if(!ring_hops(&probe)) return false;
+  sdc_lock();
+  sdc_forget_images();
+  sdc_unlock();
+  ra_patch_new_core();
+  // a banner on its way or shown starts over, the new core has none of it
+  if(banner_live || banner_pending) {
+    banner_live    = false;
+    banner_pending = true;
+    banner_pos     = 0;
+  }
+  // the old menu goes, the log says what the new one takes
+  size_t before = xPortGetFreeHeapSize();
+  config_free();
+  size_t freed = xPortGetFreeHeapSize();
+  bool mismatch = core_config(probe);
+  debugf("Core switch: the old config freed %u bytes, the new one takes %u, FreeRTOS heap free %u",
+         (unsigned)(freed - before), (unsigned)(freed - xPortGetFreeHeapSize()),
+         (unsigned)xPortGetFreeHeapSize());
+  sys_handle_interrupts(sys_irq_ctrl(0xff), true);   // what the cores of the way left
+  hid_handle_event();                                // the new core's DB9 interrupts, as at the start
+  osd_init();
+  menu_rebuild();
+  if(mismatch) menu_notify(MENU_EVENT_MISMATCH);
+  core_start();
+  debugf("Core switch: board %u up %lu ms after the pick was fixed, no restart", ram_mirror_board,
+         (unsigned long)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS));
+  return true;
 }
 
 TaskHandle_t com_task_handle = NULL;
@@ -1077,56 +1257,7 @@ static void com_task(__attribute__((unused)) void *p ) {
     unsigned char probe = ram_mirror_probe();
     start_game();             /* game20k: at power-on the start game of Save settings */
     ring_hops(&probe);        /* a game of another board: its core first, see ring_hops() */
-    bool mismatch = false;   // a game20k core whose menu this firmware lacks: say so once the menu runs
-    
-    // try to load a config .xml from sd card. sys_get_config_name() always
-    // returns /sd/config.xml here: the core id byte stays 0 (game20k)
-    FIL fil;
-    if(f_open(&fil, sys_get_config_name(), FA_OPEN_EXISTING | FA_READ) == FR_OK) {
-      config_init();
-
-      UINT br; char c;
-      debugf("Loading XML config from file");
-      // a menu of one's own can set the DIP switches without a reset, and it is
-      // what decides the mode: no hardcore with it (the core also takes DIP
-      // switches only while in reset)
-      ra_task_hardcore_block(RA_HC_BLOCK_XML, true);
-
-      // read byte by byte. Slow but that doesn't hurt ...
-      FRESULT r = f_read(&fil, &c, 1, &br);
-      while(r == FR_OK && br) {
-	xml_parse(c);      
-	r = f_read(&fil, &c, 1, &br);
-      }    
-      f_close(&fil);
-
-      config_dump();
-    } else {
-      // game20k: no XML on SD card. The firmware's menu for the core's board when
-      // the interface tags agree. Else a core without a game20k header may bring
-      // its own menu (READ_CFG), and the last resort is the basic menu: there is
-      // always an OSD. A game20k core of another release gets the basic menu with
-      // a message, and without hardcore when it has the board but another tag:
-      // its DIP switches may mean something else than this firmware's menu says.
-      const menus_entry_t *m;
-      menus_why_t why = menus_pick(ram_mirror_board, ram_mirror_tag, NULL, &m);
-      const char *c = NULL;
-      if(m) {
-	debugf("Loading the built-in XML config of board %u", ram_mirror_board);
-	c = m->xml;
-      } else if(why == MENUS_NO_HEADER && (c = sys_get_config()) != NULL)
-	debugf("Loading XML config from core");
-      else {
-	debugf("No menu for this core (board %u, tag %04x, why %d), loading the basic XML config",
-	       ram_mirror_board, ram_mirror_tag, why);
-	c = menus_basic_xml;
-      }
-      mismatch = why != MENUS_FOUND && probe != 0xE1;
-      if(why == MENUS_MISMATCH) ra_task_hardcore_block(RA_HC_BLOCK_MENU, true);
-      config_init();
-      while(*c) xml_parse(*c++);
-      config_dump();
-    }
+    bool mismatch = core_config(probe);   // game20k: the menu, see core_config()
 
     // process any pending interrupt. Filter out irq 1 which is the
     // FPGA cold boot event which we ignore since we just booted outselves
@@ -1144,30 +1275,7 @@ static void com_task(__attribute__((unused)) void *p ) {
 
     if(!ra_patch_init()) debugf("RA: set handover could not be set up, no achievements");
 
-    // open disk images, either defaults set in sdc_init or
-    // user configure ones from the ini file. This will also
-    // start rom image transfers if specified in the ini file
-    restart_rom();            /* a game picked before a restart of the Pico goes first */
-    sdc_mount_defaults();
-
-    // game20k: no ROM in the core, its file is missing, old or rejected: the
-    // Games page opens instead of a dark screen with a closed menu
-    if(!sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE)) menu_notify(MENU_EVENT_GAMES);
-
-    // game20k: no image0 in the ini, or the core rejected it (the transfer is
-    // closed then): the game is decided now, before the ready action, from the
-    // board alone. With a stream running, its last chunk settles.
-    if(!sdc_image_upload_in_progress()) ra_patch_settle();
-
-    // finally run the ready action. This will usually get the core out of reset
-    // On setups not using core configs, just release FPGA from reset
-    // But this should actually never be the case nowadays.
-    // TODO: An image upload may still be in progress ...
-    if(!sdc_image_upload_in_progress()) {
-      if(!cfg) sys_set_val('R', 0);
-      else     sys_run_action_by_name("ready");
-    } else
-      debugf("Image upload in progress, delaying ready action");
+    core_start();             /* game20k: the images, the game, the ready action */
 
     ftpd_init();
 

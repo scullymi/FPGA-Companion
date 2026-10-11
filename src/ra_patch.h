@@ -86,7 +86,7 @@ void ra_patch_rom_gone(void);
 bool ra_patch_rom_pending(void);
 /** @brief True while a ROM streams that began less than limit_ms ago. Any task.
  *
- *  A restart waits for such a stream, so its settle decides the target and the
+ *  A core switch waits for such a stream, so its settle decides the target and the
  *  newest pick wins. Each stream gets its own limit, a stalled one is not waited for
  *  beyond it. */
 bool ra_patch_rom_streaming(unsigned limit_ms);
@@ -108,7 +108,9 @@ void ra_patch_board(unsigned char board);
  *  another game of this board, proven by its digest, becomes the game in place,
  *  see ra_patch_new_game(). Any other file moves the two block bits and the ROM
  *  label of the Version dialog, and when it is not the game's ROM it switches the
- *  set off (ra_patch_foreign_rom()) until the game's ROM is back in the core. */
+ *  set off (ra_patch_foreign_rom()) until the game's ROM is back in the core.
+ *  After a core switch the first settle of the new core makes its game the
+ *  running one, see ra_patch_new_core(). */
 void ra_patch_settle(void);
 /** @brief True once ra_patch_settle() ran. com_task. */
 bool ra_patch_settled(void);
@@ -126,6 +128,17 @@ bool ra_patch_settled(void);
  *  main.c makes rcheevos anew before the next frame, see ra_patch_generation(). */
 void ra_patch_new_game(const ra_ident_t *ident);
 
+/** @brief A core of another board came up without a restart of the Pico. com_task only, after the board of the new core was fed (ra_patch_board()).
+ *
+ *  The game of the old core ends with it: a ROM stream cut by the switch is
+ *  dropped, and ra_patch_new_game() makes "no game" the running one, so rcheevos
+ *  starts anew and the RA task waits. The next settle then makes the game of the
+ *  new core's ROM the running one by whatever the table says about it, as the first
+ *  settle at the start does, an unknown ROM with a fallback identity included. */
+void ra_patch_new_core(void);
+/** @brief True from ra_patch_new_core() until the next settle. com_task. */
+bool ra_patch_new_core_pending(void);
+
 /** @brief True while the ROM in the core is another game's than the running one, from a later settle. com_task.
  *
  *  ra_patch_apply_pending() takes the set out of rcheevos meanwhile, ra_queue_add()
@@ -134,10 +147,10 @@ bool ra_patch_foreign_rom(void);
 
 /** @brief The game of another board a core switch should start, NULL when none. Any task.
  *
- *  Set by ra_patch_pick_other_board(): main.c switches the core and restarts the
- *  Pico into it. The newest pick wins: a later pick replaces the target, any file
- *  that streams to this core takes it back, until ra_patch_restart_commit() fixes
- *  it. A known ROM of another game of this board needs no restart, the settle makes
+ *  Set by ra_patch_pick_other_board(): main.c switches the core and starts the game
+ *  there. The newest pick wins: a later pick replaces the target, any file that
+ *  streams to this core takes it back, until ra_patch_restart_commit() fixes it. A
+ *  known ROM of another game of this board needs no core switch, the settle makes
  *  it the game in place. */
 const ra_game_t *ra_patch_restart_to(void);
 
@@ -145,20 +158,19 @@ const ra_game_t *ra_patch_restart_to(void);
  *  game of another board than the running core's. Menu task.
  *
  *  That game becomes ra_patch_restart_to(), in place of a pending one, and nothing
- *  streams to this core. While a restart is committed it is dropped instead, the
+ *  streams to this core. While a switch is committed it is dropped instead, the
  *  switch under way comes first. False, and nothing changes, when the board is not
- *  known or the file is no table game's or one of this board: it streams as usual,
- *  during a committed restart only if that switch fails. */
+ *  known or the file is no table game's or one of this board: it streams as usual. */
 bool ra_patch_pick_other_board(const char *name);
 
 /** @brief Fixes the target g right before the marker is written, under the card lock. com_task.
  *
- *  From here picks no longer change it, until the Pico restarts or
- *  ra_patch_restart_cancel() runs. False when the target is no longer g: a pick
- *  changed it in this moment, and the restart starts over with the new one. */
+ *  From here picks no longer change it, until ra_patch_restart_cancel() runs after
+ *  the switch, or the Pico restarts. False when the target is no longer g: a pick
+ *  changed it in this moment, and the switch starts over with the new one. */
 bool ra_patch_restart_commit(const ra_game_t *g);
 
-/** @brief Drops the restart target and its commit: the core switch did not happen. Any task.
+/** @brief Drops the restart target and its commit: the core switch is done or did not happen. Any task.
  *
  *  The pick of another board is gone with it, a settle after it decides again from
  *  the ROM in the core. */

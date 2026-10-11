@@ -18,11 +18,13 @@
 #include <freertos/timers.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 #else
 #include <FreeRTOS.h>
 #include <timers.h>
 #include <task.h>
 #include <queue.h>
+#include <semphr.h>
 #endif
 
 #include "sdc.h"
@@ -918,8 +920,8 @@ static void menu_pop(void);
 /* ================ the Games page ================
    One line per game on the card, by title (games.c). OK on a line starts it: a game
    of this board streams its file to the core in place, one of another board needs a
-   core switch and a restart of the Pico, see restart_step() in main.c. The list is
-   read when the page opens and again when the card changed while it shows. */
+   core switch, see restart_step() in main.c. The list is read when the page opens
+   and again when the card changed while it shows. */
 static int games_list_length(void) {
   return (int)games_count();
 }
@@ -1651,6 +1653,76 @@ static void menu_handle_latin1(uint8_t code) {
   else          menu_debugf("menu_handle_latin1(%d)", code);
 }
 
+/* game20k: another core comes up without a restart of the Pico (main.c). The menu
+   task stops here, between two events: no drawing, no action, nothing of the old
+   core's menu in use, until com_task lets it go on (menu_resume(), menu_rebuild()).
+   The timers stop first, the dialog's and the key repeat's draw from the timer task. */
+static SemaphoreHandle_t menu_parked, menu_go_on;
+static bool menu_park_dropped;     // com_task stopped waiting, the event still in the queue goes by
+
+static void menu_park_here(void) {
+  vTaskSuspendAll();
+  bool dropped = menu_park_dropped;
+  menu_park_dropped = false;
+  xTaskResumeAll();
+  if(dropped) return;
+  menu_stop_repeat();
+  menu_timer_enable(false);
+  if(dialog_disappear_timer) xTimerStop(dialog_disappear_timer, portMAX_DELAY);
+  osd_enable(OSD_INVISIBLE);
+  vTaskSuspendAll();               // com_task gives up or takes this, never half of each
+  dropped = menu_park_dropped;
+  menu_park_dropped = false;
+  if(!dropped) xSemaphoreGive(menu_parked);
+  xTaskResumeAll();
+  if(!dropped) xSemaphoreTake(menu_go_on, portMAX_DELAY);
+}
+
+bool menu_park(void) {
+  long msg = MENU_EVENT_PARK;
+  if(!menu_handle) return true;    // no menu task, nothing to stop
+  if(xQueueSendToBack(menu_queue, &msg, pdMS_TO_TICKS(500)) != pdTRUE) return false;
+  if(xSemaphoreTake(menu_parked, pdMS_TO_TICKS(3000)) == pdTRUE) return true;
+  vTaskSuspendAll();
+  bool parked = xSemaphoreTake(menu_parked, 0) == pdTRUE;
+  if(!parked) menu_park_dropped = true;
+  xTaskResumeAll();
+  if(!parked) menu_debugf("the menu task did not stop within 3 s");
+  return parked;
+}
+
+void menu_resume(void) {
+  if(menu_handle) xSemaphoreGive(menu_go_on);
+}
+
+/* The menu of the new cfg, as menu_init() builds it at the start: the variables
+   with their defaults sent to the core, the init action (the core's ini), the
+   root menu. The old stack and variables go first, they point into the freed
+   config or mean something else to the new core. Keys pressed meanwhile were
+   meant for the old menu. */
+void menu_rebuild(void) {
+  if(!menu_handle) { menu_init(); return; }
+  while(menu_state) {
+    menu_state_t *m = menu_state;
+    menu_state = m->prev;
+    vPortFree(m);
+  }
+  while(variables) {
+    menu_variable_t *v = variables;
+    variables = v->next;
+    vPortFree(v);
+  }
+  memset(&fsel_state, 0, sizeof(fsel_state));
+  if(cfg) {
+    menu_setup_variables();
+    sys_run_action_by_name("init");
+    menu_goto(cfg->menu);
+  }
+  sys_set_leds(0x00);
+  xQueueReset(menu_queue);
+  menu_resume();
+}
+
 static void menu_task(__attribute__((unused)) void *parms) {
   menu_debugf("task running");
 
@@ -1661,7 +1733,9 @@ static void menu_task(__attribute__((unused)) void *parms) {
     xQueueReceive(menu_queue, &cmd, 0xffffffffUL);
     menu_debugf("command %04lx", cmd);
 
-    if(cmd == MENU_EVENT_SYSTEM) {
+    if(cmd == MENU_EVENT_PARK)
+      menu_park_here();
+    else if(cmd == MENU_EVENT_SYSTEM) {
       menu_debugf("system menu requested");
       menu_dialog_close();
       
@@ -1691,9 +1765,9 @@ static void menu_task(__attribute__((unused)) void *parms) {
 #endif
 
     if(cmd == MENU_EVENT_RA_RESTART) {
-      // game20k: the game picked runs on another board, main.c loads its core and
-      // restarts the Pico into it in a few seconds. A game picked on the Games page
-      // goes first. A game of this board needs neither, it streams in place
+      // game20k: the game picked runs on another board, main.c loads its core in
+      // a few seconds. A game picked on the Games page goes first. A game of this
+      // board needs no core switch, it streams in place
       const ra_game_t *g = ra_patch_restart_to();
       games_pick_t pk;
       char message[80];
@@ -1795,6 +1869,10 @@ void menu_init(void) {
   // message queue from USB to OSD
   menu_queue = xQueueCreate(10, sizeof( long ) );
   
+  // game20k: for menu_park()
+  menu_parked = xSemaphoreCreateBinary();
+  menu_go_on  = xSemaphoreCreateBinary();
+
   // start a thread for the on screen display. game20k: 6 KB of stack, about three times
   // what the menu used on the Pico with every page open
   xTaskCreate(menu_task, (char *)"menu_task", 1536, NULL, configMAX_PRIORITIES-3, &menu_handle);

@@ -1266,6 +1266,27 @@ void sdc_set_cwd(int drive, char *path) {
   cwd[drive] = StrDup(path);  
 }
 
+/* game20k: another core came up without a restart of the Pico (main.c). Every
+   image of the old core is closed and its name and folder forgotten, as at the
+   start, and the core is told nothing: the new one knows none of them, the init
+   action of its menu names its own. A ROM stream cut here ends without a settle,
+   ra_patch_new_core() drops it. Caller holds sdc_lock. */
+void sdc_forget_images(void) {
+  for(int d = 0; d < MAX_DRIVES + MAX_IMAGES; d++) {
+    if(fil[d].flag) f_close(&fil[d]);
+    memset(&fil[d], 0, sizeof(FIL));
+    if(d < MAX_DRIVES && lktbl[d]) {
+      vPortFree(lktbl[d]);
+      lktbl[d] = NULL;
+    }
+    if(image_name[d]) vPortFree(image_name[d]);
+    image_name[d] = NULL;
+    if(cwd[d]) vPortFree(cwd[d]);
+    cwd[d] = StrDup(CARD_MOUNTPOINT);
+  }
+  for(int i = 0; i < MAX_IMAGES; i++) image_bytes2send[i] = 0;
+}
+
 void sdc_mount_defaults(void) {
   sdc_debugf("Mounting all default images ...");
 

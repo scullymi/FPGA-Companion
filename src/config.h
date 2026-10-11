@@ -148,6 +148,7 @@ typedef struct {
 extern config_t *cfg;
 
 void config_init(void);
+void config_free(void);   // game20k: frees all of cfg, for the config of the next core
 config_action_t *config_get_action(const char *);
 void config_dump(void);
 const char *config_menuentry_get_type_str(config_menu_entry_t *);
