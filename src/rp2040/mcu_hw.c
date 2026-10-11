@@ -582,8 +582,16 @@ static void irq_handler(void) {
   }
 }
 
+/* game20k: chip select stays low this long after the last byte. mcu_spi.v takes a
+   byte in the core clock after two synchronising stages, but reads the select
+   without them: a select that rises too soon after the last SCK edge loses that
+   byte, first on the cores with the slowest clock. */
+#define SPI_CS_HOLD_NS 200
+static uint32_t spi_cs_hold_cycles;
+
 void mcu_hw_spi_init(void) {
   debugf("Initializing SPI");
+  spi_cs_hold_cycles = (uint32_t)((uint64_t)clock_get_hz(clk_sys) * SPI_CS_HOLD_NS / 1000000000u);
 
   sem = xSemaphoreCreateMutex();
 
@@ -635,6 +643,7 @@ void mcu_hw_spi_begin() {
 }
 
 void mcu_hw_spi_end() {
+  busy_wait_at_least_cycles(spi_cs_hold_cycles);   // game20k: see SPI_CS_HOLD_NS
   gpio_put(SPI_CSN_PIN, 1);
   xSemaphoreGive(sem);
 }
