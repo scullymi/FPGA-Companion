@@ -25,7 +25,7 @@ uint32_t getTotalHeap(void);  /* mcu_hw.c: the SDK heap, all of it */
 #include <string.h>
 #include "pico/time.h"
 #include "hardware/watchdog.h"   /* the game to start after a restart, see restart_step() */
-#include "../ftpd.h"             /* a restart waits for the uploads that run */
+#include "../ftpd.h"             /* the uploads a restart would cut, for the log */
 #include "../games.h"            /* the Games page's pick and the start game */
 #include "../menus.h"            /* the menus of game20k's cores */
 
@@ -338,10 +338,8 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 
 /* A game of another board, e.g. galaga.rom picked in the Pac-Man core
    (ra_patch_pick_other_board()), needs its core. The menu says so for a few
-   seconds. Unlocks still in the handover reach the card, leaderboard results the
-   server, as far as that takes at most 10 s, a ROM picked meanwhile ends its stream
-   (each within 10 s of its start), and a running FTP upload then stops after its
-   chunk.
+   seconds, and a ROM picked meanwhile ends its stream (each within 10 s of its
+   start). Unlocks, leaderboard results and FTP uploads go on across the switch.
    The game's id goes into the watchdog's scratch registers 0 to 3, which the SDK
    leaves to the program and which a reboot keeps. The core pulls RECONFIG_N
    (Z = 0xA5, see game20k_top.sv) and the FPGA loads the next core of the flash
@@ -366,8 +364,7 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 #define RESTART_MAGIC   0x67323072u          /* "g20r" */
 #define RESTART_FILE    0x67323066u          /* "g20f" */
 #define RESTART_SHOW_MS 3000                 /* the menu's message first */
-#define RESTART_WAIT_MS 10000                /* then at most this for unlocks and results */
-#define RESTART_STOP_MS 12000                /* then this for an upload to stop after its chunk, its data socket times out after 10 s */
+#define RESTART_WAIT_MS 10000                /* then at most this for a ROM stream to end */
 #define SWITCH_HOPS     7                    /* the 8 MB flash holds at most 8 cores of 1 MB */
 /* game20k: the hops word in scratch register 3: the switches so far in bits 0 to 7
    (a file's board above them in 8 to 15), the board the pick was made in in 16 to
@@ -451,16 +448,12 @@ static bool core_up(void);
    it ends, the next one reads the new core. */
 static bool restart_step(void) {
   static TickType_t start;
-  static uintptr_t  shown;           /* the target the message and the wait are for, 0 for none */
+  static uintptr_t  shown;           /* the target the message is for, 0 for none */
   // a pick on the Games page goes first, else the game a ROM picked under "ROM set" asks for
   games_pick_t pk;
   bool file = games_picked(&pk);
   const ra_game_t *g = file ? NULL : ra_patch_restart_to();
   if(!file && !g) {                  /* none, or the ROM picked last took it back */
-    if(shown) {
-      ftpd_hold_uploads(false);
-      ftpd_stop_uploads(false);
-    }
     start = 0;
     shown = 0;
     return false;
@@ -470,39 +463,23 @@ static bool restart_step(void) {
   unsigned char board = file ? pk.board : g->board;
   const char *title = file ? pk.title : g->title;
   TickType_t now = xTaskGetTickCount();
-  // game20k: this board, no restart. A wait for another target ends with it
+  // game20k: this board, no core switch. A message for another target ends with it
   if(board == ram_mirror_board) {
-    if(shown) {
-      ftpd_hold_uploads(false);
-      ftpd_stop_uploads(false);
-    }
     start = 0;
     shown = 0;
     play_here(file, &pk, g);
     return false;
   }
-  if(!start || key != shown) {       /* a new target: its message, and the wait starts over */
+  if(!start || key != shown) {       /* a new target: its message first */
     start = now ? now : 1;
     shown = key;
-    ftpd_hold_uploads(true);         /* no new upload, the restart would cut it */
     menu_notify(MENU_EVENT_RA_RESTART);
     return false;
   }
-  TickType_t since = now - start;
-  if(since < pdMS_TO_TICKS(RESTART_SHOW_MS)) return false;
-  // unlocks and leaderboard results live in RAM until the card or the server
-  // has them, an upload runs until its file is closed, a ROM picked last streams
-  // until its settle decides the target: wait for them, but not for ever
-  bool late = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS);
-  bool cut  = since >= pdMS_TO_TICKS(RESTART_SHOW_MS + RESTART_WAIT_MS + RESTART_STOP_MS);
-  if((ra_queue_in_transit() || ra_task_lboard_pending()) && !late)
-    return false;
+  if(now - start < pdMS_TO_TICKS(RESTART_SHOW_MS)) return false;
+  // a ROM picked last streams until its settle decides the target. Unlocks,
+  // leaderboard results and FTP uploads go on across the switch
   if(ra_patch_rom_streaming(RESTART_WAIT_MS))   /* its own limit: also a pick made late wins */
-    return false;
-  // an upload still running then stops after its chunk with 426, its file closed
-  // whole: wait for that too, only a stalled one is cut
-  if(late) ftpd_stop_uploads(true);
-  if(ftpd_uploads() && !cut)
     return false;
   if(buttons_held()) return false;   /* read again under the lock, this spares the menu a stop */
   // game20k: the menu task stops before the card lock, it may need the card to end
@@ -510,40 +487,37 @@ static bool restart_step(void) {
   // menu task that does not stop in time leaves the way with a restart
   bool parked = menu_park();
   // the last checks under the card lock, where they hold until the switch: every
-  // card operation ends whole, an upload opens its file and a ROM starts to stream
-  // only under the lock, S1 and S2 are read right before Z and not before a wait
-  // for the lock. The target is fixed last, a pick can change it until then
+  // card operation ends whole, a ROM starts to stream only under the lock, S1 and
+  // S2 are read right before Z and not before a wait for the lock. The target is
+  // fixed last, a pick can change it until then
   sdc_lock();
   bool held = board != ram_mirror_board && buttons_held();
-  bool busy = ra_patch_rom_streaming(RESTART_WAIT_MS) || (!cut && ftpd_uploads());
-  if(held || busy || !(file ? games_pick_commit(pk.seq) : ra_patch_restart_commit(g))) {
+  if(held || ra_patch_rom_streaming(RESTART_WAIT_MS) ||
+     !(file ? games_pick_commit(pk.seq) : ra_patch_restart_commit(g))) {
     sdc_unlock();
     if(parked) menu_resume();
     return false;
   }
-  if(!parked && ftpd_uploads())
-    debugf("FTP: the restart cuts %u upload(s) in the middle", ftpd_uploads());
-  if(!parked && (ra_queue_in_transit() || ra_task_lboard_pending()))
-    debugf("RA: restart with %u unlocks and %u leaderboard results not yet out",
-           ra_queue_in_transit(), ra_task_lboard_pending());
   if(file) restart_mark_file(pk.crc, board, (uint32_t)ram_mirror_board << 16);
   else     restart_mark(g, (uint32_t)ram_mirror_board << 16);
+  start = 0;
+  shown = 0;
   if(parked) {
     // the way of ring_hops() from the running core, the marker in the scratch
     // registers carries it on if a core does not come up
     sdc_unlock();
     debugf("Core switch for %s, board %u, without a restart", title, board);
     if(core_up()) {
-      start = 0;
-      shown = 0;
-      ftpd_hold_uploads(false);
-      ftpd_stop_uploads(false);
       if(file) games_pick_cancel();
       else     ra_patch_restart_cancel();
       return true;
     }
   } else {
-    debugf("Core switch for %s, board %u", title, board);
+    // the restart cuts what is not on the card yet
+    if(ftpd_uploads() || ra_queue_in_transit() || ra_task_lboard_pending())
+      debugf("Core switch: the restart cuts %u FTP upload(s), %u unlocks and %u leaderboard results not yet out",
+             ftpd_uploads(), ra_queue_in_transit(), ra_task_lboard_pending());
+    debugf("Core switch for %s, board %u, with a restart", title, board);
     if(core_switch()) mcu_hw_reset();
     // the bitstream has no switch: the game goes on, and the menu says why
     watchdog_hw->scratch[0] = 0;
@@ -551,10 +525,6 @@ static bool restart_step(void) {
   }
   debugf("Core switch: the core did not reload, its bitstream does not know Z");
   if(parked) menu_resume();
-  start = 0;
-  shown = 0;
-  ftpd_hold_uploads(false);
-  ftpd_stop_uploads(false);
   if(file) games_pick_cancel();
   else     ra_patch_restart_cancel();
   menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
@@ -595,9 +565,9 @@ static void start_game(void) {
   marker[2] = ~(RESTART_FILE ^ crc ^ b);
 }
 
-/* At the start, before the images are mounted: the game a restart was for. After
-   a core switch the board of the core that came up decides: the game's board
-   loads its ROM, another one switches on to the next core of the ring. */
+/* Before the images are mounted, at the start and after a core switch: the game
+   the switch was for, once ring_hops() reached its board. That board loads its ROM
+   instead of image0 of the ini, any other board keeps the ini's ROM. */
 static void restart_rom(void) {
   uint32_t magic = marker[0], id = marker[1], check = marker[2], hops = marker[3];
   const ra_game_t *g = NULL;
@@ -621,37 +591,9 @@ static void restart_rom(void) {
   bool back = hops & HOPS_BACK;
   unsigned char target = back ? HOPS_ORIGIN(hops) : board;
   if(target != ram_mirror_board) {
-    // a core of a third board: on to the next one, as long as the ring can be
-    // longer. Without a valid header the board is unknown, nothing to compare
-    if(!ram_mirror_board) {
-      debugf("Core switch: no core of board %u for %s, the header has no board", target, title);
-      return;
-    }
-    if(HOPS_COUNT(hops) >= SWITCH_HOPS) {
-      if(back || !HOPS_ORIGIN(hops)) {
-        debugf("Core switch: no core of board %u for %s after %lu switches", target, title,
-               (unsigned long)HOPS_COUNT(hops));
-        return;
-      }
-      // a whole round without the game's board: back to the board it was picked in
-      debugf("Core switch: no core of board %u for %s, back to board %u", board, title, HOPS_ORIGIN(hops));
-      hops = HOPS_BACK | (hops & 0xff0000u);
-      target = HOPS_ORIGIN(hops);
-    } else
-      hops++;
-    if(g) restart_mark(g, hops);
-    else  restart_mark_file(id, board, hops);
-    for(;;) {                    /* S1 and S2 read under the lock, right before Z */
-      sdc_lock();
-      if(!buttons_held()) break;
-      sdc_unlock();
-      vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    debugf("Core switch for %s, board %u, on from board %u", title, target, ram_mirror_board);
-    if(core_switch()) mcu_hw_reset();
-    watchdog_hw->scratch[0] = 0;
-    sdc_unlock();
-    debugf("Core switch: the core did not reload, its bitstream does not know Z");
+    // ring_hops() went as far as the way goes: no valid header, a bitstream without
+    // Z, or the whole ring without the game's board
+    debugf("Core switch: no core of board %u for %s, the ini's ROM", target, title);
     return;
   }
   if(back) {
