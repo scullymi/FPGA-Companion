@@ -910,7 +910,7 @@ static void menu_pop(void);
 /* ================ the Games page ================
    One line per game on the card, by title (games.c). OK on a line starts it: a game
    of this board streams its file to the core in place, one of another board needs a
-   core switch, see restart_step() in main.c. The list is read when the page opens
+   core switch, see switch_step() in main.c. The list is read when the page opens
    and again when the card changed while it shows. */
 static int games_list_length(void) {
   return (int)games_count();
@@ -947,13 +947,13 @@ static void games_list_select(int line) {
   if(!games_item((unsigned)line, &it)) return;
   // the file that runs already, with no restart pending: nothing to start, the menu closes
   if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT) && games_name_crc(img) == it.crc &&
-     !ra_patch_restart_to() && !games_picked(&pk)) {
+     !ra_patch_switch_to() && !games_picked(&pk)) {
     menu_timer_enable(false);
     osd_enable(OSD_INVISIBLE);
     return;
   }
   // main.c takes it from here. A game of this board streams at once and the menu
-  // closes onto it, a core switch says so, see MENU_EVENT_RA_RESTART
+  // closes onto it, a core switch says so, see MENU_EVENT_CORE_SWITCH
   games_pick(&it);
   menu_timer_enable(false);
   if(it.board == ra_game_board()) {
@@ -1291,7 +1291,7 @@ static void menu_fileselector_select(sdc_dir_entry_t *entry) {
   } else {
     // game20k: the ROM file of a known game of another board, e.g. galaga.rom in
     // the Pac-Man core, needs that board's core. Nothing streams to this one:
-    // main.c switches the core and starts the game there, see restart_step()
+    // main.c switches the core and starts the game there, see switch_step()
     if(drive == MAX_DRIVES + RA_PATCH_ROM_IMAGE) {
       // a file without a footer is an old one, it neither switches nor streams
       games_footer_t ft;
@@ -1765,11 +1765,11 @@ static void menu_task(__attribute__((unused)) void *parms) {
     } else
 #endif
 
-    if(cmd == MENU_EVENT_RA_RESTART) {
+    if(cmd == MENU_EVENT_CORE_SWITCH) {
       // game20k: the game picked runs on another board, main.c loads its core in
       // a few seconds. A game picked on the Games page goes first. A game of this
       // board needs no core switch, it streams in place
-      const ra_game_t *g = ra_patch_restart_to();
+      const ra_game_t *g = ra_patch_switch_to();
       games_pick_t pk;
       char message[80];
       if(games_picked(&pk)) {
@@ -1804,8 +1804,7 @@ static void menu_task(__attribute__((unused)) void *parms) {
                            pdMS_TO_TICKS(5000));
     } else
     if(cmd == MENU_EVENT_NETWORK_GOT_IP || cmd == MENU_EVENT_NETWORK_DISCONNECTED) {
-      // game20k: no popup. Address and WiFi name are under Status, and the popup
-      // came after every restart of the Pico, a core switch among them
+      // game20k: no popup. Address and WiFi name are under Status
     } else
   if(cmd == MENU_EVENT_USB_MOUNTED) {
       menu_debugf("USB mount event");

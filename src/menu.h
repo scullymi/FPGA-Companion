@@ -31,7 +31,7 @@
 #define MENU_EVENT_BLUETOOTH_PIN_CODE_REQUEST 17
 #define MENU_EVENT_NETWORK_GOT_IP       18
 #define MENU_EVENT_NETWORK_DISCONNECTED 19
-#define MENU_EVENT_RA_RESTART    20  // game20k: a game of another board, its core loads in a few seconds
+#define MENU_EVENT_CORE_SWITCH    20  // game20k: a game of another board, its core loads in a few seconds
 #define MENU_EVENT_CORE_SWITCH_FAILED 21  // game20k: the running bitstream does not know the core switch
 #define MENU_EVENT_ROM_OLD       22  // game20k: a ROM file without a footer, nothing was sent
 #define MENU_EVENT_ROM_DAMAGED   23  // game20k: the ROM streamed is not what its footer says, the core stays in reset

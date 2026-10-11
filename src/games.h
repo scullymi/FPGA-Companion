@@ -15,11 +15,11 @@
 /** @brief One line of the page, a copy for the menu. */
 typedef struct {
   char          title[GAMES_TITLE_MAX + 1];   /**< the footer's title, else the file name, cut */
-  uint32_t      crc;                          /**< CRC-32 of the file name, what a restart carries */
+  uint32_t      crc;                          /**< CRC-32 of the file name, what a core switch carries */
   unsigned char board;                        /**< board id from the footer */
 } games_item_t;
 
-/** @brief The game picked on the page, until the restart takes it. */
+/** @brief The game picked on the page, until the core switch takes it. */
 typedef struct {
   unsigned      seq;                          /**< counts the picks, tells a newer one apart */
   uint32_t      crc;                          /**< CRC-32 of the file name in the card's root */
@@ -45,14 +45,14 @@ bool games_item(unsigned i, games_item_t *out);
  *  It stays off the list until the card changes. */
 void games_damaged(const char *name);
 
-/** @brief The CRC-32 of a file name, as the list and the restart marker carry it. */
+/** @brief The CRC-32 of a file name, as the list and the switch marker carry it. */
 uint32_t games_name_crc(const char *name);
 
-/** @brief Picks a game for restart_step() in main.c: the newest pick wins until it is committed. Menu task. */
+/** @brief Picks a game for switch_step() in main.c: the newest pick wins until it is committed. Menu task. */
 void games_pick(const games_item_t *it);
 /** @brief Copies the pending pick, false when there is none. Any task. */
 bool games_picked(games_pick_t *out);
-/** @brief Fixes the pick seq for the restart, false when a newer one came or none is pending. */
+/** @brief Fixes the pick seq for the core switch, false when a newer one came or none is pending. */
 bool games_pick_commit(unsigned seq);
 /** @brief Drops the pick, e.g. when the core switch failed. */
 void games_pick_cancel(void);

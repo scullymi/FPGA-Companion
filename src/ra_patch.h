@@ -149,15 +149,15 @@ bool ra_patch_foreign_rom(void);
  *
  *  Set by ra_patch_pick_other_board(): main.c switches the core and starts the game
  *  there. The newest pick wins: a later pick replaces the target, any file that
- *  streams to this core takes it back, until ra_patch_restart_commit() fixes it. A
+ *  streams to this core takes it back, until ra_patch_switch_commit() fixes it. A
  *  known ROM of another game of this board needs no core switch, the settle makes
  *  it the game in place. */
-const ra_game_t *ra_patch_restart_to(void);
+const ra_game_t *ra_patch_switch_to(void);
 
 /** @brief A ROM file picked in the menu: true when it is the card file of a table
  *  game of another board than the running core's. Menu task.
  *
- *  That game becomes ra_patch_restart_to(), in place of a pending one, and nothing
+ *  That game becomes ra_patch_switch_to(), in place of a pending one, and nothing
  *  streams to this core. While a switch is committed it is dropped instead, the
  *  switch under way comes first. False, and nothing changes, when the board is not
  *  known or the file is no table game's or one of this board: it streams as usual. */
@@ -165,16 +165,16 @@ bool ra_patch_pick_other_board(const char *name);
 
 /** @brief Fixes the target g right before the marker is written, under the card lock. com_task.
  *
- *  From here picks no longer change it, until ra_patch_restart_cancel() runs after
+ *  From here picks no longer change it, until ra_patch_switch_cancel() runs after
  *  the switch, or the Pico restarts. False when the target is no longer g: a pick
  *  changed it in this moment, and the switch starts over with the new one. */
-bool ra_patch_restart_commit(const ra_game_t *g);
+bool ra_patch_switch_commit(const ra_game_t *g);
 
-/** @brief Drops the restart target and its commit: the core switch is done or did not happen. Any task.
+/** @brief Drops the switch target and its commit: the core switch is done or did not happen. Any task.
  *
  *  The pick of another board is gone with it, a settle after it decides again from
  *  the ROM in the core. */
-void ra_patch_restart_cancel(void);
+void ra_patch_switch_cancel(void);
 
 
 /** @brief The id the server resolved the hash of the game of generation gen to. RA task, after r=gameid.

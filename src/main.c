@@ -24,7 +24,7 @@ uint32_t getTotalHeap(void);  /* mcu_hw.c: the SDK heap, all of it */
 #include "../ra_mac.h"
 #include <string.h>
 #include "pico/time.h"
-#include "hardware/watchdog.h"   /* the game to start after a restart, see restart_step() */
+#include "hardware/watchdog.h"   /* the way of a core switch across a restart, see switch_step() */
 #include "../ftpd.h"             /* the uploads a restart would cut, for the log */
 #include "../games.h"            /* the Games page's pick and the start game */
 #include "../menus.h"            /* the menus of game20k's cores */
@@ -385,26 +385,26 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
    (Z = 0xA5, see game20k_top.sv) and the FPGA loads the next core of the flash
    ring (fpga/common/slots.txt). ring_hops() goes on to the board wanted and
    core_up() sets the core up as the start does: menu, ini, the game's ROM. WiFi,
-   the RetroAchievements login, FTP and telnet stay. restart_rom() loads that
+   the RetroAchievements login, FTP and telnet stay. switch_rom() loads that
    game's ROM instead of image0 of the ini, once: power off brings back the saved
    game, "Save settings" keeps the new one, as before. The newest pick wins until
-   the marker is written, see ra_patch_restart_to(). Power on loads the first core
+   the marker is written, see ra_patch_switch_to(). Power on loads the first core
    of the ring again.
    The Pico restarts instead when the menu task does not stop in time, and when a
    core of the way does not come up: then it waits for the core at the start as
-   after power on, restart_take() moves the marker out at the very start, and
+   after power on, marker_take() moves the marker out at the very start, and
    ring_hops() goes on from there.
-   A game picked on the Games page goes the same way, as a file: magic RESTART_FILE,
+   A game picked on the Games page goes the same way, as a file: magic SWITCH_FILE,
    the CRC-32 of its file name instead of the id, and its board with the hops, so a
    game without a row in the table (no achievement set) starts as well.
    A game of the running core's board needs no core switch, see play_here(). A known
    ROM of another game of this board picked under "ROM set", e.g. puckman.rom in
    the Pac-Man core, never comes here: its stream is all it takes, and the settle
    at its end makes it the game (ra_patch_new_game()). */
-#define RESTART_MAGIC   0x67323072u          /* "g20r" */
-#define RESTART_FILE    0x67323066u          /* "g20f" */
-#define RESTART_SHOW_MS 3000                 /* the menu's message first */
-#define RESTART_WAIT_MS 10000                /* then at most this for a ROM stream to end */
+#define SWITCH_MAGIC   0x67323072u          /* "g20r" */
+#define SWITCH_FILE    0x67323066u          /* "g20f" */
+#define SWITCH_SHOW_MS 3000                 /* the menu's message first */
+#define SWITCH_WAIT_MS 10000                /* then at most this for a ROM stream to end */
 #define SWITCH_HOPS     7                    /* the 8 MB flash holds at most 8 cores of 1 MB */
 /* game20k: the hops word in scratch register 3: the switches so far in bits 0 to 7
    (a file's board above them in 8 to 15), the board the pick was made in in 16 to
@@ -417,22 +417,22 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
 /* The game for the next start, by its row in ra_games.c: a game and its regional sets
    share their RetroAchievements id (gng and makaimurg), the row tells them apart.
    hops counts the core switches on the way to its board, the check covers it too. */
-static void restart_mark(const ra_game_t *g, uint32_t hops) {
+static void switch_mark(const ra_game_t *g, uint32_t hops) {
   uint32_t row = ra_games_row(g);
-  watchdog_hw->scratch[0] = RESTART_MAGIC;
+  watchdog_hw->scratch[0] = SWITCH_MAGIC;
   watchdog_hw->scratch[1] = row;
   watchdog_hw->scratch[3] = hops;
-  watchdog_hw->scratch[2] = ~(RESTART_MAGIC ^ row ^ hops);
+  watchdog_hw->scratch[2] = ~(SWITCH_MAGIC ^ row ^ hops);
 }
 
 /* A file for the next start, by the CRC-32 of its name in the card's root, with
    the board its core has in scratch register 3 above the hops. */
-static void restart_mark_file(uint32_t crc, unsigned char board, uint32_t hops) {
+static void switch_mark_file(uint32_t crc, unsigned char board, uint32_t hops) {
   uint32_t b = hops | (uint32_t)board << 8;
-  watchdog_hw->scratch[0] = RESTART_FILE;
+  watchdog_hw->scratch[0] = SWITCH_FILE;
   watchdog_hw->scratch[1] = crc;
   watchdog_hw->scratch[3] = b;
-  watchdog_hw->scratch[2] = ~(RESTART_FILE ^ crc ^ b);
+  watchdog_hw->scratch[2] = ~(SWITCH_FILE ^ crc ^ b);
 }
 
 /* S1 and S2 sit on the FPGA's MODE pins (MODE0 and MODE1, schematic 3923). One
@@ -465,19 +465,19 @@ static bool core_switch(void) {
 static void play_here(bool file, const games_pick_t *pk, const ra_game_t *g) {
   const int drive = MAX_DRIVES + RA_PATCH_ROM_IMAGE;
   char path[FF_LFN_BUF + 6], name[FF_LFN_BUF + 1];   /* "/sd/" plus a file name, and the name */
-  if(!(file ? games_pick_commit(pk->seq) : ra_patch_restart_commit(g))) return;
+  if(!(file ? games_pick_commit(pk->seq) : ra_patch_switch_commit(g))) return;
   bool found = file ? games_find(pk->crc, path, sizeof(path))
                     : snprintf(path, sizeof(path), "%s/%s.rom", CARD_MOUNTPOINT, g->set) < (int)sizeof(path);
   int r = 1;
   if(found) {
-    // cwd and name as restart_rom() sets them for a start, "Save settings" keeps them.
+    // cwd and name as switch_rom() sets them for a start, "Save settings" keeps them.
     // sdc_image_open() frees the name it holds, so it gets a copy
     sdc_set_default(drive, path);
     snprintf(name, sizeof(name), "%s", sdc_get_image_name(drive) ? sdc_get_image_name(drive) : "");
     r = name[0] ? sdc_image_open(drive, name) : 1;
   }
   if(file) games_pick_cancel();
-  else     ra_patch_restart_cancel();
+  else     ra_patch_switch_cancel();
   if(r) debugf("%s: %s not streamed (%d), the game goes on", file ? "Games" : "RA", found ? path : "the file", r);
   else  debugf("%s: %s streams to the core, no restart", file ? "Games" : "RA", path);
 }
@@ -486,13 +486,13 @@ static bool core_up(void);
 
 /* Returns true when another core came up without a restart: the poll that called
    it ends, the next one reads the new core. */
-static bool restart_step(void) {
+static bool switch_step(void) {
   static TickType_t start;
   static uintptr_t  shown;           /* the target the message is for, 0 for none */
   // a pick on the Games page goes first, else the game a ROM picked under "ROM set" asks for
   games_pick_t pk;
   bool file = games_picked(&pk);
-  const ra_game_t *g = file ? NULL : ra_patch_restart_to();
+  const ra_game_t *g = file ? NULL : ra_patch_switch_to();
   if(!file && !g) {                  /* none, or the ROM picked last took it back */
     start = 0;
     shown = 0;
@@ -513,13 +513,13 @@ static bool restart_step(void) {
   if(!start || key != shown) {       /* a new target: its message first */
     start = now ? now : 1;
     shown = key;
-    menu_notify(MENU_EVENT_RA_RESTART);
+    menu_notify(MENU_EVENT_CORE_SWITCH);
     return false;
   }
-  if(now - start < pdMS_TO_TICKS(RESTART_SHOW_MS)) return false;
+  if(now - start < pdMS_TO_TICKS(SWITCH_SHOW_MS)) return false;
   // a ROM picked last streams until its settle decides the target. Unlocks,
   // leaderboard results and FTP uploads go on across the switch
-  if(ra_patch_rom_streaming(RESTART_WAIT_MS))   /* its own limit: also a pick made late wins */
+  if(ra_patch_rom_streaming(SWITCH_WAIT_MS))   /* its own limit: also a pick made late wins */
     return false;
   if(buttons_held()) return false;   /* read again under the lock, this spares the menu a stop */
   // game20k: the menu task stops before the card lock, it may need the card to end
@@ -532,14 +532,14 @@ static bool restart_step(void) {
   // fixed last, a pick can change it until then
   sdc_lock();
   bool held = board != ram_mirror_board && buttons_held();
-  if(held || ra_patch_rom_streaming(RESTART_WAIT_MS) ||
-     !(file ? games_pick_commit(pk.seq) : ra_patch_restart_commit(g))) {
+  if(held || ra_patch_rom_streaming(SWITCH_WAIT_MS) ||
+     !(file ? games_pick_commit(pk.seq) : ra_patch_switch_commit(g))) {
     sdc_unlock();
     if(parked) menu_resume();
     return false;
   }
-  if(file) restart_mark_file(pk.crc, board, (uint32_t)ram_mirror_board << 16);
-  else     restart_mark(g, (uint32_t)ram_mirror_board << 16);
+  if(file) switch_mark_file(pk.crc, board, (uint32_t)ram_mirror_board << 16);
+  else     switch_mark(g, (uint32_t)ram_mirror_board << 16);
   start = 0;
   shown = 0;
   if(parked) {
@@ -549,7 +549,7 @@ static bool restart_step(void) {
     debugf("Core switch for %s, board %u, without a restart", title, board);
     if(core_up()) {
       if(file) games_pick_cancel();
-      else     ra_patch_restart_cancel();
+      else     ra_patch_switch_cancel();
       return true;
     }
   } else {
@@ -566,7 +566,7 @@ static bool restart_step(void) {
   debugf("Core switch: the core did not reload, its bitstream does not know Z");
   if(parked) menu_resume();
   if(file) games_pick_cancel();
-  else     ra_patch_restart_cancel();
+  else     ra_patch_switch_cancel();
   menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
   // the ROM now in the core decides again: a known ROM of another game of this
   // board, streamed while the switch was the target, becomes the game. A stream
@@ -575,51 +575,51 @@ static bool restart_step(void) {
   return false;
 }
 
-/* The marker as the Pico found it at its start. restart_take() moves it out of
+/* The marker as the Pico found it at its start. marker_take() moves it out of
    the scratch registers before the wait for the FPGA: a boot that never reaches
-   restart_rom(), because no core comes up, must not leave it for the next core
+   switch_rom(), because no core comes up, must not leave it for the next core
    that shows up, it would switch that one away. */
 static uint32_t marker[4];
 
-static void restart_take(void) {
+static void marker_take(void) {
   for(int i = 0; i < 4; i++) marker[i] = watchdog_hw->scratch[i];
   watchdog_hw->scratch[0] = 0;
 }
 
 /* At power-on, when no restart left a marker: the start game Save settings keeps
-   (games.c) becomes the marker restart_rom() follows, a core switch first when its
+   (games.c) becomes the marker switch_rom() follows, a core switch first when its
    board is not the core that came up. Once per power-on: every restart of the Pico
    is a watchdog reboot, and a missing or old start game leaves the ini's ROM. */
 static void start_game(void) {
   char name[FF_LFN_BUF + 1];
   games_footer_t ft;
-  if((marker[0] == RESTART_MAGIC || marker[0] == RESTART_FILE) &&
+  if((marker[0] == SWITCH_MAGIC || marker[0] == SWITCH_FILE) &&
      marker[2] == ~(marker[0] ^ marker[1] ^ marker[3]))
     return;
   if(watchdog_caused_reboot() || !games_start_file(name, sizeof(name), &ft)) return;
   debugf("Games: start game %s, board %u", name, ft.board);
   uint32_t crc = games_name_crc(name), b = (uint32_t)ft.board << 8;
-  marker[0] = RESTART_FILE;
+  marker[0] = SWITCH_FILE;
   marker[1] = crc;
   marker[3] = b;
-  marker[2] = ~(RESTART_FILE ^ crc ^ b);
+  marker[2] = ~(SWITCH_FILE ^ crc ^ b);
 }
 
 /* Before the images are mounted, at the start and after a core switch: the game
    the switch was for, once ring_hops() reached its board. That board loads its ROM
    instead of image0 of the ini, any other board keeps the ini's ROM. */
-static void restart_rom(void) {
+static void switch_rom(void) {
   uint32_t magic = marker[0], id = marker[1], check = marker[2], hops = marker[3];
   const ra_game_t *g = NULL;
   unsigned char board;
   const char *title;
   if(check != ~(magic ^ id ^ hops)) return;
-  if(magic == RESTART_MAGIC) {
+  if(magic == SWITCH_MAGIC) {
     // id is the game's row in the table, several rows share an RA id
     if(!(g = ra_games_at(id))) return;
     board = g->board;
     title = g->title;
-  } else if(magic == RESTART_FILE) {
+  } else if(magic == SWITCH_FILE) {
     // id is the CRC of the file name, the board rides above the hops
     board = (unsigned char)(hops >> 8);
     hops &= ~0xff00u;
@@ -866,7 +866,7 @@ static void ram_mirror_poll(void) {
   // the banner, one character per poll in bytes 6 and 7
   banner_login();
   banner_lboard();
-  if(restart_step()) return;   /* another core came up, the next poll reads it */
+  if(switch_step()) return;   /* another core came up, the next poll reads it */
   banner_step(hdr_tx);
 
   /* Verdict: 0xA5 ok, otherwise the failed check. 0xE1 magic, 0xE2 layout, 0xE3
@@ -1007,14 +1007,14 @@ static void ram_mirror_poll(void) {
 /* game20k: a switch to a core of another board hops the ring here, right after the
    first look at the header and before anything of the core is set up (menu,
    settings, ROM): one start of the Pico for the whole way instead of one per hop.
-   The way is that of restart_rom(), back to the board of the pick after a whole
+   The way is that of switch_rom(), back to the board of the pick after a whole
    round without the game's board. Each hop pulls RECONFIG_N (Z), waits for the next
    core and its card and reads the new board. The marker in the scratch registers
    follows each hop, so a core that does not come up ends in a restart that goes on
-   from there as before. The marker in RAM ends at the board reached, restart_rom()
+   from there as before. The marker in RAM ends at the board reached, switch_rom()
    then loads the ROM or says why not. probe takes the verdict of the header of
    the last core loaded. True when another core came up.
-   A switch while a game runs comes here as well, see restart_step(): the marker
+   A switch while a game runs comes here as well, see switch_step(): the marker
    it wrote is the way, the first hop goes from the running core. */
 static bool ring_hops(unsigned char *probe) {
   uint32_t magic = marker[0], id = marker[1], hops = marker[3];
@@ -1022,10 +1022,10 @@ static bool ring_hops(unsigned char *probe) {
   unsigned char board;
   bool hopped = false;
   if(marker[2] != ~(magic ^ id ^ hops)) return false;
-  if(magic == RESTART_MAGIC) {
+  if(magic == SWITCH_MAGIC) {
     if(!(g = ra_games_at(id))) return false;
     board = g->board;
-  } else if(magic == RESTART_FILE) {
+  } else if(magic == SWITCH_FILE) {
     board = (unsigned char)(hops >> 8);
     hops &= ~0xff00u;
   } else
@@ -1035,7 +1035,7 @@ static bool ring_hops(unsigned char *probe) {
     if(!HOPS_ORIGIN(hops) && !HOPS_COUNT(hops)) hops |= (uint32_t)ram_mirror_board << 16;
     bool back = hops & HOPS_BACK;
     unsigned char target = back ? HOPS_ORIGIN(hops) : board;
-    // the board reached, no header, or the end of the way: restart_rom() takes over
+    // the board reached, no header, or the end of the way: switch_rom() takes over
     if(!ram_mirror_board || target == ram_mirror_board) break;
     // back at the board of the pick: the whole round had no core of the game's board,
     // and the way back ends right here
@@ -1051,8 +1051,8 @@ static bool ring_hops(unsigned char *probe) {
       target = HOPS_ORIGIN(hops);
     } else
       hops++;
-    if(g) restart_mark(g, hops);
-    else  restart_mark_file(id, board, hops);
+    if(g) switch_mark(g, hops);
+    else  switch_mark_file(id, board, hops);
     for(;;) {                    /* S1 and S2 read under the lock, right before Z */
       sdc_lock();
       if(!buttons_held()) break;
@@ -1060,7 +1060,7 @@ static bool ring_hops(unsigned char *probe) {
       vTaskDelay(pdMS_TO_TICKS(20));
     }
     debugf("Core switch for %s, board %u, on from board %u within this start", title, target, ram_mirror_board);
-    if(!core_switch()) {         /* the bitstream does not know Z: restart_rom() says so */
+    if(!core_switch()) {         /* the bitstream does not know Z: switch_rom() says so */
       sdc_unlock();
       watchdog_hw->scratch[0] = 0;
       return hopped;
@@ -1077,7 +1077,7 @@ static bool ring_hops(unsigned char *probe) {
     *probe = ram_mirror_probe();
     hopped = true;
   }
-  marker[3] = magic == RESTART_FILE ? hops | (uint32_t)board << 8 : hops;
+  marker[3] = magic == SWITCH_FILE ? hops | (uint32_t)board << 8 : hops;
   marker[2] = ~(magic ^ id ^ marker[3]);
   watchdog_hw->scratch[0] = 0;
   return hopped;
@@ -1150,7 +1150,7 @@ static void core_start(void) {
   // open disk images, either defaults set in sdc_init or
   // user configure ones from the ini file. This will also
   // start rom image transfers if specified in the ini file
-  restart_rom();            /* a game picked before a core switch goes first */
+  switch_rom();            /* a game picked before a core switch goes first */
   sdc_mount_defaults();
 
   // game20k: no ROM in the core, its file is missing, old or rejected: the
@@ -1207,7 +1207,7 @@ static void core_setup(unsigned char probe, TickType_t t0) {
          (unsigned long)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS));
 }
 
-/* game20k: the core switch without a restart of the Pico, from restart_step() with
+/* game20k: the core switch without a restart of the Pico, from switch_step() with
    the menu task parked and the way in the scratch registers. ring_hops() loads the
    cores of the way, core_setup() the last one. False when the running bitstream
    does not know Z: nothing changed, the card lock is free again. */
@@ -1238,8 +1238,8 @@ bool sys_core_changed(void) {
   }
   sdc_unlock();
   games_pick_cancel();
-  ra_patch_restart_cancel();
-  marker[0] = 0;                 /* no game picked: restart_rom() leaves the ini's ROM */
+  ra_patch_switch_cancel();
+  marker[0] = 0;                 /* no game picked: switch_rom() leaves the ini's ROM */
   ram_mirror_forget();
   core_setup(ram_mirror_probe(), t0);
   return true;
@@ -1249,7 +1249,7 @@ TaskHandle_t com_task_handle = NULL;
 
 static void com_task(__attribute__((unused)) void *p ) {
   debugf("Starting main communication task");
-  restart_take();             /* game20k: the marker of a restart, first of all */
+  marker_take();             /* game20k: the marker of a restart, first of all */
   
   // startup FPGA, this will also put the core into reset
   if(sys_wait4fpga()) {

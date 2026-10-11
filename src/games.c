@@ -11,7 +11,7 @@
  *  file that fails stays off the list until the card changes.
  *
  *  A game picked on the page reaches main.c as the CRC-32 of its file name and its
- *  board: restart_step() switches the core for another board, and restart_rom()
+ *  board: switch_step() switches the core for another board, and switch_rom()
  *  finds the file again by that CRC. The start game is a file
  *  name in GAMES_START_FILE: config.ini belongs to the user and holds secrets, the
  *  ini of a core is read only by that core, so the start game has a file of its own

@@ -63,8 +63,8 @@ static bool             settled;                       // ra_patch_settle() ran
 static bool             new_core;                      // a core switch ran, the next settle makes the new core's game, see ra_patch_new_core()
 static bool             table_wrong;                  // the server's id differs from the table's: RA_HC_BLOCK_GAME stays
 static bool             foreign_rom;                   // the ROM in the core is another game's than the running one, see ra_patch_settle()
-static const ra_game_t *volatile restart_to;           // the game a restart starts, see ra_patch_restart_to()
-static volatile bool   restart_committed;             // restart_step() writes the marker now: picks no longer change the target
+static const ra_game_t *volatile switch_to;           // the game a core switch starts, see ra_patch_switch_to()
+static volatile bool   switch_committed;             // switch_step() writes the marker now: picks no longer change the target
 static unsigned        pick_seq;                      // picks of a game of another board, counted
 static unsigned        stream_seq;                    // pick_seq when the ROM that streams now started
 static bool             set_off;                       // ra_patch_apply_pending() took the set out of rcheevos for that
@@ -862,21 +862,21 @@ bool ra_patch_rom_streaming(unsigned limit_ms) {
   return rom_pending && (TickType_t)(xTaskGetTickCount() - rom_started) < pdMS_TO_TICKS(limit_ms);
 }
 bool ra_patch_foreign_rom(void) { return foreign_rom; }
-const ra_game_t *ra_patch_restart_to(void) { return restart_to; }
+const ra_game_t *ra_patch_switch_to(void) { return switch_to; }
 
-void ra_patch_restart_cancel(void) {
+void ra_patch_switch_cancel(void) {
   taskENTER_CRITICAL();
-  restart_to        = NULL;
-  restart_committed = false;
+  switch_to        = NULL;
+  switch_committed = false;
   stream_seq        = pick_seq;   // the dropped pick holds no later settle back
   taskEXIT_CRITICAL();
 }
 
-bool ra_patch_restart_commit(const ra_game_t *g) {
+bool ra_patch_switch_commit(const ra_game_t *g) {
   bool fixed;
   taskENTER_CRITICAL();   // a pick in the menu task must not slip in between
-  fixed = g && restart_to == g;
-  if(fixed) restart_committed = true;
+  fixed = g && switch_to == g;
+  if(fixed) switch_committed = true;
   taskEXIT_CRITICAL();
   return fixed;
 }
@@ -885,14 +885,14 @@ bool ra_patch_pick_other_board(const char *name) {
   const ra_game_t *g = ra_games_by_file(name);
   bool taken = false;
   taskENTER_CRITICAL();   // the settle may change the target meanwhile, see ra_patch_settle()
-  if(restart_committed)
+  if(switch_committed)
     // the switch is under way: a game of another board comes too late and is
     // dropped. Any other file goes on to sdc_image_open(). A switch without a
     // restart parks the menu task first, so no pick comes then. In the restart
     // that is its fallback the file waits for the card lock, and the Pico goes first
     taken = g && board && g->board != board;
   else if(g && board && g->board != board) {
-    restart_to = g;       // the newest pick wins
+    switch_to = g;       // the newest pick wins
     pick_seq++;           // also over a stream that started before it, see the settle
     taken = true;
   }
@@ -1113,13 +1113,13 @@ void ra_patch_settle(void) {
     new_core = false;
     // the newest pick wins: a ROM that streamed to this core takes a pending core
     // switch back, unless a game of another board was picked after this stream
-    // began or the switch is under way (restart_step() in main.c)
+    // began or the switch is under way (switch_step() in main.c)
     const ra_game_t *was;
     bool later;
     taskENTER_CRITICAL();   // the menu may pick a game of another board meanwhile
-    was   = restart_to;
+    was   = switch_to;
     later = stream_seq != pick_seq;   // a game of another board was picked after this stream began
-    if(!restart_committed && !later) restart_to = NULL;
+    if(!switch_committed && !later) switch_to = NULL;
     taskEXIT_CRITICAL();
     if(later)
       debugf("RA: %s was picked after this ROM, it stays the target", was ? was->set : "a game of another board");
