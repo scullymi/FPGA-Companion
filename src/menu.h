@@ -60,6 +60,7 @@ void menu_joystick_state(unsigned char state);
 void menu_button_state(unsigned char state);
 void menu_run_current_image_action(void);
 void menu_draw_dialog(const char *title, const char *msg);
+bool menu_dips_as_expected(void);   // game20k: the DIP switches the game's set expects, see menu.c
 
 // game20k: another core without a restart of the Pico, from com_task. menu_park()
 // stops the menu task and returns false when it did not stop in time. Then either

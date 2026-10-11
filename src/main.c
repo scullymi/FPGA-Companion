@@ -105,6 +105,7 @@ typedef struct {
   bool gold;        /* text gold for hardcore, white for softcore, as on the RA site */
   bool new;         /* mark green: new, goes to the server. Grey: the account has it, or it is queued */
   unsigned ms;      /* how long it shows */
+  bool mode;        /* the mode banner, or the server's warning after it, see banner_login() */
 } banner_t;
 static banner_t   banner;                  /* the one being sent or shown */
 static banner_t   banner_q[BANNER_QUEUE];  /* the ones waiting, oldest first */
@@ -139,18 +140,39 @@ static void banner_fill(banner_t *b, const char *text, bool gold, bool new, unsi
   b->gold = gold;
   b->new  = new;
   b->ms   = ms;
+  b->mode = false;
 }
 
-static void banner_show(const char *text, bool gold, bool new) {
+/* Queues a banner, returns its place in the queue, NULL when the queue is full. */
+static banner_t *banner_show(const char *text, bool gold, bool new) {
   banner_t b;
   if(banner_n >= BANNER_QUEUE) {
     debugf("RA: banner '%s' dropped, %u already wait", text, banner_n);
-    return;
+    return NULL;
   }
   banner_fill(&b, text, gold, new, BANNER_MS);
   banner_q[banner_n++] = b;
   debugf("RA: banner '%.*s' for %u s (%s text, %s mark)%s", BANNER_LEN, b.text, BANNER_MS / 1000,
          gold ? "gold" : "white", new ? "green" : "grey", banner_n > 1 ? ", waits" : "");
+  return &banner_q[banner_n - 1];
+}
+
+/* game20k: true when a banner with this text shows, is on its way or waits */
+static bool banner_has(const char *text) {
+  banner_t b;
+  banner_fill(&b, text, false, false, 0);
+  if((banner_live || banner_pending) && !memcmp(banner.text, b.text, BANNER_LEN)) return true;
+  for(unsigned i = 0; i < banner_n; i++)
+    if(!memcmp(banner_q[i].text, b.text, BANNER_LEN)) return true;
+  return false;
+}
+
+/* game20k: takes the mode banners that still wait out of the queue, see banner_login() */
+static void banner_drop_mode(void) {
+  unsigned n = 0;
+  for(unsigned i = 0; i < banner_n; i++)
+    if(!banner_q[i].mode) banner_q[n++] = banner_q[i];
+  banner_n = n;
 }
 
 /* The progress of an achievement as a short banner, "12/50 TITLE". Only the
@@ -261,13 +283,31 @@ static void banner_login(void) {
     // without an account or a game nothing counts, their own banner says so
     if(now != RA_TASK_NO_ACCOUNT && now != RA_TASK_NO_GAME) {
       char warn[RA_PATCH_TITLE_MAX], line[4 + RA_PATCH_TITLE_MAX];
-      banner_show(text, mode, true);
-      // in hardcore the server's warning follows, as rc_client shows it. While
-      // RetroAchievements has not approved this client, it keeps the unlocks as
-      // casual, and the player sees that next to the mode the device plays in.
-      if(mode && ra_patch_warning(warn, sizeof(warn))) {
-        snprintf(line, sizeof(line), "RA: %s", warn);
-        banner_show(line, false, false);
+      banner_t b, *q;
+      // game20k: a mode banner that shows with the same text says it already, else
+      // the newest mode replaces the mode banners still waiting. Quick resets, a
+      // list with a reset action or the two resets of a game switch, queued the
+      // same lines again and again
+      banner_fill(&b, text, mode, true, BANNER_MS);
+      bool told = (banner_live || banner_pending) && banner.mode && !memcmp(banner.text, b.text, BANNER_LEN);
+      bool dips = menu_dips_as_expected();
+      if(told && !dips && !banner_has("RA: DIP NOT DEFAULT") &&
+         (q = banner_show("RA: DIP NOT DEFAULT", false, false)))
+        q->mode = true;              /* the mode is said, a switch changed since */
+      if(!told) {
+        banner_drop_mode();
+        if((q = banner_show(text, mode, true))) q->mode = true;
+        // in hardcore the server's warning follows, as rc_client shows it. While
+        // RetroAchievements has not approved this client, it keeps the unlocks as
+        // casual, and the player sees that next to the mode the device plays in.
+        if(q && mode && ra_patch_warning(warn, sizeof(warn))) {
+          snprintf(line, sizeof(line), "RA: %s", warn);
+          if((q = banner_show(line, false, false))) q->mode = true;
+        }
+        // game20k: a DIP switch the set does not expect, its conditions may never
+        // fire. Said at each game start, a change of a switch resets the core
+        if(q && !dips && (q = banner_show("RA: DIP NOT DEFAULT", false, false)))
+          q->mode = true;
       }
     }
   }

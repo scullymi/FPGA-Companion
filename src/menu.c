@@ -1007,6 +1007,16 @@ static void menu_games_show(void) {
 
 // The Account dialog: the account and where it stands, the count, and the
 // most urgent note. Four lines fit the display.
+/* game20k: true when every DIP switch the running game's set expects has that
+   value. A switch this core does not have cannot be wrong. */
+bool menu_dips_as_expected(void) {
+  unsigned n, i;
+  const ra_dip_t *dip = ra_game_dips(&n);
+  for(i = 0; dip && i < n; i++)
+    if(menu_variable_exists(dip[i].id) && menu_variable_get(dip[i].id) != dip[i].value) return false;
+  return true;
+}
+
 static void menu_ra_status(void) {
   char t[100], who[24], count[32], note[24];
   const char *user = inifile_config_has("ra", "user") ? inifile_config_get_str("ra", "user") : "-";
@@ -1061,12 +1071,8 @@ static void menu_ra_status(void) {
   // the note: a DIP switch the set does not expect comes first, its conditions
   // would never fire, then what still waits for the server, then in hardcore
   // the server's warning, e.g. "Unknown Emulator": until RetroAchievements
-  // approves this client, it keeps the unlocks as casual. A switch this core
-  // does not have cannot be wrong.
-  const ra_dip_t *dip = ra_game_dips(&n);
-  for(i = 0; dip && i < n; i++)
-    if(menu_variable_exists(dip[i].id) && menu_variable_get(dip[i].id) != dip[i].value) break;
-  if(dip && i < n)            snprintf(note, sizeof(note), "DIP not default!");
+  // approves this client, it keeps the unlocks as casual.
+  if(!menu_dips_as_expected())  snprintf(note, sizeof(note), "DIP not default!");
   else if(ra_queue_pending()) snprintf(note, sizeof(note), "%u to send", ra_queue_pending());
   else if(!ra_task_hardcore() || !ra_patch_warning(note, sizeof(note))) note[0] = 0;
 
