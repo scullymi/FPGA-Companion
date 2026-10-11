@@ -300,6 +300,7 @@ static const struct {
   { "NETWORK", "IP", CONFIG_TYPE_IP, NULL },
   { "NETWORK", "MASK", CONFIG_TYPE_IP, NULL },
   { "NETWORK", "GW", CONFIG_TYPE_IP, NULL },
+  { "NETWORK", "DNS", CONFIG_TYPE_IP, NULL },   // game20k: name server of a static configuration
 
   // wifi settings
   { "WIFI", "SSID", CONFIG_TYPE_STRING, NULL },

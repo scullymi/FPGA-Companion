@@ -877,6 +877,18 @@ DWORD get_fattime(void) {
          (DWORD)tm.tm_min << 5 | (DWORD)(tm.tm_sec / 2);                  // bits 10-5 minute, 4-0 seconds/2
 }
 
+// game20k: the name server of a static configuration, [NETWORK] DNS in config.ini,
+// for the names of RetroAchievements and NTP. Without it the default stays: 8.8.8.8
+// from the cyw43 driver on WiFi. Caller holds the lwIP lock or runs in its thread.
+#include "lwip/dns.h"
+static void network_static_dns(void) {
+  if(!inifile_config_has("network", "dns")) return;
+  ip_addr_t dns;
+  ip_addr_set_ip4_u32(&dns, htonl(inifile_config_get_ip("network", "dns", 0)));
+  dns_setserver(0, &dns);
+  debugf("Network: static name server %s", ipaddr_ntoa(&dns));
+}
+
 // game20k: unused without ASIX and PPP, as in the Pico 2 W build
 __attribute__((unused)) static void netif_up(struct netif *netif) {
   usb_debugf("netif_up(%c%c)", netif->name[0], netif->name[1]);
@@ -903,6 +915,7 @@ __attribute__((unused)) static void netif_up(struct netif *netif) {
       ip_addr_set_ip4_u32(&netmask, htonl(inifile_config_get_ip("network", "mask", 0xffffff00)));
       ip_addr_set_ip4_u32(&gw, htonl(inifile_config_get_ip("network", "gw", 0xc0a80001)));
       netif_set_addr(netif, &ipaddr, &netmask, &gw);
+      network_static_dns();
     }
   } else
     usb_debugf("Not starting DHCP for PPP");
@@ -1588,6 +1601,7 @@ static void wifi_apply_network_config(void) {
   cyw43_arch_lwip_begin();
   dhcp_stop(netif);
   netif_set_addr(netif, ip_2_ip4(&ipaddr), ip_2_ip4(&netmask), ip_2_ip4(&gw));
+  network_static_dns();
   cyw43_arch_lwip_end();
   debugf("WiFi: static ip %s", ip4addr_ntoa(netif_ip4_addr(netif)));
 }
