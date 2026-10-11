@@ -271,6 +271,10 @@ static void at_wifi_task(__attribute__((unused)) void *parms) {
 void at_wifi_init(void) {
   debugf("AT WIFI init");
 
+#if defined(M0S_DOCK) || defined(TANG_CONSOLE60K) || defined(TANG_MEGA60K)
+  mcu_hw_wifi_auto_connect();
+#endif
+
   // start a thread to handle at/wifi io
   rx_queue = xQueueCreate(8, sizeof( unsigned char ) );
   // game20k: 4 KB of stack, it waits for AT commands the Pico 2 W never gets
