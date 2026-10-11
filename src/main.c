@@ -1031,6 +1031,10 @@ static bool ring_hops(unsigned char *probe) {
   } else
     return false;
   const char *title = g ? g->title : "the game picked";
+  // a core the way only passes is reloaded before its card is ready, the next core
+  // starts the card anew: the card lock stays held from one hop to the next, and only
+  // the core the way ends at is waited for, see below the loop
+  bool locked = false;
   for(;;) {
     if(!HOPS_ORIGIN(hops) && !HOPS_COUNT(hops)) hops |= (uint32_t)ram_mirror_board << 16;
     bool back = hops & HOPS_BACK;
@@ -1054,9 +1058,17 @@ static bool ring_hops(unsigned char *probe) {
     if(g) switch_mark(g, hops);
     else  switch_mark_file(id, board, hops);
     for(;;) {                    /* S1 and S2 read under the lock, right before Z */
-      sdc_lock();
+      if(!locked) sdc_lock();
+      locked = true;
       if(!buttons_held()) break;
+      // the wait for the buttons frees the lock: the card of a core passed is made
+      // ready first, no other task may find it half set up
+      if(hopped) {
+        unsigned char status;
+        (void)sdc_wait_ready(&status);
+      }
       sdc_unlock();
+      locked = false;
       vTaskDelay(pdMS_TO_TICKS(20));
     }
     debugf("Core switch for %s, board %u, on from board %u within this start", title, target, ram_mirror_board);
@@ -1065,17 +1077,24 @@ static bool ring_hops(unsigned char *probe) {
       watchdog_hw->scratch[0] = 0;
       return hopped;
     }
-    unsigned char status;
-    if(!sys_wait4fpga() || sdc_wait_ready(&status)) {
-      debugf("Core switch: no core or no card after the hop, restart");
+    if(!sys_wait4fpga()) {
+      debugf("Core switch: no core after the hop, restart");
       mcu_hw_reset();            /* the marker carries the way on */
     }
-    sdc_unlock();
-    // the new core's cold boot, as at the start of the Pico
-    sys_handle_interrupts(sys_irq_ctrl(0xff), true);
     ram_mirror_forget();
     *probe = ram_mirror_probe();
     hopped = true;
+  }
+  // the core the way ends at: its card, then its cold boot as at the start of the Pico.
+  // The interrupts only after the card lock is free, an SDC request takes it
+  if(locked) {
+    unsigned char status;
+    if(sdc_wait_ready(&status)) {
+      debugf("Core switch: no card after the hop, restart");
+      mcu_hw_reset();
+    }
+    sdc_unlock();
+    sys_handle_interrupts(sys_irq_ctrl(0xff), true);
   }
   marker[3] = magic == SWITCH_FILE ? hops | (uint32_t)board << 8 : hops;
   marker[2] = ~(magic ^ id ^ marker[3]);
