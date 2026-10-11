@@ -85,7 +85,11 @@ int xml_parse(char c) {
       if(!skip) {
 	if(xml_element_start_cb(name) != 0) skip = 1;
       } else skip++;
-      
+      // game20k: the name is done with, the first attribute would overwrite it.
+      // A core switch parses a menu again, this leaked a few KB each time
+      if(name) vPortFree(name);
+      name = NULL;
+
       if(c == '>') state = 0;
       else         state = 4;
     }
