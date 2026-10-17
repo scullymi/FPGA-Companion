@@ -10,7 +10,7 @@
 #include <string.h>
 
 #include "rc_util.h"
-#include "rcheevos/src/rapi/rc_api_common.h"
+#include "rcheevos/src/api/rc_api_common.h"
 #include "ra_patch.h"
 #include "ra_text.h"
 

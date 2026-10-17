@@ -72,22 +72,20 @@ static unsigned       ra_oob;               /* reads outside the mirror */
 static unsigned       ra_rp_frames;         /* frames since the rich presence text was read */
 #define RA_RP_EVERY   60                    /* frames between two readings, about a second */
 
-static uint32_t ra_peek(uint32_t address, uint32_t num_bytes, void *ud) {
+/* rcheevos asks for num_bytes from address into buffer and gets back how many of them
+   exist. Outside the running core's game RAM there is nothing: say so once instead of
+   reading air, or stale bytes of a bigger game in the buffer. Compared without a sum,
+   so that an address near 2^32 cannot wrap into range. */
+static uint32_t ra_peek(uint32_t address, uint8_t *buffer, uint32_t num_bytes, void *ud) {
   (void)ud;
-  /* outside the running core's game RAM there is nothing, say so once instead of
-     reading air, or stale bytes of a bigger game in the buffer. Compared without a
-     sum, so that an address near 2^32 cannot wrap into range. */
-  if(address >= ram_mirror_data || num_bytes > ram_mirror_data - address) {
+  if(address >= ram_mirror_data) {
     if(!ra_oob++) debugf("RA: condition reads 0x%lx, outside the mirror", (unsigned long)address);
     return 0;
   }
-  const unsigned char *p = ram_mirror_buf + RAM_MIRROR_HEAD + address;
-  switch(num_bytes) {
-  case 1: return p[0];
-  case 2: return p[0] | (p[1] << 8);
-  case 4: return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24);
-  default: return 0;
-  }
+  if(num_bytes > ram_mirror_data - address)
+    num_bytes = ram_mirror_data - address;
+  memcpy(buffer, ram_mirror_buf + RAM_MIRROR_HEAD + address, num_bytes);
+  return num_bytes;
 }
 
 /* The banner at the bottom of the picture: 24 characters the FPGA shows for a

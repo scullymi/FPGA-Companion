@@ -31,9 +31,9 @@
 #include <task.h>
 #include <queue.h>
 #include "rc_api_runtime.h"
-#include "rc_runtime_types.h"   // rc_trigger_t and its states, for the challenge indicator
-#include "rcheevos/src/rhash/md5.h"
-#include "rcheevos/src/rapi/rc_api_common.h"   // rc_json_*: one field of the set text, decoded as rc_api does
+#include "runtime/rc_trigger.h"   // rc_trigger_t and its states (internal), for the challenge indicator
+#include "rcheevos/src/util/md5.h"
+#include "rcheevos/src/api/rc_api_common.h"   // rc_json_*: one field of the set text, decoded as rc_api does
 #include "rc_util.h"                             // rc_buffer_t for that one field
 #include "mbedtls/sha256.h"
 #include <ff.h>
@@ -461,11 +461,11 @@ static bool card_write(unsigned id) {
   return r == FR_OK;
 }
 
-/* Only the official achievements count. The set also holds unofficial ones
+/* Only the promoted (official) achievements count. The set also holds unpromoted ones
    (category 5, not finished or under review) and the server's warning from
    RA_PATCH_WARNING_ID on, both are left out. */
 static bool core_item(const rc_api_achievement_definition_t *a) {
-  return a->category == RC_ACHIEVEMENT_CATEGORY_CORE && a->id < RA_PATCH_WARNING_ID;
+  return a->category == RC_ACHIEVEMENT_CATEGORY_PROMOTED && a->id < RA_PATCH_WARNING_ID;
 }
 
 /* Notes the server's warning about this client from a parsed set, see

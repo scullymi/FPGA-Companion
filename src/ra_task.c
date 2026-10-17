@@ -605,7 +605,7 @@ static submit_t submit(const ra_unlock_t *u) {
       debugf("RA: unlock %u already on the account", u->id);
     else
       debugf("RA: unlock %u confirmed, score %u, softcore %u, %u left", u->id,
-             (unsigned)response.new_player_score, (unsigned)response.new_player_score_softcore,
+             (unsigned)response.new_player_score, (unsigned)response.new_player_score_casual,
              (unsigned)response.achievements_remaining);
     result = SUBMIT_DONE;
   } else if(rv == RC_OK) {

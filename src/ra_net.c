@@ -18,7 +18,7 @@
 #include "mbedtls/platform_util.h"
 #include "pico/time.h"
 
-#include "rc_version.h"
+#include "util/rc_version.h"
 
 #include "debug.h"
 #include "ra_ca.h"

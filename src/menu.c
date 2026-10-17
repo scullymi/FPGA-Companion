@@ -39,7 +39,7 @@
 #include "ra_task.h"
 #include "games.h"
 #include "menus.h"     // game20k: menus_origin for the Version dialog
-#include "rc_version.h"
+#include "util/rc_version.h"
 #include "mcu_hw.h"
 
 #ifdef ENABLE_BLUETOOTH

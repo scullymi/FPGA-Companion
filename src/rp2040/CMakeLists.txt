@@ -149,27 +149,28 @@ add_executable(${PROJECT}
 	../games_file.c
 	../games.c
 	# rcheevos: the runtime that evaluates the conditions and the reader for the
-	# set (rapi), no rc_client. rc_validate.c stays out, only the editor needs it.
-	${RCHEEVOS_DIR}/src/rcheevos/alloc.c
-	${RCHEEVOS_DIR}/src/rcheevos/condition.c
-	${RCHEEVOS_DIR}/src/rcheevos/condset.c
-	${RCHEEVOS_DIR}/src/rcheevos/consoleinfo.c
-	${RCHEEVOS_DIR}/src/rcheevos/format.c
-	${RCHEEVOS_DIR}/src/rcheevos/lboard.c
-	${RCHEEVOS_DIR}/src/rcheevos/memref.c
-	${RCHEEVOS_DIR}/src/rcheevos/operand.c
-	${RCHEEVOS_DIR}/src/rcheevos/richpresence.c
-	${RCHEEVOS_DIR}/src/rcheevos/runtime.c
-	${RCHEEVOS_DIR}/src/rcheevos/runtime_progress.c
-	${RCHEEVOS_DIR}/src/rcheevos/trigger.c
-	${RCHEEVOS_DIR}/src/rcheevos/value.c
-	${RCHEEVOS_DIR}/src/rapi/rc_api_common.c
-	${RCHEEVOS_DIR}/src/rapi/rc_api_runtime.c
-	${RCHEEVOS_DIR}/src/rapi/rc_api_user.c
-	${RCHEEVOS_DIR}/src/rc_util.c
-	${RCHEEVOS_DIR}/src/rc_compat.c
-	${RCHEEVOS_DIR}/src/rc_version.c
-	${RCHEEVOS_DIR}/src/rhash/md5.c
+	# set (api), no rc_client. rc_validate.c stays out, only the editor needs it.
+	${RCHEEVOS_DIR}/src/runtime/rc_alloc.c
+	${RCHEEVOS_DIR}/src/runtime/rc_condition.c
+	${RCHEEVOS_DIR}/src/runtime/rc_condset.c
+	${RCHEEVOS_DIR}/src/runtime/rc_consoleinfo.c
+	${RCHEEVOS_DIR}/src/runtime/rc_format.c
+	${RCHEEVOS_DIR}/src/runtime/rc_lboard.c
+	${RCHEEVOS_DIR}/src/runtime/rc_memref.c
+	${RCHEEVOS_DIR}/src/runtime/rc_operand.c
+	${RCHEEVOS_DIR}/src/runtime/rc_richpresence.c
+	${RCHEEVOS_DIR}/src/runtime/rc_runtime.c
+	${RCHEEVOS_DIR}/src/runtime/rc_runtime_progress.c
+	${RCHEEVOS_DIR}/src/runtime/rc_trigger.c
+	${RCHEEVOS_DIR}/src/runtime/rc_typed_value.c
+	${RCHEEVOS_DIR}/src/runtime/rc_value.c
+	${RCHEEVOS_DIR}/src/api/rc_api_common.c
+	${RCHEEVOS_DIR}/src/api/rc_api_runtime.c
+	${RCHEEVOS_DIR}/src/api/rc_api_user.c
+	${RCHEEVOS_DIR}/src/util/rc_util.c
+	${RCHEEVOS_DIR}/src/util/rc_compat.c
+	${RCHEEVOS_DIR}/src/util/rc_version.c
+	${RCHEEVOS_DIR}/src/util/md5.c
 )
 
 family_add_pico_pio_usb(${PROJECT})
