@@ -98,6 +98,7 @@ static uint32_t ra_peek(uint32_t address, uint8_t *buffer, uint32_t num_bytes, v
 #define BANNER_MS    8000
 #define BANNER_QUEUE 4
 #define BANNER_PROGRESS_MS 2500   /* a progress banner is short, the next one may follow soon */
+#define BANNER_DIP "RA: DIP NOT AS SET"   /* game20k: a DIP switch the set does not expect, Account names it */
 typedef struct {
   char text[BANNER_LEN];
   bool gold;        /* text gold for hardcore, white for softcore, as on the RA site */
@@ -163,6 +164,16 @@ static bool banner_has(const char *text) {
   for(unsigned i = 0; i < banner_n; i++)
     if(!memcmp(banner_q[i].text, b.text, BANNER_LEN)) return true;
   return false;
+}
+
+/* game20k: takes the banners with this text that still wait out of the queue */
+static void banner_drop_text(const char *text) {
+  banner_t b;
+  unsigned n = 0;
+  banner_fill(&b, text, false, false, 0);
+  for(unsigned i = 0; i < banner_n; i++)
+    if(memcmp(banner_q[i].text, b.text, BANNER_LEN)) banner_q[n++] = banner_q[i];
+  banner_n = n;
 }
 
 /* game20k: takes the mode banners that still wait out of the queue, see banner_login() */
@@ -294,8 +305,11 @@ static void banner_login(void) {
       banner_fill(&b, text, mode, true, BANNER_MS);
       bool told = (banner_live || banner_pending) && banner.mode && !memcmp(banner.text, b.text, BANNER_LEN);
       bool dips = menu_dips_as_expected();
-      if(told && !dips && !banner_has("RA: DIP NOT DEFAULT") &&
-         (q = banner_show("RA: DIP NOT DEFAULT", false, false)))
+      // a DIP banner that still waits, from the game before or from before the switch was
+      // set right, is no longer true
+      if(dips) banner_drop_text(BANNER_DIP);
+      if(told && !dips && !banner_has(BANNER_DIP) &&
+         (q = banner_show(BANNER_DIP, false, false)))
         q->mode = true;              /* the mode is said, a switch changed since */
       if(!told) {
         banner_drop_mode();
@@ -309,7 +323,7 @@ static void banner_login(void) {
         }
         // game20k: a DIP switch the set does not expect, its conditions may never
         // fire. Said at each game start, a change of a switch resets the core
-        if(q && !dips && (q = banner_show("RA: DIP NOT DEFAULT", false, false)))
+        if(q && !dips && (q = banner_show(BANNER_DIP, false, false)))
           q->mode = true;
       }
     }

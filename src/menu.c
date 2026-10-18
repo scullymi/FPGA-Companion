@@ -1005,24 +1005,68 @@ static void menu_games_show(void) {
   menu_do(0);
 }
 
-// The Account dialog: the account and where it stands, the count, and the
-// most urgent note. Four lines fit the display.
-/* game20k: true when every DIP switch the running game's set expects has that
-   value. A switch this core does not have cannot be wrong. */
-bool menu_dips_as_expected(void) {
-  unsigned n, i;
-  const ra_dip_t *dip = ra_game_dips(&n);
-  for(i = 0; dip && i < n; i++)
-    if(menu_variable_exists(dip[i].id) && menu_variable_get(dip[i].id) != dip[i].value) return false;
-  return true;
+/* game20k: the list with this id in the menu or one below it, NULL when there is none */
+static const config_list_t *menu_find_list(const config_menu_t *menu, char id) {
+  for(const config_menu_entry_t *me = menu ? menu->entries : NULL; me; me = me->next) {
+    if(me->type == CONFIG_MENU_ENTRY_MENU) {
+      const config_list_t *l = menu_find_list(me->menu, id);
+      if(l) return l;
+    } else if(me->type == CONFIG_MENU_ENTRY_LIST && me->list->id == (unsigned char)id)
+      return me->list;
+  }
+  return NULL;
 }
 
+/* game20k: the first DIP switch the running game's set expects at another value,
+   as the list's label and the label of the value it expects, e.g. "Bonus: 10K 40K+".
+   False when every switch has that value. A switch this core does not have cannot
+   be wrong. */
+static bool menu_dip_wanted(char *buf, size_t size) {
+  unsigned n, i;
+  const ra_dip_t *dip = ra_game_dips(&n);
+  for(i = 0; dip && i < n; i++) {
+    if(!menu_variable_exists(dip[i].id) || menu_variable_get(dip[i].id) == dip[i].value) continue;
+    const config_list_t *l = cfg ? menu_find_list(cfg->menu, dip[i].id) : NULL;
+    const config_listentry_t *le = l ? l->listentries : NULL;
+    while(le && le->value != dip[i].value) le = le->next;
+    snprintf(buf, size, "%s %s", l ? l->label : "DIP", le ? le->label : "?");
+    return true;
+  }
+  return false;
+}
+
+/* game20k: true when every DIP switch the running game's set expects has that value */
+bool menu_dips_as_expected(void) {
+  return !menu_dip_wanted(NULL, 0);
+}
+
+/* game20k: "Set for RA" in the DIP switches. Every switch the running game's set
+   expects goes to that value, and a change resets the game as a change by hand
+   does. Save settings keeps them. */
+static void menu_dips_set(void) {
+  unsigned n, i, changed = 0;
+  const ra_dip_t *dip = ra_game_dips(&n);
+  for(i = 0; dip && i < n; i++)
+    if(menu_variable_exists(dip[i].id) && menu_variable_get(dip[i].id) != dip[i].value) {
+      menu_variable_set(dip[i].id, dip[i].value);
+      changed++;
+    }
+  if(changed) {
+    config_action_t *reset = config_get_action("reset");
+    if(reset) sys_run_action(reset);
+  }
+  menu_draw_dialog("DIP switches", !dip ? "This game's set expects no DIP switches." :
+                   changed ? "Set as the game's achievement set expects." : "Already as the set expects.");
+}
+
+// The Account dialog: the account and where it stands, the count, and the
+// most urgent note. Four lines fit the display.
+
 static void menu_ra_status(void) {
-  char t[100], who[24], count[32], note[24];
+  char t[100], who[24], count[32], note[32], want[28];
   const char *user = inifile_config_has("ra", "user") ? inifile_config_get_str("ra", "user") : "-";
   const char *state;
   const int width = u8g2_GetDisplayWidth(&u8g2);
-  unsigned n, i;
 
   // the name on one line: a wide one is cut with "..", so the note below stays
   // on the display
@@ -1072,7 +1116,7 @@ static void menu_ra_status(void) {
   // would never fire, then what still waits for the server, then in hardcore
   // the server's warning, e.g. "Unknown Emulator": until RetroAchievements
   // approves this client, it keeps the unlocks as casual.
-  if(!menu_dips_as_expected())  snprintf(note, sizeof(note), "DIP not default!");
+  if(menu_dip_wanted(want, sizeof(want))) snprintf(note, sizeof(note), "Set %s", want);
   else if(ra_queue_pending()) snprintf(note, sizeof(note), "%u to send", ra_queue_pending());
   else if(!ra_task_hardcore() || !ra_patch_warning(note, sizeof(note))) note[0] = 0;
 
@@ -1470,6 +1514,9 @@ static void menu_select(void) {
     else if(entry->button->action && entry->button->action->name &&
             !strcmp(entry->button->action->name, "games"))
       menu_games_open();
+    else if(entry->button->action && entry->button->action->name &&
+            !strcmp(entry->button->action->name, "radips"))
+      menu_dips_set();
     else if(entry->button->action)
       sys_run_action(entry->button->action);
     break;
