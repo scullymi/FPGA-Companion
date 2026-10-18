@@ -64,6 +64,9 @@ unsigned ra_task_hardcore_blocked(void);
 /** @brief True when the menu asks for hardcore, whether or not a reason keeps it off. Any task. */
 bool ra_task_hardcore_wanted(void);
 
+/** @brief True while hardcore waits for the reset of the running game, see ra_task_game_start(). Any task. */
+bool ra_task_hardcore_due(void);
+
 /** @brief Sets or clears a reason that keeps hardcore off. Any task.
  *
  *  A reason that appears switches to softcore at once. When the last one goes,

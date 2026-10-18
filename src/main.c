@@ -260,8 +260,13 @@ static void banner_login(void) {
   // that switches to hardcore also changes the mode: both set the one flag before
   // it is read here, the banner shows once. While a ROM streams to the core the
   // banner waits: the stream blocks hardcore until its digest is checked, a second
-  // later, and the settle after it names the mode that counts.
-  if(banner_mode_due && now != RA_TASK_STARTING && !ra_patch_rom_pending()) {
+  // later, and the settle after it names the mode that counts. It also waits through
+  // a game switch, whose order is open: the passing "no game", which the RA task
+  // leaves only once the new game is known, and hardcore asked for but not yet on,
+  // which applies when the game's reset ends. Either would say the wrong mode or
+  // spend the banner.
+  if(banner_mode_due && now != RA_TASK_STARTING && !passing && !ra_task_hardcore_due() &&
+     !ra_patch_rom_pending()) {
     unsigned why = ra_task_hardcore_blocked();
     const char *text = mode ? "RA: HARDCORE" :
                        !ra_task_hardcore_wanted()   ? "RA: SOFTCORE" :

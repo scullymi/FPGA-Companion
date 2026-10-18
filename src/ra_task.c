@@ -129,6 +129,7 @@ bool ra_task_hardcore(void) { return hardcore && hc_wanted && !hc_block; }
 
 unsigned ra_task_hardcore_blocked(void) { return hc_block; }
 bool ra_task_hardcore_wanted(void) { return hc_wanted; }
+bool ra_task_hardcore_due(void) { return hardcore_due; }
 
 /* Brings the mode in line with what the menu wants and what blocks it. Softcore
    applies at once. Hardcore applies at once while the core is in reset, e.g. at
