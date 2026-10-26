@@ -69,6 +69,7 @@ static unsigned        pick_seq;                      // picks of a game of anot
 static unsigned        stream_seq;                    // pick_seq when the ROM that streams now started
 static bool             set_off;                       // ra_patch_apply_pending() took the set out of rcheevos for that
 static volatile bool    set_again;                     // com_task asks the RA task to read the card set once more
+static volatile bool    set_reading;                   // the card set is read or a set handed over, see ra_patch_set_pending()
 
 /* What the ROM stream leaves behind for settle. rom_start and rom_gone may run in
    menu_task, rom_data and rom_end in com_task, settle in com_task. The stream orders
@@ -938,9 +939,12 @@ static rc_api_fetch_game_data_response_t *parse_new(unsigned id, unsigned *n) {
    activate_deferred(). */
 static void hand_over(rc_api_fetch_game_data_response_t *r, const unsigned char *fp, unsigned gen) {
   handed_t h = { r, gen, { 0 } }, old;
+  bool was = set_reading;
   memcpy(h.fp, fp, sizeof(h.fp));
+  set_reading = true;           // between the two the queue is empty, see ra_patch_set_pending()
   if(xQueueReceive(handover, &old, 0) == pdTRUE) discard(old.r);
   xQueueSend(handover, &h, 0);
+  set_reading = was;
 }
 
 /* Reads the running game's set from the card, parses it and hands it to com_task.
@@ -1377,8 +1381,16 @@ void ra_patch_core_reset(void) { reset_due = true; }
 
 bool ra_patch_set_again(void) {
   if(!set_again) return true;
+  set_reading = true;           // before set_again drops, so the ask never looks done early
   set_again = false;
-  return read_card();
+  bool ok = read_card();
+  set_reading = false;
+  return ok;
+}
+
+bool ra_patch_set_pending(void) {
+  // a set handed over while a foreign ROM runs waits until the game's ROM is back
+  return set_again || set_reading || (!set_off && handover && uxQueueMessagesWaiting(handover));
 }
 
 /* ra_text_each() hands every achievement of body[] here: a row of the table gets its

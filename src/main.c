@@ -308,9 +308,10 @@ static void banner_login(void) {
   // a game switch, whose order is open: the passing "no game", which the RA task
   // leaves only once the new game is known, and hardcore asked for but not yet on,
   // which applies when the game's reset ends. Either would say the wrong mode or
-  // spend the banner.
+  // spend the banner. So does the new game's set while the RA task still reads it
+  // from the card: its block holds until then, the banner would say softcore.
   if(banner_mode_due && now != RA_TASK_STARTING && !passing && !ra_task_hardcore_due() &&
-     !ra_patch_rom_pending()) {
+     !ra_patch_rom_pending() && !ra_patch_set_pending()) {
     unsigned why = ra_task_hardcore_blocked();
     const char *text = mode ? "RA: HARDCORE" :
                        !ra_task_hardcore_wanted()   ? "RA: SOFTCORE" :

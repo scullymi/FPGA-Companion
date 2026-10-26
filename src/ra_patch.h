@@ -218,6 +218,14 @@ void ra_patch_core_reset(void);
  *  tag, unusable), the caller then fetches the set from the server again. */
 bool ra_patch_set_again(void);
 
+/** @brief True from the ask of ra_patch_set_again() until com_task took the set it handed over, or the card had none. com_task only.
+ *
+ *  The mode banner waits for it: before, the set's hardcore block still holds and
+ *  the banner would say softcore for a game whose set is on the card. A set handed
+ *  over while a foreign ROM runs does not count, com_task takes it only once the
+ *  game's ROM is back. */
+bool ra_patch_set_pending(void);
+
 /** @brief The buffer for a set from the server, and its size. RA task only. */
 char *ra_patch_body(unsigned *cap);
 
