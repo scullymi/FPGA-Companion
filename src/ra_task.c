@@ -954,6 +954,7 @@ static void serve(void) {
     ra_unlock_t u;
     if(game_moved()) return;          // the next round is the new game's
     keep_alive();
+    if(game_moved()) return;          // a ping or a session start takes seconds
     // a card set asked for again (the game's ROM is back after another game's
     // file) was not on the card, or had no valid tag: the server's set once more,
     // ra_patch_from_server() writes and hands it over anew
@@ -963,6 +964,9 @@ static void serve(void) {
       state_failed = !fetch_state();
       if(!state_failed) backoff = RA_BACKOFF_MIN;
     }
+    // the lists take seconds, and the old game's set would keep the new one's card set
+    // from being read for as long as it loads (set_in_flight)
+    if(game_moved()) return;
     if(set_due) {
       set_due = false;
       set_failed = !fetch_set();
@@ -1010,6 +1014,12 @@ static void serve(void) {
           continue;
         }
         if((int32_t)(retry_at - wake) < 0) wake = retry_at;
+      }
+      // the switch itself, not its wake-up, ends the round: a request handles the
+      // events while it runs (ra_net_get()) and takes the wake-up of a switch with it
+      if(game_moved()) {
+        debugf("RA: game %u: another game runs, its round starts", game.id);
+        return;
       }
       if((int32_t)(wake - now) > 0) wait_event(wake - now);
       continue;
