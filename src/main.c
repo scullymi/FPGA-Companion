@@ -105,6 +105,7 @@ typedef struct {
   bool new;         /* mark green: new, goes to the server. Grey: the account has it, or it is queued */
   unsigned ms;      /* how long it shows */
   bool mode;        /* the mode banner, or the server's warning after it, see banner_login() */
+  bool keep;        /* game20k: about the device or the account, a game switch keeps it, see banner_clear() */
 } banner_t;
 static banner_t   banner;                  /* the one being sent or shown */
 static banner_t   banner_q[BANNER_QUEUE];  /* the ones waiting, oldest first */
@@ -140,6 +141,7 @@ static void banner_fill(banner_t *b, const char *text, bool gold, bool new, unsi
   b->new  = new;
   b->ms   = ms;
   b->mode = false;
+  b->keep = false;
 }
 
 /* Queues a banner, returns its place in the queue, NULL when the queue is full. */
@@ -154,6 +156,13 @@ static banner_t *banner_show(const char *text, bool gold, bool new) {
   debugf("RA: banner '%.*s' for %u s (%s text, %s mark)%s", BANNER_LEN, b.text, BANNER_MS / 1000,
          gold ? "gold" : "white", new ? "green" : "grey", banner_n > 1 ? ", waits" : "");
   return &banner_q[banner_n - 1];
+}
+
+/* game20k: a banner about the device or the account, a game switch keeps it */
+static banner_t *banner_show_kept(const char *text, bool gold, bool new) {
+  banner_t *q = banner_show(text, gold, new);
+  if(q) q->keep = true;
+  return q;
 }
 
 /* game20k: true when a banner with this text shows, is on its way or waits */
@@ -182,6 +191,30 @@ static void banner_drop_mode(void) {
   for(unsigned i = 0; i < banner_n; i++)
     if(!banner_q[i].mode) banner_q[n++] = banner_q[i];
   banner_n = n;
+}
+
+/* game20k: another game runs, see banner_follow_game(). The banners of the game before
+   go, the one shown and those that wait. One about the device or the account stays. */
+static void banner_clear(void) {
+  unsigned n = 0;
+  for(unsigned i = 0; i < banner_n; i++)
+    if(banner_q[i].keep) banner_q[n++] = banner_q[i];
+  banner_n = n;
+  banner_progress_due = false;
+  if((banner_live || banner_pending) && !banner.keep) {
+    banner_live    = false;
+    banner_pending = false;
+    banner_pos     = 0;
+  }
+}
+
+/* game20k: clears the banners once another game runs. A settle comes between two
+   polls, so at the start of a poll what waits was queued for the game before. */
+static void banner_follow_game(void) {
+  static unsigned gen;          /* the game generation the banners are for */
+  if(gen == ra_patch_generation()) return;
+  gen = ra_patch_generation();
+  banner_clear();
 }
 
 /* The progress of an achievement as a short banner, "12/50 TITLE". Only the
@@ -249,17 +282,17 @@ static void banner_login(void) {
     if(now == RA_TASK_LOGGED_IN) {
       char text[BANNER_LEN + 1];
       snprintf(text, sizeof(text), "RA: %s", inifile_config_get_str("ra", "user"));
-      banner_show(text, false, true);
+      banner_show_kept(text, false, true);
     } else if(now == RA_TASK_REJECTED)
-      banner_show("RA: LOGIN REJECTED", false, false);
+      banner_show_kept("RA: LOGIN REJECTED", false, false);
     else if(now == RA_TASK_NO_TIME)
-      banner_show("RA: NO TIME SERVER", false, false);
+      banner_show_kept("RA: NO TIME SERVER", false, false);
     else if(now == RA_TASK_NO_GAME)
       banner_show("RA: NO GAME", false, false);
     else if(now == RA_TASK_RETRYING && !offline_told) {
       // no server: achievements still count, their unlocks wait on the card
       offline_told = true;
-      banner_show("RA: OFFLINE UNLOCKS KEPT", false, false);
+      banner_show_kept("RA: OFFLINE UNLOCKS KEPT", false, false);
     }
   }
   // a change against the mode the player was told asks again. Before the first
@@ -657,7 +690,7 @@ static void switch_rom(void) {
     // back in the core the game was picked in, with the ini's ROM: the flash has
     // no core of the game's board (fewer cores flashed than slots.txt lists)
     debugf("Core switch: back at board %u, the flash has no core of board %u", target, board);
-    banner_show("SYS: CORE NOT IN FLASH", false, false);
+    banner_show_kept("SYS: CORE NOT IN FLASH", false, false);
     return;
   }
   char path[FF_LFN_BUF + 6];     /* "/sd/" plus a file name */
@@ -692,6 +725,8 @@ static void banner_lboard(void) {
   ra_lboard_result_t r;
   char text[BANNER_LEN + 1];
   if(!ra_task_lboard_result(&seen, &r)) return;
+  // game20k: a result reached in another game is not the running game's news
+  if(strcmp(r.hash, ra_game_hash())) return;
   if(!r.rank || ra_patch_warning(NULL, 0) || (r.best == 0 && r.score != 0)) {
     banner_show("RA: LB NOT RECORDED", false, false);
     return;
@@ -773,7 +808,7 @@ static unsigned char ram_mirror_header(const unsigned char *hdr_tx) {
       told = ram_mirror_buf[4];
       debugf("RAM mirror: the core sends layout %u, this firmware reads %u, "
              "flash core and firmware of the same release", ram_mirror_buf[4], RAM_MIRROR_LAYOUT);
-      banner_show(ram_mirror_buf[4] < RAM_MIRROR_LAYOUT ? "SYS: CORE TOO OLD" : "SYS: FIRMWARE TOO OLD",
+      banner_show_kept(ram_mirror_buf[4] < RAM_MIRROR_LAYOUT ? "SYS: CORE TOO OLD" : "SYS: FIRMWARE TOO OLD",
                   false, false);
     }
     mcu_hw_spi_end(); return ram_mirror_verdict = 0xE2;
@@ -872,6 +907,7 @@ static void ra_heap_log(void) {
    Every offset in the body comes from the length the header announced. */
 static void ram_mirror_poll(void) {
   unsigned char hdr_tx[RAM_MIRROR_HEAD] = { 0 };
+  banner_follow_game();
   /* back channel for the diagnostic bars of the FPGA: the rcheevos state */
   hdr_tx[0] = ra_triggered;
   hdr_tx[1] = (unsigned char)ra_patch_count();
@@ -884,6 +920,7 @@ static void ram_mirror_poll(void) {
   banner_login();
   banner_lboard();
   if(switch_step()) return;   /* another core came up, the next poll reads it */
+  banner_follow_game();       /* a failed core switch settles in switch_step() */
   banner_step(hdr_tx);
 
   /* Verdict: 0xA5 ok, otherwise the failed check. 0xE1 magic, 0xE2 layout, 0xE3

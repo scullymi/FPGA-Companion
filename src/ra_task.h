@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "ra_games.h"
 
 #define RA_CLOCK_VALID 1735689600u   /**< 2025-01-01, an earlier time() means NTP has not set the clock yet */
 #define RA_RP_MAX      256           /**< rich presence text with its NUL, as rc_client keeps it */
@@ -114,6 +115,7 @@ typedef struct {
   int32_t  best;      /**< the account's best value on this leaderboard */
   unsigned rank;      /**< the rank of that best value, also for an entry the server did not keep, see banner_lboard() in main.c */
   unsigned entries;   /**< entries on the leaderboard */
+  char     hash[RA_GAMES_HASH_LEN + 1];   /**< the game it was reached in, as ra_game_hash() */
 } ra_lboard_result_t;
 
 /** @brief Hands a leaderboard result to the RA task, which submits it. com_task only, never blocks.

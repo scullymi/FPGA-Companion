@@ -677,6 +677,7 @@ static submit_t submit_lboard(const lb_entry_t *e) {
     lb_result.best    = response.best_score;
     lb_result.rank    = response.new_rank;
     lb_result.entries = response.num_entries;
+    memcpy(lb_result.hash, e->hash, sizeof(lb_result.hash));
     lb_seq++;
     taskEXIT_CRITICAL();
     result = SUBMIT_DONE;
