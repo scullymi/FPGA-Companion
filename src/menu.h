@@ -38,6 +38,7 @@
 #define MENU_EVENT_GAMES         24  // game20k: no ROM runs, the Games page opens
 #define MENU_EVENT_MISMATCH      25  // game20k: the core is of another release than the firmware, its menu is missing
 #define MENU_EVENT_PARK          26  // game20k: another core comes up, the menu task waits, see menu_park()
+#define MENU_EVENT_GAMES_CHANGED 27  // game20k: the card's ROM files changed and an open Games page reads them again
 
 #define MENU_EVENT_KEY_LATIN1    256  // 256..511
 

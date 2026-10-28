@@ -27,6 +27,7 @@
 #include "sdc.h"
 #include "menus.h"      // the boards this firmware has a core menu for
 #include "ra_patch.h"   // RA_PATCH_ROM_IMAGE
+#include "menu.h"       // menu_notify()
 #include "games.h"
 
 #define GAMES_PATH_MAX  (FF_LFN_BUF + 6)   /**< "/sd/" plus a long file name plus the NUL */
@@ -63,8 +64,10 @@ void games_changed(const char *name) {
   }
   taskENTER_CRITICAL();
   memset(damaged, 0, sizeof(damaged));
+  bool was = stale;
   stale = true;
   taskEXIT_CRITICAL();
+  if(!was) menu_notify(MENU_EVENT_GAMES_CHANGED);   // one is enough until the next read
 }
 
 void games_damaged(const char *name) {
@@ -72,8 +75,10 @@ void games_damaged(const char *name) {
   taskENTER_CRITICAL();
   damaged[damaged_next] = crc;
   damaged_next = (damaged_next + 1) % GAMES_DAMAGED_MAX;
+  bool was = stale;
   stale = true;
   taskEXIT_CRITICAL();
+  if(!was) menu_notify(MENU_EVENT_GAMES_CHANGED);
 }
 
 static bool is_damaged(uint32_t crc) {

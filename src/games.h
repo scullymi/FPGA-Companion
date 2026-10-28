@@ -33,7 +33,9 @@ typedef struct {
 void games_read(void);
 /** @brief True when the card changed since the last games_read(). Any task. */
 bool games_stale(void);
-/** @brief The card's root changed, e.g. an FTP upload of name ended: the list is read again and damaged marks go. Any task. */
+/** @brief The card's root changed, e.g. an FTP upload of name ended: the list is read again and damaged marks go. Any task.
+ *
+ *  Tells the menu with MENU_EVENT_GAMES_CHANGED, once until the next games_read(). */
 void games_changed(const char *name);
 /** @brief Lines in the list. Menu task only. */
 unsigned games_count(void);
@@ -42,7 +44,7 @@ bool games_item(unsigned i, games_item_t *out);
 
 /** @brief The ROM file name in the card's root streamed with a SHA-256 other than its footer's. Any task.
  *
- *  It stays off the list until the card changes. */
+ *  It stays off the list until the card changes. Tells the menu as games_changed() does. */
 void games_damaged(const char *name);
 
 /** @brief The CRC-32 of a file name, as the list and the switch marker carry it. */

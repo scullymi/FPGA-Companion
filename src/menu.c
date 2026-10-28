@@ -906,20 +906,59 @@ static void menu_ra_list_open(void) {
 }
 
 static void menu_pop(void);
+void menu_stop_repeat(void);
 
 /* ================ the Games page ================
    One line per game on the card, by title (games.c). OK on a line starts it: a game
    of this board streams its file to the core in place, one of another board needs a
-   core switch, see switch_step() in main.c. The list is read when the page opens
-   and again when the card changed while it shows. */
+   core switch, see switch_step() in main.c. The list is read when the page opens. A
+   later change of the card is read before the menu task draws the page next, before a
+   key acts on it and before the OSD comes on, see menu_do(). */
 static int games_list_length(void) {
   return (int)games_count();
 }
 
+/* The scroll that shows line sel (lines count from 1), as stepping down to it would
+   scroll, see menu_entry_go() */
+static int games_list_scroll(int sel) {
+  int entries = (int)games_count() + 1;
+  return (entries <= 5 || sel <= 3) ? 0 : (sel < entries - 2) ? sel - 3 : entries - 5;
+}
+
+/* The line of the game whose file name has this CRC, lines count from 1, 0 for none */
+static int games_list_line(uint32_t crc) {
+  games_item_t it;
+  for(unsigned i = 0; games_item(i, &it); i++)
+    if(it.crc == crc) return (int)i + 1;
+  return 0;
+}
+
+/* Reads the changed card, menu task only. The selection stays on its game. If that game
+   is gone, the selection keeps its line as far as the list reaches. It stays in view, and
+   the first game on an empty page gets it, as on opening. True when the selection marks
+   another game than the page showed, or a game where it marked the title. */
+static bool games_list_reread(void) {
+  games_item_t it;
+  // the key repeat draws from the timer task and must not walk the list while it is read
+  menu_stop_repeat();
+  uint32_t crc = 0;
+  int was = (int)games_count(), before = menu_state->selected;
+  bool on_game = menu_state->selected > 0 && games_item((unsigned)menu_state->selected - 1, &it);
+  if(on_game) crc = it.crc;
+  games_read();
+  int line = on_game ? games_list_line(crc) : 0;
+  if(line) menu_state->selected = line;
+  int n = (int)games_count();
+  if(menu_state->selected > n) menu_state->selected = n;
+  if(!was && n) menu_state->selected = 1;
+  if(menu_state->selected < menu_state->scroll + 1 || menu_state->selected > menu_state->scroll + 4 ||
+     menu_state->scroll > (n > 4 ? n - 4 : 0))
+    menu_state->scroll = games_list_scroll(menu_state->selected);
+  return on_game ? !line : menu_state->selected != before;
+}
+
 static void games_list_draw(void) {
   const int width = u8g2_GetDisplayWidth(&u8g2);
-  // an upload over FTP may change the card: the menu timer looks for it, see menu_do()
-  menu_timer_enable(true);
   u8g2_SetFont(&u8g2, font_helvR08_te);
   if(!games_count()) {
     u8g2_DrawStr(&u8g2, 1, MENU_LINE_Y + MENU_ENTRY_H, "No games on the card");
@@ -948,14 +987,12 @@ static void games_list_select(int line) {
   // the file that runs already, with no restart pending: nothing to start, the menu closes
   if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT) && games_name_crc(img) == it.crc &&
      !ra_patch_switch_to() && !games_picked(&pk)) {
-    menu_timer_enable(false);
     osd_enable(OSD_INVISIBLE);
     return;
   }
   // main.c takes it from here. A game of this board streams at once and the menu
   // closes onto it, a core switch says so, see MENU_EVENT_CORE_SWITCH
   games_pick(&it);
-  menu_timer_enable(false);
   if(it.board == ra_game_board()) {
     osd_enable(OSD_INVISIBLE);
     return;
@@ -978,28 +1015,28 @@ static void menu_games_open(void) {
   int sel = 0;
   games_read();
   // the running file's line, as games_list_select() tells it; lines count from 1
-  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT)) {
-    uint32_t crc = games_name_crc(img);
-    games_item_t it;
-    for(unsigned i = 0; !sel && games_item(i, &it); i++)
-      if(it.crc == crc) sel = (int)i + 1;
-  }
+  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT))
+    sel = games_list_line(games_name_crc(img));
   if(!sel && games_count()) sel = 1;
-  // scrolled as stepping down to that line would scroll it, see menu_entry_go()
-  int entries = (int)games_count() + 1;
   menu_push();
   menu_state->type     = MENU_TYPE_CUSTOM;
   menu_state->custom   = &games_list;
   menu_state->selected = sel;
-  menu_state->scroll   = (entries <= 5 || sel <= 3) ? 0 : (sel < entries - 2) ? sel - 3 : entries - 5;
+  menu_state->scroll   = games_list_scroll(sel);
+}
+
+static bool games_page_shown(void) {
+  return menu_state && menu_state->type == MENU_TYPE_CUSTOM && menu_state->custom == &games_list;
 }
 
 /* The page on screen without a key: no ROM runs. A message that shows closes onto
    the page, not into a hidden OSD. */
 static void menu_games_show(void) {
   if(!cfg || !menu_state) return;
-  if(!(menu_state->type == MENU_TYPE_CUSTOM && menu_state->custom == &games_list))
+  if(!games_page_shown())
     menu_games_open();
+  else if(games_stale())
+    games_list_reread();   // before the OSD comes on with its last frame
   if(!osd_is_visible()) osd_enable(OSD_VISIBLE);
   dialog_opened_osd = false;
   menu_do(0);
@@ -1595,15 +1632,6 @@ void menu_do(int event) {
 	  ticks = 0;
 	  menu_custom_draw((config_custom_t *)menu_state->custom, menu_state->selected, menu_state->scroll);
 	}
-      } else if(menu_state->type == MENU_TYPE_CUSTOM && menu_state->custom == &games_list) {
-	// the card changed while the page shows: read it again, the selection stays in range
-	if(games_stale() && !menu_dialog_is_open()) {
-	  games_read();
-	  int n = (int)games_count();
-	  if(menu_state->selected > n) menu_state->selected = n;
-	  if(menu_state->scroll > (n > 4 ? n - 4 : 0)) menu_state->scroll = n > 4 ? n - 4 : 0;
-	  menu_custom_draw((config_custom_t *)menu_state->custom, menu_state->selected, menu_state->scroll);
-	}
       } else
 	menu_timer_enable(false);   // nothing here animates, the timer rests
     }
@@ -1612,6 +1640,17 @@ void menu_do(int event) {
   }
   
   menu_debugf("do %d", event);
+
+  // game20k: a card change the Games page has not shown yet, e.g. under a message or with
+  // the OSD off, is read before a key acts on the list and before the OSD comes on, which
+  // shows its last frame at once. A key whose line changed under it only shows the new list
+  bool acts = event == MENU_EVENT_UP || event == MENU_EVENT_DOWN || event == MENU_EVENT_PGUP ||
+              event == MENU_EVENT_PGDOWN || event == MENU_EVENT_SELECT;
+  bool shows = event == MENU_EVENT_TOGGLE && !osd_is_visible();
+  if(((acts && osd_is_visible()) || shows) && games_page_shown() && games_stale()) {
+    bool moved = games_list_reread();
+    if(acts && moved) event = MENU_EVENT_NONE;
+  }
   
   if(event)  {
     if(event == MENU_EVENT_TOGGLE) {
@@ -1653,6 +1692,13 @@ void menu_do(int event) {
 
   // if no dialog is open, then draw menu/fsel
   if(!menu_dialog_is_open()) {  
+    // game20k: the Games page also comes back by BACK or when a message closes. The menu
+    // task reads a change first. The dialog timer draws from the timer task and leaves
+    // the read to the menu task, which draws the page once more
+    if(games_page_shown() && osd_is_visible() && games_stale()) {
+      if(xTaskGetCurrentTaskHandle() == menu_handle) games_list_reread();
+      else menu_notify(MENU_EVENT_GAMES_CHANGED);
+    }
     if(menu_state->type == MENU_TYPE_MENU)
       menu_draw(menu_state->menu, menu_state->selected, menu_state->scroll);
     else if(menu_state->type == MENU_TYPE_FILESELECTOR)
@@ -1839,6 +1885,12 @@ static void menu_task(__attribute__((unused)) void *parms) {
     if(cmd == MENU_EVENT_GAMES) {
       // game20k: the core's ROM file is missing, a game is picked instead
       menu_games_show();
+    } else
+    if(cmd == MENU_EVENT_GAMES_CHANGED) {
+      // game20k: the card changed. The page on screen draws again, and menu_do() reads the
+      // card first. A message on top or a hidden OSD waits for the page's next draw
+      if(games_page_shown() && osd_is_visible() && games_stale())
+        menu_do(MENU_EVENT_NONE);
     } else
     if(cmd == MENU_EVENT_MISMATCH) {
       // game20k: core and firmware come from different releases, the basic menu runs
