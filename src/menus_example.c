@@ -6,7 +6,7 @@
  *  A build without GAME20K_MENU_TABLE links this file, so the fork builds on its own.
  *  Such a firmware has no menu for a game20k core: every one gets the basic menu
  *  below, and the Version dialog says "example". A core that brings its own menu
- *  still gets that one. game20k's scripts/build_companion.sh passes the table that
+ *  still gets that one. game20k's g20k.py firmware passes the table that
  *  scripts/make_fw_tables.py generates from its menu sources, one row per board:
  *
  *    static const char menu_galaga_hdmi[] = "<?xml version=\"1.0\" ...";

@@ -5,7 +5,7 @@
  *
  *  A build without GAME20K_GAMES_TABLE links this file, so the fork builds on its
  *  own. Such a firmware knows no game: every board is unknown to it, hardcore stays
- *  off, and the Version dialog says "example". game20k's scripts/build_companion.sh
+ *  off, and the Version dialog says "example". game20k's g20k.py firmware
  *  passes the table that scripts/make_fw_tables.py generates from its ROM manifests,
  *  in the same form as below with one row per game, for example:
  *

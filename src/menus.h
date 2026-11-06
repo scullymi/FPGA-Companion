@@ -7,7 +7,7 @@
  *  mirror header (bytes 12 and 16 to 19), and the firmware takes the board's menu from its
  *  table when the tag there is the same: both come from the same menu sources. The table
  *  is a file of its own that CMake takes from GAME20K_MENU_TABLE. game20k's
- *  scripts/build_companion.sh passes the one its scripts/make_fw_tables.py generates, a
+ *  g20k.py firmware passes the one its scripts/make_fw_tables.py generates, a
  *  build without it links menus_example.c, which holds no menu of a core. */
 #ifndef MENUS_H
 #define MENUS_H

@@ -4,7 +4,7 @@
  *  @brief The games the firmware knows: their ROM files, ids, hashes and boards, see ra_games.c.
  *
  *  The table is a file of its own that CMake takes from GAME20K_GAMES_TABLE. game20k's
- *  scripts/build_companion.sh passes the one it generates from its ROM manifests, a build
+ *  g20k.py firmware passes the one it generates from its ROM manifests, a build
  *  without it links ra_games_example.c, which holds no game. */
 #ifndef RA_GAMES_H
 #define RA_GAMES_H

@@ -83,7 +83,7 @@ add_library(u8g2 ${U8G2_SRC})
 set(RCHEEVOS_DIR ${CMAKE_CURRENT_LIST_DIR}/../rcheevos)
 
 # how this firmware introduces itself to RetroAchievements (User-Agent). The version here
-# is the fallback for a build without the script: scripts/build_companion.sh of game20k
+# is the fallback for a build without the script: g20k.py firmware of game20k
 # passes its git describe output with -DGAME20K_VERSION=... instead. 0.0.0 so that such a
 # build never looks like a release to the server.
 if(NOT DEFINED GAME20K_VERSION)
@@ -92,7 +92,7 @@ endif()
 if(NOT DEFINED GAME20K_PLATFORM)
   set(GAME20K_PLATFORM "Tang Nano 20K")
 endif()
-# the game table, a C file of rows for ra_games.c. scripts/build_companion.sh of game20k
+# the game table, a C file of rows for ra_games.c. g20k.py firmware of game20k
 # passes the one it generates from its ROM manifests with -DGAME20K_GAMES_TABLE=...,
 # without it the build takes the example, which holds no game.
 if(NOT DEFINED GAME20K_GAMES_TABLE)
@@ -129,7 +129,7 @@ add_executable(${PROJECT}
 	../tusb_xinput/xinput_host.c
 	../tusb_asix/asix_host.c
 	../config.c
-	../freertos_callbacks.c
+	freertos_callbacks.c
 	../xml.c
 	../ps2helper.c
 	../ftpd.c
