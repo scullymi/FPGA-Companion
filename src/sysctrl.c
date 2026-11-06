@@ -18,8 +18,8 @@
 #include "config.h"
 #include "mcu_hw.h"
 #include "at_wifi.h"
-#include "ra_task.h"        // ra_task_core_value()
-#include "games.h"          // game20k: games_save_start()
+#include "game20k/ra_task.h"        // ra_task_core_value()
+#include "game20k/games.h"          // game20k: games_save_start()
 
 // we are using "puff" to decompress a gzip'd FPGA config as this is a slow, yet
 // very small and memory efficient implementation of the deflate de-compression

@@ -28,9 +28,9 @@
 #include "rc_api_user.h"
 #include "rc_error.h"
 
-#include "debug.h"
-#include "inifile.h"
-#include "sysctrl.h"
+#include "../debug.h"
+#include "../inifile.h"
+#include "../sysctrl.h"
 #include "ra_net.h"
 #include "ra_patch.h"
 #include "ra_queue.h"

@@ -23,11 +23,11 @@
 #include <FreeRTOS.h>
 #include <task.h>
 #include <ff.h>
-#include "debug.h"
-#include "sdc.h"
+#include "../debug.h"
+#include "../sdc.h"
 #include "menus.h"      // the boards this firmware has a core menu for
 #include "ra_patch.h"   // RA_PATCH_ROM_IMAGE
-#include "menu.h"       // menu_notify()
+#include "../menu.h"       // menu_notify()
 #include "games.h"
 
 #define GAMES_PATH_MAX  (FF_LFN_BUF + 6)   /**< "/sd/" plus a long file name plus the NUL */

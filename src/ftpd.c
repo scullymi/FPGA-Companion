@@ -32,8 +32,8 @@
 #include "sdc.h"
 
 #include "ftpd.h"
-#include "ra_task.h"   /* ra_task_hardcore() */
-#include "games.h"     /* game20k: a ROM file changed, the Games page reads the card again */
+#include "game20k/ra_task.h"   /* ra_task_hardcore() */
+#include "game20k/games.h"     /* game20k: a ROM file changed, the Games page reads the card again */
 
 #define FTP_PORT             21
 #if defined(PICO_RP2040)

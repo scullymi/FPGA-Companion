@@ -18,8 +18,8 @@
 #include <FreeRTOS.h>
 #include <task.h>
 #include <ff.h>
-#include "debug.h"
-#include "sdc.h"
+#include "../debug.h"
+#include "../sdc.h"
 #include "ra_patch.h"
 #include "ra_state.h"
 

@@ -20,7 +20,7 @@
 
 #include "util/rc_version.h"
 
-#include "debug.h"
+#include "../debug.h"
 #include "ra_ca.h"
 #include "ra_net.h"
 #include "ra_slim.h"

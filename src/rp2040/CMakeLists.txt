@@ -96,18 +96,18 @@ endif()
 # passes the one it generates from its ROM manifests with -DGAME20K_GAMES_TABLE=...,
 # without it the build takes the example, which holds no game.
 if(NOT DEFINED GAME20K_GAMES_TABLE)
-  set(GAME20K_GAMES_TABLE ${CMAKE_CURRENT_LIST_DIR}/../ra_games_example.c)
+  set(GAME20K_GAMES_TABLE ${CMAKE_CURRENT_LIST_DIR}/../game20k/ra_games_example.c)
 endif()
 # it includes ra_games.h, which lies next to ra_games.c
-set_source_files_properties(${GAME20K_GAMES_TABLE} PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_LIST_DIR}/..)
+set_source_files_properties(${GAME20K_GAMES_TABLE} PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_LIST_DIR}/../game20k)
 message(STATUS "game20k: games table ${GAME20K_GAMES_TABLE}")
 # the menus of game20k's cores, a C file for menus.c, passed the same way as
 # -DGAME20K_MENU_TABLE=..., without it the build takes the example, which holds no menu
 # of a core.
 if(NOT DEFINED GAME20K_MENU_TABLE)
-  set(GAME20K_MENU_TABLE ${CMAKE_CURRENT_LIST_DIR}/../menus_example.c)
+  set(GAME20K_MENU_TABLE ${CMAKE_CURRENT_LIST_DIR}/../game20k/menus_example.c)
 endif()
-set_source_files_properties(${GAME20K_MENU_TABLE} PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_LIST_DIR}/..)
+set_source_files_properties(${GAME20K_MENU_TABLE} PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_LIST_DIR}/../game20k)
 message(STATUS "game20k: menu table ${GAME20K_MENU_TABLE}")
 
 add_executable(${PROJECT}
@@ -134,20 +134,20 @@ add_executable(${PROJECT}
 	../ps2helper.c
 	../ftpd.c
 	../telnetd.c
-	../ra_games.c
+	../game20k/ra_games.c
 	${GAME20K_GAMES_TABLE}
-	../menus.c
+	../game20k/menus.c
 	${GAME20K_MENU_TABLE}
-	../ra_patch.c
-	../ra_net.c
-	../ra_slim.c
-	../ra_text.c
-	../ra_task.c
-	../ra_mac.c
-	../ra_queue.c
-	../ra_state.c
-	../games_file.c
-	../games.c
+	../game20k/ra_patch.c
+	../game20k/ra_net.c
+	../game20k/ra_slim.c
+	../game20k/ra_text.c
+	../game20k/ra_task.c
+	../game20k/ra_mac.c
+	../game20k/ra_queue.c
+	../game20k/ra_state.c
+	../game20k/games_file.c
+	../game20k/games.c
 	# rcheevos: the runtime that evaluates the conditions and the reader for the
 	# set (api), no rc_client. rc_validate.c stays out, only the editor needs it.
 	${RCHEEVOS_DIR}/src/runtime/rc_alloc.c

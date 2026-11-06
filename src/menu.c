@@ -33,12 +33,12 @@
 #include "menu.h"
 #include "sysctrl.h"
 #include "debug.h"
-#include "ra_patch.h"
-#include "ra_state.h"
-#include "ra_queue.h"
-#include "ra_task.h"
-#include "games.h"
-#include "menus.h"     // game20k: menus_origin for the Version dialog
+#include "game20k/ra_patch.h"
+#include "game20k/ra_state.h"
+#include "game20k/ra_queue.h"
+#include "game20k/ra_task.h"
+#include "game20k/games.h"
+#include "game20k/menus.h"     // game20k: menus_origin for the Version dialog
 #include "util/rc_version.h"
 #include "mcu_hw.h"
 

@@ -16,8 +16,8 @@
 #include <strings.h>
 
 #include <ff.h>
-#include "debug.h"
-#include "rcheevos/src/util/md5.h"
+#include "../debug.h"
+#include "../rcheevos/src/util/md5.h"
 #include "ra_games.h"
 
 const ra_game_t *ra_games_by_board(unsigned char board) {

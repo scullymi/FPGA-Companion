@@ -17,17 +17,17 @@ uint32_t getTotalHeap(void);  /* mcu_hw.c: the SDK heap, all of it */
 #include "../debug.h"
 #include "../spi.h"     /* SPI_TARGET_RAM */
 #include "rc_runtime.h"
-#include "../ra_patch.h"
-#include "../ra_queue.h"
-#include "../ra_state.h"
-#include "../ra_task.h"
-#include "../ra_mac.h"
+#include "../game20k/ra_patch.h"
+#include "../game20k/ra_queue.h"
+#include "../game20k/ra_state.h"
+#include "../game20k/ra_task.h"
+#include "../game20k/ra_mac.h"
 #include <string.h>
 #include "pico/time.h"
 #include "hardware/watchdog.h"   /* the way of a core switch across a restart, see switch_step() */
 #include "../ftpd.h"             /* the uploads a restart would cut, for the log */
-#include "../games.h"            /* the Games page's pick and the start game */
-#include "../menus.h"            /* the menus of game20k's cores */
+#include "../game20k/games.h"            /* the Games page's pick and the start game */
+#include "../game20k/menus.h"            /* the menus of game20k's cores */
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict

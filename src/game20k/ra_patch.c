@@ -32,13 +32,13 @@
 #include <queue.h>
 #include "rc_api_runtime.h"
 #include "runtime/rc_trigger.h"   // rc_trigger_t and its states (internal), for the challenge indicator
-#include "rcheevos/src/util/md5.h"
-#include "rcheevos/src/api/rc_api_common.h"   // rc_json_*: one field of the set text, decoded as rc_api does
+#include "../rcheevos/src/util/md5.h"
+#include "../rcheevos/src/api/rc_api_common.h"   // rc_json_*: one field of the set text, decoded as rc_api does
 #include "rc_util.h"                             // rc_buffer_t for that one field
 #include "mbedtls/sha256.h"
 #include <ff.h>
-#include "debug.h"
-#include "sdc.h"
+#include "../debug.h"
+#include "../sdc.h"
 #include "ra_patch.h"
 #include "ra_slim.h"
 #include "ra_text.h"

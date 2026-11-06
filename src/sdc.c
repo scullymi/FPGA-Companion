@@ -18,8 +18,8 @@
 #include <task.h>
 #endif
 #include "sdc.h"
-#include "ra_patch.h"   // the ROM set is checked against the known files
-#include "games.h"      // game20k: the footer of a ROM file
+#include "game20k/ra_patch.h"   // the ROM set is checked against the known files
+#include "game20k/games.h"      // game20k: the footer of a ROM file
 #include "menu.h"
 #include "sysctrl.h"
 

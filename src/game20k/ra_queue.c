@@ -35,8 +35,8 @@
 #include <time.h>
 
 #include <ff.h>
-#include "debug.h"
-#include "sdc.h"
+#include "../debug.h"
+#include "../sdc.h"
 #include "ra_task.h"
 #include "ra_patch.h"   // ra_game_hash(): the running game, stamped into every new unlock in com_task
 #include "ra_state.h"

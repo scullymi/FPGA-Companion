@@ -29,7 +29,7 @@
 #include "../at_wifi.h"
 #include "../inifile.h"
 #include "../menu.h"
-#include "../ra_task.h"
+#include "../game20k/ra_task.h"
 #include "../gowin.h"
 
 #include "../mcu_hw.h"
