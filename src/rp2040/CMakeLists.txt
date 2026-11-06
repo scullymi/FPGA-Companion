@@ -79,37 +79,6 @@ include(./FreeRTOS_Kernel_import.cmake)
 file(GLOB U8G2_SRC ../u8g2/csrc/*.c)
 add_library(u8g2 ${U8G2_SRC})
 
-# rcheevos (submodule), for the achievements of the game20k core
-set(RCHEEVOS_DIR ${CMAKE_CURRENT_LIST_DIR}/../rcheevos)
-
-# how this firmware introduces itself to RetroAchievements (User-Agent). The version here
-# is the fallback for a build without the script: g20k.py firmware of game20k
-# passes its git describe output with -DGAME20K_VERSION=... instead. 0.0.0 so that such a
-# build never looks like a release to the server.
-if(NOT DEFINED GAME20K_VERSION)
-  set(GAME20K_VERSION "0.0.0")
-endif()
-if(NOT DEFINED GAME20K_PLATFORM)
-  set(GAME20K_PLATFORM "Tang Nano 20K")
-endif()
-# the game table, a C file of rows for ra_games.c. g20k.py firmware of game20k
-# passes the one it generates from its ROM manifests with -DGAME20K_GAMES_TABLE=...,
-# without it the build takes the example, which holds no game.
-if(NOT DEFINED GAME20K_GAMES_TABLE)
-  set(GAME20K_GAMES_TABLE ${CMAKE_CURRENT_LIST_DIR}/../game20k/ra_games_example.c)
-endif()
-# it includes ra_games.h, which lies next to ra_games.c
-set_source_files_properties(${GAME20K_GAMES_TABLE} PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_LIST_DIR}/../game20k)
-message(STATUS "game20k: games table ${GAME20K_GAMES_TABLE}")
-# the menus of game20k's cores, a C file for menus.c, passed the same way as
-# -DGAME20K_MENU_TABLE=..., without it the build takes the example, which holds no menu
-# of a core.
-if(NOT DEFINED GAME20K_MENU_TABLE)
-  set(GAME20K_MENU_TABLE ${CMAKE_CURRENT_LIST_DIR}/../game20k/menus_example.c)
-endif()
-set_source_files_properties(${GAME20K_MENU_TABLE} PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_CURRENT_LIST_DIR}/../game20k)
-message(STATUS "game20k: menu table ${GAME20K_MENU_TABLE}")
-
 add_executable(${PROJECT}
 	../main.c
 	mcu_hw.c
@@ -134,49 +103,6 @@ add_executable(${PROJECT}
 	../ps2helper.c
 	../ftpd.c
 	../telnetd.c
-	../game20k/ra_games.c
-	${GAME20K_GAMES_TABLE}
-	../game20k/menus.c
-	${GAME20K_MENU_TABLE}
-	../game20k/ra_patch.c
-	../game20k/ra_net.c
-	../game20k/ra_slim.c
-	../game20k/ra_text.c
-	../game20k/ra_task.c
-	../game20k/ra_mac.c
-	../game20k/ra_queue.c
-	../game20k/ra_state.c
-	../game20k/games_file.c
-	../game20k/games.c
-	../game20k/ram_mirror.c
-	../game20k/core_boot.c
-	../game20k/game_switch.c
-	../game20k/ra_events.c
-	../game20k/banner.c
-	../game20k/menu_pages.c
-	# rcheevos: the runtime that evaluates the conditions and the reader for the
-	# set (api), no rc_client. rc_validate.c stays out, only the editor needs it.
-	${RCHEEVOS_DIR}/src/runtime/rc_alloc.c
-	${RCHEEVOS_DIR}/src/runtime/rc_condition.c
-	${RCHEEVOS_DIR}/src/runtime/rc_condset.c
-	${RCHEEVOS_DIR}/src/runtime/rc_consoleinfo.c
-	${RCHEEVOS_DIR}/src/runtime/rc_format.c
-	${RCHEEVOS_DIR}/src/runtime/rc_lboard.c
-	${RCHEEVOS_DIR}/src/runtime/rc_memref.c
-	${RCHEEVOS_DIR}/src/runtime/rc_operand.c
-	${RCHEEVOS_DIR}/src/runtime/rc_richpresence.c
-	${RCHEEVOS_DIR}/src/runtime/rc_runtime.c
-	${RCHEEVOS_DIR}/src/runtime/rc_runtime_progress.c
-	${RCHEEVOS_DIR}/src/runtime/rc_trigger.c
-	${RCHEEVOS_DIR}/src/runtime/rc_typed_value.c
-	${RCHEEVOS_DIR}/src/runtime/rc_value.c
-	${RCHEEVOS_DIR}/src/api/rc_api_common.c
-	${RCHEEVOS_DIR}/src/api/rc_api_runtime.c
-	${RCHEEVOS_DIR}/src/api/rc_api_user.c
-	${RCHEEVOS_DIR}/src/util/rc_util.c
-	${RCHEEVOS_DIR}/src/util/rc_compat.c
-	${RCHEEVOS_DIR}/src/util/rc_version.c
-	${RCHEEVOS_DIR}/src/util/md5.c
 )
 
 family_add_pico_pio_usb(${PROJECT})
@@ -245,25 +171,15 @@ string(APPEND CMAKE_C_FLAGS " -Os -fdata-sections -ffunction-sections -Wno-error
 target_link_libraries(${PROJECT} PRIVATE pico_stdlib pico_multicore)
 target_link_libraries(${PROJECT} PRIVATE FreeRTOS-Kernel FreeRTOS-Kernel-Heap4)
 target_link_libraries(${PROJECT} PRIVATE hardware_pio hardware_dma hardware_spi hardware_adc)
-# rcheevos, without threads
-target_include_directories(${PROJECT} PRIVATE ${RCHEEVOS_DIR}/include ${RCHEEVOS_DIR}/src)
-target_compile_definitions(${PROJECT} PRIVATE RC_NO_THREADS=1)
-target_compile_definitions(${PROJECT} PRIVATE
-	GAME20K_VERSION="${GAME20K_VERSION}" GAME20K_PLATFORM="${GAME20K_PLATFORM}")
-# malloc returns NULL when the SDK heap is out instead of stopping the firmware. How much a
-# set takes is up to the server, beyond our reach: what finds no room beside the parsed set
-# comes once it is freed, else it stays off and hardcore is blocked (ra_patch.c), a request
-# that finds too little fails and is asked again, and the game goes on. Our own mallocs
-# check for NULL. A large set once stopped the firmware at every start.
-target_compile_definitions(${PROJECT} PRIVATE PICO_MALLOC_PANIC=0)
 target_link_libraries(${PROJECT} PRIVATE pico_cyw43_arch_lwip_sys_freertos)
 if(NOT GAME20K_NO_BLUETOOTH)
   target_link_libraries(${PROJECT} PRIVATE pico_btstack_cyw43 pico_btstack_classic)
 endif()
 target_link_libraries(${PROJECT} PRIVATE tinyusb_host tinyusb_board u8g2)
 target_link_libraries(${PROJECT} PRIVATE pico_lwip_sntp)
-# HTTPS to RetroAchievements: the HTTP client, lwIP's TLS layer, mbedTLS
-target_link_libraries(${PROJECT} PRIVATE pico_lwip_http pico_lwip_mbedtls pico_mbedtls)
+# game20k's own code
+include(../game20k/game20k.cmake)
+target_link_libraries(${PROJECT} PRIVATE game20k)
 
 pico_add_extra_outputs(${PROJECT})
 pico_enable_stdio_usb(${PROJECT} 0)
