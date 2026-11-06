@@ -153,6 +153,7 @@ add_executable(${PROJECT}
 	../game20k/game_switch.c
 	../game20k/ra_events.c
 	../game20k/banner.c
+	../game20k/menu_pages.c
 	# rcheevos: the runtime that evaluates the conditions and the reader for the
 	# set (api), no rc_client. rc_validate.c stays out, only the editor needs it.
 	${RCHEEVOS_DIR}/src/runtime/rc_alloc.c
