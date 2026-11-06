@@ -22,22 +22,22 @@ const char menus_origin[] = "example";
 // C has no empty array: one zero row gives the table a size, menus_rows_n keeps it
 // out of every lookup
 const menus_entry_t menus_rows[1];
-const unsigned      menus_rows_n = 0;
+const unsigned menus_rows_n = 0;
 
 // the least a menu needs: the core out of reset, a reset, and the Status page
-const char menus_basic_xml[] =
-  "<config name=\"example\">\n"
-  "  <actions>\n"
-  "    <action name=\"netinfo\"/>\n"
-  "    <action name=\"verinfo\"/>\n"
-  "    <action name=\"ready\"><set id=\"R\" value=\"0\"/></action>\n"
-  "    <action name=\"reset\"><set id=\"R\" value=\"1\"/><delay ms=\"10\"/><set id=\"R\" value=\"0\"/></action>\n"
-  "  </actions>\n"
-  "  <menu label=\"Unknown core\">\n"
-  "    <menu label=\"Status\">\n"
-  "      <button label=\"Network\" action=\"netinfo\"/>\n"
-  "      <button label=\"Version\" action=\"verinfo\"/>\n"
-  "    </menu>\n"
-  "    <button label=\"Reset\" action=\"reset\"/>\n"
-  "  </menu>\n"
-  "</config>\n";
+const char menus_basic_xml[] = "<config name=\"example\">\n"
+                               "  <actions>\n"
+                               "    <action name=\"netinfo\"/>\n"
+                               "    <action name=\"verinfo\"/>\n"
+                               "    <action name=\"ready\"><set id=\"R\" value=\"0\"/></action>\n"
+                               "    <action name=\"reset\"><set id=\"R\" value=\"1\"/><delay ms=\"10\"/><set "
+                               "id=\"R\" value=\"0\"/></action>\n"
+                               "  </actions>\n"
+                               "  <menu label=\"Unknown core\">\n"
+                               "    <menu label=\"Status\">\n"
+                               "      <button label=\"Network\" action=\"netinfo\"/>\n"
+                               "      <button label=\"Version\" action=\"verinfo\"/>\n"
+                               "    </menu>\n"
+                               "    <button label=\"Reset\" action=\"reset\"/>\n"
+                               "  </menu>\n"
+                               "</config>\n";

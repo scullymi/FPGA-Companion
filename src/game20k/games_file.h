@@ -10,19 +10,19 @@
 #include <stdint.h>
 #include <ff.h>
 
-#define GAMES_FOOTER_SIZE    128   /**< bytes at the end of a ROM file, after the content */
-#define GAMES_FOOTER_VERSION 1     /**< the layout below, byte 4 */
-#define GAMES_SET_MAX        16    /**< set name in the footer, without the NUL */
-#define GAMES_TITLE_MAX      48    /**< title in the footer, without the NUL */
+#define GAMES_FOOTER_SIZE    128 /**< bytes at the end of a ROM file, after the content */
+#define GAMES_FOOTER_VERSION 1   /**< the layout below, byte 4 */
+#define GAMES_SET_MAX        16  /**< set name in the footer, without the NUL */
+#define GAMES_TITLE_MAX      48  /**< title in the footer, without the NUL */
 
 /** @brief A valid footer, as games_footer_parse() found it. */
 typedef struct {
-  unsigned char board;                     /**< board id of the core that runs it, header byte 12 */
-  unsigned char screen;                    /**< screen code of the manifest */
-  uint32_t      content;                   /**< bytes before the footer, what goes to the core */
-  char          set[GAMES_SET_MAX + 1];    /**< MAME set name */
-  char          title[GAMES_TITLE_MAX + 1];/**< for the menu */
-  unsigned char sha[32];                   /**< SHA-256 of the content */
+  unsigned char board;             /**< board id of the core that runs it, header byte 12 */
+  unsigned char screen;            /**< screen code of the manifest */
+  uint32_t content;                /**< bytes before the footer, what goes to the core */
+  char set[GAMES_SET_MAX + 1];     /**< MAME set name */
+  char title[GAMES_TITLE_MAX + 1]; /**< for the menu */
+  unsigned char sha[32];           /**< SHA-256 of the content */
 } games_footer_t;
 
 /** @brief CRC-32 as zlib computes it (IEEE, reflected, polynomial 0xEDB88320). */

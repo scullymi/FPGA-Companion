@@ -8,15 +8,15 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define RA_MAC_HEX 64   /**< a tag as lowercase hex, without its NUL */
+#define RA_MAC_HEX 64 /**< a tag as lowercase hex, without its NUL */
 
 /** @brief What ra_mac_init() found. */
 typedef enum {
-  RA_MAC_NONE,      /**< not initialised */
-  RA_MAC_CREATED,   /**< no key was there, one was made and stored */
-  RA_MAC_PRESENT,   /**< the stored key was read and checks out */
-  RA_MAC_REPLACED,  /**< the sector held something else, e.g. another firmware's files: a new key was made */
-  RA_MAC_ERROR      /**< the sector cannot be used (the firmware reaches into it, a partition table) or writing failed: no tags */
+  RA_MAC_NONE,     /**< not initialised */
+  RA_MAC_CREATED,  /**< no key was there, one was made and stored */
+  RA_MAC_PRESENT,  /**< the stored key was read and checks out */
+  RA_MAC_REPLACED, /**< the sector held something else, e.g. another firmware's files: a new key was made */
+  RA_MAC_ERROR /**< the sector cannot be used (the firmware reaches into it, a partition table) or writing failed: no tags */
 } ra_mac_state_t;
 
 /** @brief Reads the device key from flash, or makes and stores one. Once, from main(), before the scheduler starts.
@@ -48,8 +48,10 @@ bool ra_mac_check(const char *label, const void *data, size_t len, const char *h
 /** @brief The tag over label and two parts of data, head then data, as ra_mac_tag() would give it for the two joined.
  *
  *  For a tag over a prefix and a large buffer without a copy of the buffer. */
-bool ra_mac_tag2(const char *label, const void *head, size_t head_len, const void *data, size_t len, char *hex);
+bool ra_mac_tag2(const char *label, const void *head, size_t head_len, const void *data, size_t len,
+                 char *hex);
 /** @brief True when hex is the tag over label, head and data. Compared in constant time. */
-bool ra_mac_check2(const char *label, const void *head, size_t head_len, const void *data, size_t len, const char *hex);
+bool ra_mac_check2(const char *label, const void *head, size_t head_len, const void *data, size_t len,
+                   const char *hex);
 
 #endif /* RA_MAC_H */

@@ -28,25 +28,27 @@
 #include "mbedtls/constant_time.h"
 #include "ra_mac.h"
 
-#define RA_MAC_OFFSET (PICO_FLASH_SIZE_BYTES - 4u * FLASH_SECTOR_SIZE)   /**< the key's sector, see above */
-#define RA_MAC_MAGIC  "G20KKEY1"                                          /**< marks a record of this format */
+#define RA_MAC_OFFSET (PICO_FLASH_SIZE_BYTES - 4u * FLASH_SECTOR_SIZE) /**< the key's sector, see above */
+#define RA_MAC_MAGIC  "G20KKEY1"                                       /**< marks a record of this format */
 
 /** The record at the start of the sector, one flash page. */
 typedef struct {
-  char    magic[8];     /**< RA_MAC_MAGIC */
-  uint8_t key[32];      /**< the key */
-  uint8_t check[32];    /**< SHA-256 over magic and key, tells a whole record from a torn one */
+  char magic[8];     /**< RA_MAC_MAGIC */
+  uint8_t key[32];   /**< the key */
+  uint8_t check[32]; /**< SHA-256 over magic and key, tells a whole record from a torn one */
 } record_t;
 
-static uint8_t        key[32];
+static uint8_t key[32];
 static ra_mac_state_t state = RA_MAC_NONE;
-static const char    *why = "";   // which check refused the sector, for the log
+static const char *why      = ""; // which check refused the sector, for the log
 
-extern char __flash_binary_end;   // end of the firmware in flash, from the linker script
+extern char __flash_binary_end; // end of the firmware in flash, from the linker script
 
 ra_mac_state_t ra_mac_state(void) { return state; }
 const char *ra_mac_error(void) { return why; }
-bool ra_mac_ready(void) { return state == RA_MAC_CREATED || state == RA_MAC_PRESENT || state == RA_MAC_REPLACED; }
+bool ra_mac_ready(void) {
+  return state == RA_MAC_CREATED || state == RA_MAC_PRESENT || state == RA_MAC_REPLACED;
+}
 
 static void record_check(const record_t *r, uint8_t *out) {
   mbedtls_sha256((const unsigned char *)r, sizeof(r->magic) + sizeof(r->key), out, 0);
@@ -54,7 +56,7 @@ static void record_check(const record_t *r, uint8_t *out) {
 
 ra_mac_state_t ra_mac_init(void) {
   const record_t *stored = (const record_t *)(XIP_BASE + RA_MAC_OFFSET);
-  static uint8_t page[FLASH_PAGE_SIZE];   // static: main()'s stack is small before the scheduler
+  static uint8_t page[FLASH_PAGE_SIZE]; // static: main()'s stack is small before the scheduler
   record_t *r = (record_t *)page;
   uint8_t check[32];
   size_t i;
@@ -63,7 +65,7 @@ ra_mac_state_t ra_mac_init(void) {
 
   // the sector must lie behind the firmware, a larger build would write into itself
   if((uintptr_t)&__flash_binary_end > XIP_BASE + RA_MAC_OFFSET) {
-    why = "the firmware reaches into its sector";
+    why          = "the firmware reaches into its sector";
     return state = RA_MAC_ERROR;
   }
 #if PICO_RP2350
@@ -73,7 +75,7 @@ ra_mac_state_t ra_mac_init(void) {
   // an untranslated window gives the runtime address back unchanged.
   intptr_t storage = rom_flash_runtime_to_storage_addr(XIP_BASE + RA_MAC_OFFSET);
   if(storage >= 0 && (uintptr_t)storage != XIP_BASE + RA_MAC_OFFSET) {
-    why = "a partition table maps the flash elsewhere";
+    why          = "a partition table maps the flash elsewhere";
     return state = RA_MAC_ERROR;
   }
 #endif
@@ -94,9 +96,9 @@ ra_mac_state_t ra_mac_init(void) {
   // a new key: two draws of pico_rand (fed by the RP2350's TRNG), the board id and
   // the time, all through SHA-256
   struct {
-    rng_128_t              a, b;
+    rng_128_t a, b;
     pico_unique_board_id_t id;
-    uint64_t               us;
+    uint64_t us;
   } seed;
   get_rand_128(&seed.a);
   get_rand_128(&seed.b);
@@ -127,14 +129,14 @@ ra_mac_state_t ra_mac_init(void) {
 /* HMAC-SHA256 over the label, a newline, head and data: head is an optional
    prefix, so that a tag over an id and a large buffer needs no copy of the
    buffer with the id in front. */
-static bool mac(const char *label, const void *head, size_t head_len, const void *data, size_t len, uint8_t *out) {
+static bool mac(const char *label, const void *head, size_t head_len, const void *data, size_t len,
+                uint8_t *out) {
   const mbedtls_md_info_t *md = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
   mbedtls_md_context_t ctx;
   bool ok;
   if(!ra_mac_ready() || !md) return false;
   mbedtls_md_init(&ctx);
-  ok = mbedtls_md_setup(&ctx, md, 1) == 0 &&
-       mbedtls_md_hmac_starts(&ctx, key, sizeof(key)) == 0 &&
+  ok = mbedtls_md_setup(&ctx, md, 1) == 0 && mbedtls_md_hmac_starts(&ctx, key, sizeof(key)) == 0 &&
        mbedtls_md_hmac_update(&ctx, (const unsigned char *)label, strlen(label)) == 0 &&
        mbedtls_md_hmac_update(&ctx, (const unsigned char *)"\n", 1) == 0 &&
        (head_len == 0 || mbedtls_md_hmac_update(&ctx, (const unsigned char *)head, head_len) == 0) &&
@@ -144,7 +146,8 @@ static bool mac(const char *label, const void *head, size_t head_len, const void
   return ok;
 }
 
-bool ra_mac_tag2(const char *label, const void *head, size_t head_len, const void *data, size_t len, char *hex) {
+bool ra_mac_tag2(const char *label, const void *head, size_t head_len, const void *data, size_t len,
+                 char *hex) {
   static const char digits[] = "0123456789abcdef";
   uint8_t t[32];
   unsigned i;
@@ -161,7 +164,8 @@ bool ra_mac_tag(const char *label, const void *data, size_t len, char *hex) {
   return ra_mac_tag2(label, NULL, 0, data, len, hex);
 }
 
-bool ra_mac_check2(const char *label, const void *head, size_t head_len, const void *data, size_t len, const char *hex) {
+bool ra_mac_check2(const char *label, const void *head, size_t head_len, const void *data, size_t len,
+                   const char *hex) {
   char want[RA_MAC_HEX + 1];
   if(!hex || strlen(hex) != RA_MAC_HEX || !ra_mac_tag2(label, head, head_len, data, len, want)) return false;
   return mbedtls_ct_memcmp(want, hex, RA_MAC_HEX) == 0;

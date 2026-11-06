@@ -23,4 +23,4 @@ const char ra_games_origin[] = "example";
 // C has no empty array: one zero row gives the table a size, ra_games_rows_n keeps
 // it out of every lookup
 const ra_game_t ra_games_rows[1];
-const unsigned  ra_games_rows_n = 0;
+const unsigned ra_games_rows_n = 0;

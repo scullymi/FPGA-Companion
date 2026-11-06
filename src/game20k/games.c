@@ -25,34 +25,32 @@
 #include <ff.h>
 #include "../debug.h"
 #include "../sdc.h"
-#include "menus.h"      // the boards this firmware has a core menu for
-#include "ra_patch.h"   // RA_PATCH_ROM_IMAGE
-#include "../menu.h"       // menu_notify()
+#include "menus.h"    // the boards this firmware has a core menu for
+#include "ra_patch.h" // RA_PATCH_ROM_IMAGE
+#include "../menu.h"  // menu_notify()
 #include "games.h"
 
-#define GAMES_PATH_MAX  (FF_LFN_BUF + 6)   /**< "/sd/" plus a long file name plus the NUL */
-#define GAMES_DAMAGED_MAX 4                 /**< damaged files remembered, the oldest gives way */
+#define GAMES_PATH_MAX    (FF_LFN_BUF + 6) /**< "/sd/" plus a long file name plus the NUL */
+#define GAMES_DAMAGED_MAX 4                /**< damaged files remembered, the oldest gives way */
 
 /* One line of the list: the title, then the file name, in one allocation. */
 typedef struct games_entry {
   struct games_entry *next;
-  uint32_t            crc;     // of the file name
-  unsigned char       board;
-  const char         *name;    // behind the title in text[]
-  char                text[];  // title NUL name NUL
+  uint32_t crc; // of the file name
+  unsigned char board;
+  const char *name; // behind the title in text[]
+  char text[];      // title NUL name NUL
 } games_entry_t;
 
-static games_entry_t *list;            // menu task only
-static unsigned       list_n;
-static volatile bool  stale = true;    // the card changed, any task sets it
-static uint32_t       damaged[GAMES_DAMAGED_MAX];   // CRCs of name, 0 for none, under a critical section
-static unsigned       damaged_next;
-static games_pick_t   pick;            // under a critical section
-static bool           pick_set, pick_committed;
+static games_entry_t *list; // menu task only
+static unsigned list_n;
+static volatile bool stale = true;          // the card changed, any task sets it
+static uint32_t damaged[GAMES_DAMAGED_MAX]; // CRCs of name, 0 for none, under a critical section
+static unsigned damaged_next;
+static games_pick_t pick; // under a critical section
+static bool pick_set, pick_committed;
 
-uint32_t games_name_crc(const char *name) {
-  return games_crc32(name, strlen(name));
-}
+uint32_t games_name_crc(const char *name) { return games_crc32(name, strlen(name)); }
 
 bool games_stale(void) { return stale; }
 
@@ -65,18 +63,18 @@ void games_changed(const char *name) {
   taskENTER_CRITICAL();
   memset(damaged, 0, sizeof(damaged));
   bool was = stale;
-  stale = true;
+  stale    = true;
   taskEXIT_CRITICAL();
-  if(!was) menu_notify(MENU_EVENT_GAMES_CHANGED);   // one is enough until the next read
+  if(!was) menu_notify(MENU_EVENT_GAMES_CHANGED); // one is enough until the next read
 }
 
 void games_damaged(const char *name) {
   uint32_t crc = games_name_crc(name);
   taskENTER_CRITICAL();
   damaged[damaged_next] = crc;
-  damaged_next = (damaged_next + 1) % GAMES_DAMAGED_MAX;
-  bool was = stale;
-  stale = true;
+  damaged_next          = (damaged_next + 1) % GAMES_DAMAGED_MAX;
+  bool was              = stale;
+  stale                 = true;
   taskEXIT_CRITICAL();
   if(!was) menu_notify(MENU_EVENT_GAMES_CHANGED);
 }
@@ -84,7 +82,8 @@ void games_damaged(const char *name) {
 static bool is_damaged(uint32_t crc) {
   bool hit = false;
   taskENTER_CRITICAL();
-  for(unsigned i = 0; i < GAMES_DAMAGED_MAX; i++) if(damaged[i] && damaged[i] == crc) hit = true;
+  for(unsigned i = 0; i < GAMES_DAMAGED_MAX; i++)
+    if(damaged[i] && damaged[i] == crc) hit = true;
   taskEXIT_CRITICAL();
   return hit;
 }
@@ -101,7 +100,7 @@ static void insert(const char *title, const char *name, uint32_t crc, unsigned c
   e->board = board;
   while(*at && games_order((*at)->text, (*at)->name, title, name) <= 0) at = &(*at)->next;
   e->next = *at;
-  *at = e;
+  *at     = e;
   list_n++;
 }
 
@@ -119,7 +118,7 @@ void games_read(void) {
     list = next;
   }
   list_n = 0;
-  stale  = false;   // before the read: a change while it runs reads again
+  stale  = false; // before the read: a change while it runs reads again
   sdc_lock();
   if(f_opendir(&dir, CARD_MOUNTPOINT) == FR_OK) {
     while(f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
@@ -134,18 +133,27 @@ void games_read(void) {
       }
       // a file without a valid footer is an old one (or none at all), a board
       // without a menu here has no core in this firmware's ring
-      if(!ok)                             { old++;     continue; }
-      if(!menus_by_board(ft.board, NULL)) { foreign++; continue; }
+      if(!ok) {
+        old++;
+        continue;
+      }
+      if(!menus_by_board(ft.board, NULL)) {
+        foreign++;
+        continue;
+      }
       uint32_t crc = games_name_crc(fno.fname);
-      if(is_damaged(crc))                 { bad++;     continue; }
+      if(is_damaged(crc)) {
+        bad++;
+        continue;
+      }
       snprintf(title, sizeof(title), "%s", ft.title[0] ? ft.title : ft.set[0] ? ft.set : fno.fname);
       insert(title, fno.fname, crc, ft.board);
     }
     f_closedir(&dir);
   }
   sdc_unlock();
-  debugf("Games: %u listed, %u without a valid footer, %u of an unknown board, %u damaged",
-         list_n, old, foreign, bad);
+  debugf("Games: %u listed, %u without a valid footer, %u of an unknown board, %u damaged", list_n, old,
+         foreign, bad);
 }
 
 unsigned games_count(void) { return list_n; }
@@ -206,7 +214,7 @@ bool games_find(uint32_t crc, char *path, size_t n) {
     while(!found && f_readdir(&dir, &fno) == FR_OK && fno.fname[0])
       if(!(fno.fattrib & AM_DIR) && games_name_crc(fno.fname) == crc) {
         int len = snprintf(path, n, "%s/%s", CARD_MOUNTPOINT, fno.fname);
-        found = len > 0 && (size_t)len < n;
+        found   = len > 0 && (size_t)len < n;
       }
     f_closedir(&dir);
   }
@@ -244,8 +252,7 @@ void games_save_start(void) {
     bool ok = f_error(&f) == 0;
     if(f_close(&f) != FR_OK) ok = false;
     debugf("Games: start game %s %s", img, ok ? "saved" : "not saved");
-  } else
-    debugf("Games: %s not written (error %d)", GAMES_START_FILE, (int)r);
+  } else debugf("Games: %s not written (error %d)", GAMES_START_FILE, (int)r);
   sdc_unlock();
 }
 

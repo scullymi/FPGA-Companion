@@ -7,8 +7,8 @@
 
 #include <stdint.h>
 
-extern unsigned char ram_mirror_board;   /**< the running core's board id, read only outside ram_mirror.c */
-extern uint16_t      ram_mirror_tag;     /**< its interface tag, read only outside ram_mirror.c */
+extern unsigned char ram_mirror_board; /**< the running core's board id, read only outside ram_mirror.c */
+extern uint16_t ram_mirror_tag;        /**< its interface tag, read only outside ram_mirror.c */
 
 /** @brief Board id and interface tag before the menu and the game, 0 for a valid header, else the last verdict. */
 unsigned char ram_mirror_probe(void);

@@ -22,30 +22,29 @@
 
 const ra_game_t *ra_games_by_board(unsigned char board) {
   unsigned i;
-  if(!board) return NULL;   // 0 is "no header read", never a board
-  for(i = 0; i < ra_games_rows_n; i++) if(ra_games_rows[i].board == board) return &ra_games_rows[i];
+  if(!board) return NULL; // 0 is "no header read", never a board
+  for(i = 0; i < ra_games_rows_n; i++)
+    if(ra_games_rows[i].board == board) return &ra_games_rows[i];
   return NULL;
 }
 
 const ra_game_t *ra_games_by_hash(const char *hex) {
   unsigned i;
   if(!hex) return NULL;
-  for(i = 0; i < ra_games_rows_n; i++) if(!strcasecmp(ra_games_rows[i].hash, hex)) return &ra_games_rows[i];
+  for(i = 0; i < ra_games_rows_n; i++)
+    if(!strcasecmp(ra_games_rows[i].hash, hex)) return &ra_games_rows[i];
   return NULL;
 }
 
-unsigned ra_games_row(const ra_game_t *g) {
-  return (unsigned)(g - ra_games_rows);
-}
+unsigned ra_games_row(const ra_game_t *g) { return (unsigned)(g - ra_games_rows); }
 
-const ra_game_t *ra_games_at(unsigned row) {
-  return row < ra_games_rows_n ? &ra_games_rows[row] : NULL;
-}
+const ra_game_t *ra_games_at(unsigned row) { return row < ra_games_rows_n ? &ra_games_rows[row] : NULL; }
 
 const ra_game_t *ra_games_by_id(unsigned id) {
   unsigned i;
   if(!id) return NULL;
-  for(i = 0; i < ra_games_rows_n; i++) if(ra_games_rows[i].id == id) return &ra_games_rows[i];
+  for(i = 0; i < ra_games_rows_n; i++)
+    if(ra_games_rows[i].id == id) return &ra_games_rows[i];
   return NULL;
 }
 
@@ -79,16 +78,17 @@ void ra_games_name_hash(const char *image, char hex[RA_GAMES_HASH_LEN + 1]) {
   // the base name: after the last '/', up to the last '.', as rc_hash_arcade() takes
   // it. A name without a '.' is hashed whole, rcheevos does the same for a folder.
   const char *base = strrchr(image, '/');
-  base = base ? base + 1 : image;
-  const char *dot = strrchr(base, '.');
-  size_t len = dot ? (size_t)(dot - base) : strlen(base);
+  base             = base ? base + 1 : image;
+  const char *dot  = strrchr(base, '.');
+  size_t len       = dot ? (size_t)(dot - base) : strlen(base);
   md5_init(&md5);
   md5_append(&md5, (const md5_byte_t *)base, (int)len);
   md5_finish(&md5, sum);
   for(i = 0; i < 16; i++) snprintf(hex + 2 * i, 3, "%02x", sum[i]);
 }
 
-void ra_games_select(unsigned char board, const unsigned char *sha, const char *name_hash, bool streaming, ra_ident_t *out) {
+void ra_games_select(unsigned char board, const unsigned char *sha, const char *name_hash, bool streaming,
+                     ra_ident_t *out) {
   const ra_rom_t *row = NULL;
   const ra_game_t *g;
   memset(out, 0, sizeof(*out));

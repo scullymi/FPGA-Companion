@@ -8,7 +8,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define RA_STATE_MAX 128  /**< ids kept per list, hardcore and softcore each, as many as a set holds (RA_PATCH_MAX) */
+#define RA_STATE_MAX                                                                                         \
+  128 /**< ids kept per list, hardcore and softcore each, as many as a set holds (RA_PATCH_MAX) */
 
 /** @brief Reads the state of this account and the game with that id from the card. RA task only, once per game after its id is known.
  *

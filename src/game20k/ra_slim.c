@@ -21,21 +21,24 @@
 /* The fields of r=patch that nothing here reads: rcheevos builds the badge addresses
    from BadgeName when they are missing, and takes the rarities and the game's icon
    address as optional (rc_api_runtime.c). Each holds a string or a number. */
-static const char *const unused[] = {
-  "BadgeURL", "BadgeLockedURL", "Rarity", "RarityHardcore", "ImageIconURL"
-};
+static const char *const unused[] = {"BadgeURL", "BadgeLockedURL", "Rarity", "RarityHardcore",
+                                     "ImageIconURL"};
 
 enum { FRAME_START, FRAME_PLAIN, FRAME_LEN, FRAME_EXT, FRAME_DATA, FRAME_DATA_END, FRAME_DONE };
-enum { JSON_OUT, JSON_STR, JSON_STR_ESC, JSON_SKIP, JSON_SKIP_STR, JSON_SKIP_STR_ESC,
-       JSON_SKIP_NUM, JSON_SKIP_END };
+enum {
+  JSON_OUT,
+  JSON_STR,
+  JSON_STR_ESC,
+  JSON_SKIP,
+  JSON_SKIP_STR,
+  JSON_SKIP_STR_ESC,
+  JSON_SKIP_NUM,
+  JSON_SKIP_END
+};
 
-void ra_slim_init(ra_slim_t *s) {
-  memset(s, 0, sizeof(*s));
-}
+void ra_slim_init(ra_slim_t *s) { memset(s, 0, sizeof(*s)); }
 
-void ra_slim_framing(ra_slim_t *s, bool chunked) {
-  s->frame = chunked ? FRAME_LEN : FRAME_PLAIN;
-}
+void ra_slim_framing(ra_slim_t *s, bool chunked) { s->frame = chunked ? FRAME_LEN : FRAME_PLAIN; }
 
 static int hexval(char c) {
   if(c >= '0' && c <= '9') return c - '0';
@@ -44,9 +47,7 @@ static int hexval(char c) {
   return -1;
 }
 
-static bool space(char c) {
-  return c == ' ' || c == '\t' || c == '\r' || c == '\n';
-}
+static bool space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 
 /* No NUL after each byte: in place it would overwrite the next byte of the input,
    ra_slim_feed() ends the buffer once per call. */
@@ -70,9 +71,9 @@ static bool json(ra_slim_t *s, char c, char *buf, unsigned cap, unsigned *len) {
   case JSON_STR:
     if(c == '\\') s->json = JSON_STR_ESC;
     else if(c == '"') {
-      s->json = JSON_OUT;
-      s->str_end = *len;
-      s->sig_at = *len;
+      s->json      = JSON_OUT;
+      s->str_end   = *len;
+      s->sig_at    = *len;
       s->after_str = true;
     }
     return put(c, buf, cap, len);
@@ -84,7 +85,7 @@ static bool json(ra_slim_t *s, char c, char *buf, unsigned cap, unsigned *len) {
     s->dropped++;
     if(space(c)) return true;
     if(c == '"') s->json = JSON_SKIP_STR;
-    else if(c == '{' || c == '[') s->broken = true;   // only strings and numbers are left out
+    else if(c == '{' || c == '[') s->broken = true; // only strings and numbers are left out
     else s->json = JSON_SKIP_NUM;
     return true;
   case JSON_SKIP_STR:
@@ -97,11 +98,17 @@ static bool json(ra_slim_t *s, char c, char *buf, unsigned cap, unsigned *len) {
     s->json = JSON_SKIP_STR;
     return true;
   case JSON_SKIP_NUM:
-    if(c != ',' && c != '}' && c != ']' && !space(c)) { s->dropped++; return true; }
+    if(c != ',' && c != '}' && c != ']' && !space(c)) {
+      s->dropped++;
+      return true;
+    }
     s->json = JSON_SKIP_END;
-    __attribute__((fallthrough));      // c ends the number
+    __attribute__((fallthrough)); // c ends the number
   case JSON_SKIP_END:
-    if(space(c)) { s->dropped++; return true; }
+    if(space(c)) {
+      s->dropped++;
+      return true;
+    }
     s->json = JSON_OUT;
     if(c == ',' && s->drop_comma) {
       s->drop_comma = false;
@@ -109,35 +116,34 @@ static bool json(ra_slim_t *s, char c, char *buf, unsigned cap, unsigned *len) {
       return true;
     }
     s->drop_comma = false;
-    break;                              // c is a bracket or a comma that stays
+    break; // c is a bracket or a comma that stays
   }
 
   // outside strings
   if(c == '"') {
     s->before_str = s->sig_at;
-    s->str_at = *len;
-    s->after_str = false;
-    s->json = JSON_STR;
+    s->str_at     = *len;
+    s->after_str  = false;
+    s->json       = JSON_STR;
     return put(c, buf, cap, len);
   }
-  if(c == ':' && s->after_str &&
-     unused_key(buf + s->str_at + 1, s->str_end - s->str_at - 1)) {
+  if(c == ':' && s->after_str && unused_key(buf + s->str_at + 1, s->str_end - s->str_at - 1)) {
     // the key is in the buffer already: cut it back out, with the comma before it, or
     // with the comma after its value when the pair is the first of its object
     unsigned cut = s->str_at;
     if(s->str_at > 0 && buf[s->before_str] == ',') cut = s->before_str;
     else s->drop_comma = true;
-    s->dropped += *len - cut + 1;       // the colon too
-    *len = cut;
-    buf[cut] = 0;
-    s->sig_at = s->before_str;
+    s->dropped += *len - cut + 1; // the colon too
+    *len         = cut;
+    buf[cut]     = 0;
+    s->sig_at    = s->before_str;
     s->after_str = false;
-    s->json = JSON_SKIP;
+    s->json      = JSON_SKIP;
     return true;
   }
   if(!space(c)) {
     s->after_str = false;
-    s->sig_at = *len;
+    s->sig_at    = *len;
   }
   return put(c, buf, cap, len);
 }
@@ -151,14 +157,17 @@ bool ra_slim_feed(ra_slim_t *s, const char *in, unsigned n, char *buf, unsigned 
     if(s->frame == FRAME_START) s->frame = (c == '{' || c == '[') ? FRAME_PLAIN : FRAME_LEN;
     switch(s->frame) {
     case FRAME_PLAIN:
-      if(!json(s, c, buf, cap, len)) { buf[*len] = 0; return false; }
+      if(!json(s, c, buf, cap, len)) {
+        buf[*len] = 0;
+        return false;
+      }
       break;
     // a chunk: its length in hex, maybe extensions, CR LF, the data, CR LF. Length 0 ends it.
     case FRAME_LEN:
       v = hexval(c);
       if(v >= 0) {
-        if(s->left > 0x0FFFFFFFUL) s->broken = true;   // no chunk is that long
-        s->left = s->left * 16 + (unsigned long)v;
+        if(s->left > 0x0FFFFFFFUL) s->broken = true; // no chunk is that long
+        s->left   = s->left * 16 + (unsigned long)v;
         s->digits = true;
       } else if(!s->digits) s->broken = true;
       else if(c == '\n') s->frame = s->left ? FRAME_DATA : FRAME_DONE;
@@ -168,16 +177,19 @@ bool ra_slim_feed(ra_slim_t *s, const char *in, unsigned n, char *buf, unsigned 
       if(c == '\n') s->frame = s->left ? FRAME_DATA : FRAME_DONE;
       break;
     case FRAME_DATA:
-      if(!json(s, c, buf, cap, len)) { buf[*len] = 0; return false; }
+      if(!json(s, c, buf, cap, len)) {
+        buf[*len] = 0;
+        return false;
+      }
       if(--s->left == 0) s->frame = FRAME_DATA_END;
       break;
     case FRAME_DATA_END:
       if(c == '\n') {
-        s->frame = FRAME_LEN;
+        s->frame  = FRAME_LEN;
         s->digits = false;
       } else if(c != '\r') s->broken = true;
       break;
-    default:                            // FRAME_DONE: trailers, unused
+    default: // FRAME_DONE: trailers, unused
       break;
     }
   }
@@ -201,7 +213,10 @@ static bool field(const char *line, unsigned n, const char *name, const char **v
   if(n <= k || line[k] != ':' || strncasecmp(line, name, k)) return false;
   *v  = line + k + 1;
   *vn = n - k - 1;
-  while(*vn && (**v == ' ' || **v == '\t')) { (*v)++; (*vn)--; }
+  while(*vn && (**v == ' ' || **v == '\t')) {
+    (*v)++;
+    (*vn)--;
+  }
   while(*vn && ((*v)[*vn - 1] == ' ' || (*v)[*vn - 1] == '\t')) (*vn)--;
   return true;
 }
@@ -209,8 +224,8 @@ static bool field(const char *line, unsigned n, const char *name, const char **v
 /* One header line. Only the two fields that frame the body count, the status line
    and all others pass. */
 static void framing_line(ra_net_framing_t *f) {
-  bool cut = f->at > sizeof(f->line);
-  unsigned n = cut ? sizeof(f->line) : f->at, vn, i;
+  bool cut          = f->at > sizeof(f->line);
+  unsigned n        = cut ? sizeof(f->line) : f->at, vn, i;
   unsigned long len = 0;
   const char *v;
 
@@ -227,9 +242,8 @@ static void framing_line(ra_net_framing_t *f) {
     // digits only, and a second Content-Length the same as the first
     if(!vn || i < vn || (f->length != RA_NET_NO_LENGTH && f->length != len)) f->bad = true;
     f->length = len;
-  } else
-    return;
-  if(cut) f->bad = true;    // the value is not all there
+  } else return;
+  if(cut) f->bad = true; // the value is not all there
 }
 
 void ra_net_framing_feed(ra_net_framing_t *f, const char *in, unsigned n) {

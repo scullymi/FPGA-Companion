@@ -25,48 +25,53 @@
 
 /* The file is RA_GAMES_STATE_FILE in the game's folder, "/sd/ra/<id>/unlocked.txt":
    "# game <id> <user>", then one id per line, an s in front of softcore only ones. */
-#define RA_STATE_LINE_MAX 64                      /**< the header line is the longest */
-#define RA_STATE_REAL_ID  100000000u              /**< the server's own pseudo achievements have ids from here on */
+#define RA_STATE_LINE_MAX 64         /**< the header line is the longest */
+#define RA_STATE_REAL_ID  100000000u /**< the server's own pseudo achievements have ids from here on */
 
 // the two lists and the account they belong to
-static unsigned hard[RA_STATE_MAX], hard_n;   // unlocked in hardcore, or queued for it
-static unsigned soft[RA_STATE_MAX], soft_n;   // unlocked in softcore only
-static char     owner[32];
+static unsigned hard[RA_STATE_MAX], hard_n; // unlocked in hardcore, or queued for it
+static unsigned soft[RA_STATE_MAX], soft_n; // unlocked in softcore only
+static char owner[32];
 
 static bool in_list(const unsigned *list, unsigned n, unsigned id) {
-  for(unsigned i = 0; i < n; i++) if(list[i] == id) return true;
+  for(unsigned i = 0; i < n; i++)
+    if(list[i] == id) return true;
   return false;
 }
 
 // com_task reads the lists while the RA task may change them. Every change
 // after the start runs with interrupts off, so on this single core a reader
 // never sees a list half copied or a count ahead of its entries.
-bool ra_state_known(unsigned id)         { return in_list(hard, hard_n, id); }
+bool ra_state_known(unsigned id) { return in_list(hard, hard_n, id); }
 bool ra_state_softcore_only(unsigned id) { return in_list(soft, soft_n, id); }
 
 // the counts for the display: only ids of the active set, the account may hold
 // achievements a later set no longer has
 static unsigned count_in_set(const unsigned *list, unsigned n) {
   unsigned c = 0;
-  for(unsigned i = 0; i < n; i++) if(ra_patch_index(list[i])) c++;
+  for(unsigned i = 0; i < n; i++)
+    if(ra_patch_index(list[i])) c++;
   return c;
 }
-unsigned ra_state_count(void)          { return count_in_set(hard, hard_n); }
+unsigned ra_state_count(void) { return count_in_set(hard, hard_n); }
 unsigned ra_state_softcore_count(void) { return count_in_set(soft, soft_n); }
 
 // takes id out of soft, if it is there. Under the critical section of the caller.
 static void drop_soft(unsigned id) {
   for(unsigned i = 0; i < soft_n; i++)
-    if(soft[i] == id) { soft[i] = soft[--soft_n]; return; }
+    if(soft[i] == id) {
+      soft[i] = soft[--soft_n];
+      return;
+    }
 }
 
 void ra_state_add(unsigned id, bool hardcore) {
-  if(ra_state_known(id)) return;                 // hardcore already, nothing to add
+  if(ra_state_known(id)) return; // hardcore already, nothing to add
   if(hardcore) {
     if(hard_n >= RA_STATE_MAX) return;
     taskENTER_CRITICAL();
     hard[hard_n++] = id;
-    drop_soft(id);          // it is on its way to hardcore, so no longer softcore only
+    drop_soft(id); // it is on its way to hardcore, so no longer softcore only
     taskEXIT_CRITICAL();
   } else {
     if(ra_state_softcore_only(id) || soft_n >= RA_STATE_MAX) return;
@@ -95,7 +100,7 @@ bool ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n) {
   if(hardcore) {
     memcpy(hard, tmp, m * sizeof(hard[0]));
     hard_n = m;
-    for(unsigned i = 0; i < m; i++) drop_soft(tmp[i]);   // hardcore now, so no longer softcore only
+    for(unsigned i = 0; i < m; i++) drop_soft(tmp[i]); // hardcore now, so no longer softcore only
   } else {
     memcpy(soft, tmp, m * sizeof(soft[0]));
     soft_n = m;
@@ -103,7 +108,7 @@ bool ra_state_replace(bool hardcore, const uint32_t *ids, unsigned n) {
   taskEXIT_CRITICAL();
 
   if(hardcore) debugf("RA: server: %u unlocked in hardcore (%u new here)", m, fresh);
-  else         debugf("RA: server: %u unlocked in softcore only (%u new here)", m, fresh);
+  else debugf("RA: server: %u unlocked in softcore only (%u new here)", m, fresh);
   // the same ids as before: nothing new came, and with the same count nothing left
   return fresh > 0 || m != before;
 }
@@ -114,11 +119,11 @@ void ra_state_save(unsigned id) {
   FRESULT r;
   bool ok = true;
 
-  if(!ra_games_path(id, RA_GAMES_STATE_FILE, path, sizeof(path))) return;   // no game, no file
+  if(!ra_games_path(id, RA_GAMES_STATE_FILE, path, sizeof(path))) return; // no game, no file
   // the whole file anew. A power cut in between leaves a file without a full
   // header, which ra_state_load() ignores, and the server fills it again.
   sdc_lock();
-  r = ra_games_mkdir(id);   // cheap when the folder exists
+  r = ra_games_mkdir(id); // cheap when the folder exists
   if(r == FR_OK) r = f_open(&f, path, FA_WRITE | FA_CREATE_ALWAYS);
   if(r == FR_OK) {
     snprintf(line, sizeof(line), "# game %u %s\n", id, owner);
@@ -158,29 +163,27 @@ void ra_state_load(const char *user, unsigned id) {
     // the header names game and account, a file of another one is ignored:
     // its ids would mean nothing here
     unsigned long game = 0;
-    char who[32] = "";
-    bool header = f_gets(line, sizeof(line), &f) && strncmp(line, "# game ", 7) == 0;
+    char who[32]       = "";
+    bool header        = f_gets(line, sizeof(line), &f) && strncmp(line, "# game ", 7) == 0;
     if(header) {
       char *end;
       game = strtoul(line + 7, &end, 10);
       while(*end == ' ') end++;
       snprintf(who, sizeof(who), "%.*s", (int)strcspn(end, " \r\n"), end);
     }
-    if(!header)
-      debugf("RA: %s has no header, ignored", path);   // e.g. cut short by a power cut
+    if(!header) debugf("RA: %s has no header, ignored", path); // e.g. cut short by a power cut
     else if(game == id && !strcasecmp(who, owner)) {
       // one id per line, an s in front means softcore only. No critical
       // section: the counts are stored last, so a reader sees empty lists
       // until every entry is in place
       while(f_gets(line, sizeof(line), &f)) {
-        bool sc = line[0] == 's';
+        bool sc     = line[0] == 's';
         unsigned id = (unsigned)strtoul(line + (sc ? 1 : 0), NULL, 10);
         if(!id || id >= RA_STATE_REAL_ID) continue;
         if(!sc && h < RA_STATE_MAX) hard[h++] = id;
-        if(sc  && s < RA_STATE_MAX) soft[s++] = id;
+        if(sc && s < RA_STATE_MAX) soft[s++] = id;
       }
-    } else
-      debugf("RA: %s is for another game or account, ignored", path);
+    } else debugf("RA: %s is for another game or account, ignored", path);
     f_close(&f);
   }
   sdc_unlock();

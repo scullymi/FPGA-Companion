@@ -9,19 +9,19 @@
 #include <stdint.h>
 #include "ra_games.h"
 
-#define RA_CLOCK_VALID 1735689600u   /**< 2025-01-01, an earlier time() means NTP has not set the clock yet */
-#define RA_RP_MAX      256           /**< rich presence text with its NUL, as rc_client keeps it */
+#define RA_CLOCK_VALID 1735689600u /**< 2025-01-01, an earlier time() means NTP has not set the clock yet */
+#define RA_RP_MAX      256         /**< rich presence text with its NUL, as rc_client keeps it */
 
 /** @brief Where the task stands, for the banner. */
 typedef enum {
-  RA_TASK_STARTING,     /**< nothing decided yet */
-  RA_TASK_NO_ACCOUNT,   /**< no user and token under [RA] in config.ini, achievements stay local */
-  RA_TASK_CONNECTING,   /**< waiting for the clock, the server or the login */
-  RA_TASK_NO_TIME,      /**< a minute without time from NTP, still waiting for it */
-  RA_TASK_RETRYING,     /**< the server or the login failed, the next try waits for its pause */
-  RA_TASK_LOGGED_IN,    /**< the account is in */
-  RA_TASK_REJECTED,     /**< the server refused the account, no new try until the next start */
-  RA_TASK_NO_GAME       /**< nothing to talk to the server about: no ROM on an unknown board, a wrong board, a board still unknown when the server answered, or a hash the server does not know */
+  RA_TASK_STARTING,   /**< nothing decided yet */
+  RA_TASK_NO_ACCOUNT, /**< no user and token under [RA] in config.ini, achievements stay local */
+  RA_TASK_CONNECTING, /**< waiting for the clock, the server or the login */
+  RA_TASK_NO_TIME,    /**< a minute without time from NTP, still waiting for it */
+  RA_TASK_RETRYING,   /**< the server or the login failed, the next try waits for its pause */
+  RA_TASK_LOGGED_IN,  /**< the account is in */
+  RA_TASK_REJECTED,   /**< the server refused the account, no new try until the next start */
+  RA_TASK_NO_GAME /**< nothing to talk to the server about: no ROM on an unknown board, a wrong board, a board still unknown when the server answered, or a hash the server does not know */
 } ra_task_state_t;
 
 /** @brief The task's state. Any task, it is a single word. */
@@ -50,14 +50,19 @@ void ra_task_wake(void);
  *  core without that value runs in softcore. */
 bool ra_task_hardcore(void);
 
-#define RA_HC_BLOCK_CORE 1u    /**< the core was built with diagnostic parameters (RAM mirror header byte 9) */
-#define RA_HC_BLOCK_XML  2u    /**< the menu comes from a config.xml on the card, which could set DIP switches without a reset */
-#define RA_HC_BLOCK_ROM  4u    /**< the ROM image is not one of the known files, or not loaded yet */
-#define RA_HC_BLOCK_SET  8u    /**< the achievement set is not proven: the card's copy without a valid tag, and none from the server yet */
-#define RA_HC_BLOCK_KEY  16u   /**< no device key, unlocks cannot be tagged, see ra_mac.c */
-#define RA_HC_BLOCK_SIZE 64u   /**< a part of the set found no memory and stays off: in hardcore every achievement and leaderboard must run */
-#define RA_HC_BLOCK_GAME 32u   /**< the ROM in the core is not this game's in one of four ways: the board is unknown, the ROM's game does not belong to this board, the ROM was changed to another game after the start, or the server's id differs from the table's */
-#define RA_HC_BLOCK_MENU 128u  /**< the core's interface tag differs from the firmware's for its board: the basic menu runs, the core may read the switches otherwise (menus.h) */
+#define RA_HC_BLOCK_CORE 1u /**< the core was built with diagnostic parameters (RAM mirror header byte 9) */
+#define RA_HC_BLOCK_XML                                                                                      \
+  2u /**< the menu comes from a config.xml on the card, which could set DIP switches without a reset */
+#define RA_HC_BLOCK_ROM 4u /**< the ROM image is not one of the known files, or not loaded yet */
+#define RA_HC_BLOCK_SET                                                                                      \
+  8u /**< the achievement set is not proven: the card's copy without a valid tag, and none from the server yet */
+#define RA_HC_BLOCK_KEY 16u /**< no device key, unlocks cannot be tagged, see ra_mac.c */
+#define RA_HC_BLOCK_SIZE                                                                                     \
+  64u /**< a part of the set found no memory and stays off: in hardcore every achievement and leaderboard must run */
+#define RA_HC_BLOCK_GAME                                                                                     \
+  32u /**< the ROM in the core is not this game's in one of four ways: the board is unknown, the ROM's game does not belong to this board, the ROM was changed to another game after the start, or the server's id differs from the table's */
+#define RA_HC_BLOCK_MENU                                                                                     \
+  128u /**< the core's interface tag differs from the firmware's for its board: the basic menu runs, the core may read the switches otherwise (menus.h) */
 
 /** @brief The reasons that keep hardcore off although the menu asks for it, RA_HC_BLOCK_*. Any task. */
 unsigned ra_task_hardcore_blocked(void);
@@ -110,12 +115,13 @@ void ra_task_set_richpresence(const char *text);
 
 /** @brief What the server answered to a leaderboard entry, for the banner. */
 typedef struct {
-  unsigned id;        /**< leaderboard id */
-  int32_t  score;     /**< the value submitted */
-  int32_t  best;      /**< the account's best value on this leaderboard */
-  unsigned rank;      /**< the rank of that best value, also for an entry the server did not keep, see banner_lboard() in banner.c */
-  unsigned entries;   /**< entries on the leaderboard */
-  char     hash[RA_GAMES_HASH_LEN + 1];   /**< the game it was reached in, as ra_game_hash() */
+  unsigned id;   /**< leaderboard id */
+  int32_t score; /**< the value submitted */
+  int32_t best;  /**< the account's best value on this leaderboard */
+  unsigned
+      rank; /**< the rank of that best value, also for an entry the server did not keep, see banner_lboard() in banner.c */
+  unsigned entries;                 /**< entries on the leaderboard */
+  char hash[RA_GAMES_HASH_LEN + 1]; /**< the game it was reached in, as ra_game_hash() */
 } ra_lboard_result_t;
 
 /** @brief Hands a leaderboard result to the RA task, which submits it. com_task only, never blocks.

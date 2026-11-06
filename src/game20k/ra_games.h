@@ -13,55 +13,59 @@
 #include <stddef.h>
 #include <ff.h>
 
-#define RA_GAMES_HASH_LEN 32       /**< md5 in hex, what the server knows a game by */
-#define RA_GAMES_V1_ID    12138u   /**< card files without a game are Galaga's: the firmware before this one knew no other game */
-#define RA_GAMES_DIR      "/sd/ra"   /**< one folder per game below it, named by the game's id */
-#define RA_GAMES_PATH_MAX 40         /**< "/sd/ra/4294967295/patch.json.new" is 32 characters, 33 with the NUL */
+#define RA_GAMES_HASH_LEN 32 /**< md5 in hex, what the server knows a game by */
+#define RA_GAMES_V1_ID                                                                                       \
+  12138u /**< card files without a game are Galaga's: the firmware before this one knew no other game */
+#define RA_GAMES_DIR      "/sd/ra" /**< one folder per game below it, named by the game's id */
+#define RA_GAMES_PATH_MAX 40 /**< "/sd/ra/4294967295/patch.json.new" is 32 characters, 33 with the NUL */
 
-#define RA_GAMES_SET_FILE   "patch.json"       /**< in the game's folder: the server's reply to r=patch */
-#define RA_GAMES_SET_TMP    "patch.json.new"   /**< a new set while it is written, then it takes the place of the old */
-#define RA_GAMES_SET_MAC    "patch.mac"        /**< "g20k-s1 <tag>": the set file's tag with the device key */
-#define RA_GAMES_STATE_FILE "unlocked.txt"     /**< the account's unlocks of this game, see ra_state.c */
+#define RA_GAMES_SET_FILE "patch.json" /**< in the game's folder: the server's reply to r=patch */
+#define RA_GAMES_SET_TMP                                                                                     \
+  "patch.json.new" /**< a new set while it is written, then it takes the place of the old */
+#define RA_GAMES_SET_MAC    "patch.mac"    /**< "g20k-s1 <tag>": the set file's tag with the device key */
+#define RA_GAMES_STATE_FILE "unlocked.txt" /**< the account's unlocks of this game, see ra_state.c */
 
 /** @brief A DIP switch the set expects at one value, by the switch's id in the core's XML. */
 typedef struct {
-  char id;      /**< the id of the list in the core's XML, e.g. 'L' */
-  int  value;   /**< the listentry value the set expects, as the menu keeps it and the core gets it */
+  char id;   /**< the id of the list in the core's XML, e.g. 'L' */
+  int value; /**< the listentry value the set expects, as the menu keeps it and the core gets it */
 } ra_dip_t;
 
 /** @brief One ROM file hardcore accepts. */
 typedef struct {
-  unsigned char sha[32];   /**< SHA-256 of the file as it streams to the core */
-  const char   *label;     /**< the manifest's known line, e.g. "with the 54xx", at most 16 characters */
+  unsigned char sha[32]; /**< SHA-256 of the file as it streams to the core */
+  const char *label;     /**< the manifest's known line, e.g. "with the 54xx", at most 16 characters */
 } ra_rom_t;
 
 /** @brief One game of the table. */
 typedef struct {
-  const char     *set;     /**< MAME set name, the card file is the set name plus ".rom" */
-  const char     *title;   /**< for the menu */
-  unsigned        id;      /**< the game's id on the server */
-  const char     *hash;    /**< md5 of set, 32 hex, precomputed by the table's generator */
-  unsigned char   board;   /**< header byte 12 of the core that runs it, the manifest's board line */
-  const ra_rom_t *roms;    /**< the files hardcore accepts */
-  unsigned        rom_n;   /**< how many */
-  const ra_dip_t *dips;    /**< switches the set expects, NULL for none */
-  unsigned        dip_n;   /**< how many */
+  const char *set;      /**< MAME set name, the card file is the set name plus ".rom" */
+  const char *title;    /**< for the menu */
+  unsigned id;          /**< the game's id on the server */
+  const char *hash;     /**< md5 of set, 32 hex, precomputed by the table's generator */
+  unsigned char board;  /**< header byte 12 of the core that runs it, the manifest's board line */
+  const ra_rom_t *roms; /**< the files hardcore accepts */
+  unsigned rom_n;       /**< how many */
+  const ra_dip_t *dips; /**< switches the set expects, NULL for none */
+  unsigned dip_n;       /**< how many */
 } ra_game_t;
 
 /** @brief The table, one row per game. Several sets may share a board, the digest then picks
  *         the set, and the first row of a board is the game shown without a ROM. */
 extern const ra_game_t ra_games_rows[];
-extern const unsigned  ra_games_rows_n;   /**< rows in ra_games_rows */
-extern const char      ra_games_origin[]; /**< "generated" for game20k's table, "example" for ra_games_example.c */
+extern const unsigned ra_games_rows_n; /**< rows in ra_games_rows */
+extern const char ra_games_origin[]; /**< "generated" for game20k's table, "example" for ra_games_example.c */
 
 /** @brief What ra_games_select() decided for this boot. */
 typedef struct {
-  const ra_game_t *game;       /**< the entry, NULL for a fallback identity or no game */
-  unsigned         id;         /**< the id the server is asked with, 0 for a fallback identity (the server resolves it), a wrong board or no game */
-  char             hash[RA_GAMES_HASH_LEN + 1];   /**< what the server is asked with, "" when there is no game to play */
-  const char      *rom_label;  /**< the known file's label, "ROM unknown", "ROM not checked" (the stream still runs), "no ROM" */
-  bool             rom_ok;     /**< the digest is a known file of game: no RA_HC_BLOCK_ROM */
-  bool             board_ok;   /**< board known and game belongs to it: no RA_HC_BLOCK_GAME */
+  const ra_game_t *game; /**< the entry, NULL for a fallback identity or no game */
+  unsigned
+      id; /**< the id the server is asked with, 0 for a fallback identity (the server resolves it), a wrong board or no game */
+  char hash[RA_GAMES_HASH_LEN + 1]; /**< what the server is asked with, "" when there is no game to play */
+  const char *
+      rom_label; /**< the known file's label, "ROM unknown", "ROM not checked" (the stream still runs), "no ROM" */
+  bool rom_ok;   /**< the digest is a known file of game: no RA_HC_BLOCK_ROM */
+  bool board_ok; /**< board known and game belongs to it: no RA_HC_BLOCK_GAME */
 } ra_ident_t;
 
 /** @brief The first entry of that board, NULL when there is none. */
@@ -101,7 +105,8 @@ void ra_games_name_hash(const char *image, char hex[RA_GAMES_HASH_LEN + 1]);
  *  to whatever the server says; without a name the board's first game is shown
  *  with "no ROM". A game that does not belong to the board is not played: the
  *  entry stays for the menu, the hash is "" and the id 0. */
-void ra_games_select(unsigned char board, const unsigned char *sha, const char *name_hash, bool streaming, ra_ident_t *out);
+void ra_games_select(unsigned char board, const unsigned char *sha, const char *name_hash, bool streaming,
+                     ra_ident_t *out);
 
 /** @brief The path of file in the game's folder, "/sd/ra/12138/patch.json" for id 12138, into buf. False when id is 0 or it does not fit. */
 bool ra_games_path(unsigned id, const char *file, char *buf, size_t n);

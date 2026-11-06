@@ -10,21 +10,21 @@
 #include <stdint.h>
 #include "games_file.h"
 
-#define GAMES_START_FILE "/sd/games.ini"   /**< "start=<file>", written by Save settings */
+#define GAMES_START_FILE "/sd/games.ini" /**< "start=<file>", written by Save settings */
 
 /** @brief One line of the page, a copy for the menu. */
 typedef struct {
-  char          title[GAMES_TITLE_MAX + 1];   /**< the footer's title, else the file name, cut */
-  uint32_t      crc;                          /**< CRC-32 of the file name, what a core switch carries */
-  unsigned char board;                        /**< board id from the footer */
+  char title[GAMES_TITLE_MAX + 1]; /**< the footer's title, else the file name, cut */
+  uint32_t crc;                    /**< CRC-32 of the file name, what a core switch carries */
+  unsigned char board;             /**< board id from the footer */
 } games_item_t;
 
 /** @brief The game picked on the page, until the core switch takes it. */
 typedef struct {
-  unsigned      seq;                          /**< counts the picks, tells a newer one apart */
-  uint32_t      crc;                          /**< CRC-32 of the file name in the card's root */
-  unsigned char board;                        /**< board of its core */
-  char          title[GAMES_TITLE_MAX + 1];   /**< for the messages */
+  unsigned seq;                    /**< counts the picks, tells a newer one apart */
+  uint32_t crc;                    /**< CRC-32 of the file name in the card's root */
+  unsigned char board;             /**< board of its core */
+  char title[GAMES_TITLE_MAX + 1]; /**< for the messages */
 } games_pick_t;
 
 /** @brief Reads the list from the card's root: every *.rom with a valid footer and a board of the table. Menu task only.

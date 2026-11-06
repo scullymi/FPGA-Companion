@@ -14,7 +14,7 @@
 #include "../sysctrl.h"
 #include "banner.h"
 #include "core_boot.h"
-#include "menus.h"               /* the menus of game20k's cores */
+#include "menus.h" /* the menus of game20k's cores */
 #include "ra_patch.h"
 #include "ra_task.h"
 #include "ram_mirror.h"
@@ -22,9 +22,7 @@
 /* A menu of one's own in config.xml can set the DIP switches without a reset, and it is
    what decides the mode: no hardcore with it (the core also takes DIP switches only
    while in reset). */
-void core_config_file(void) {
-  ra_task_hardcore_block(RA_HC_BLOCK_XML, true);
-}
+void core_config_file(void) { ra_task_hardcore_block(RA_HC_BLOCK_XML, true); }
 
 /* No config.xml on the card: the firmware's menu for the core's board when the interface
    tags agree. Else a core without a game20k header may bring its own menu (READ_CFG),
@@ -36,19 +34,18 @@ void core_config_file(void) {
 char *core_menu(unsigned char probe, bool *mismatch) {
   const menus_entry_t *m;
   menus_why_t why = menus_pick(ram_mirror_board, ram_mirror_tag, NULL, &m);
-  char *c = NULL;
+  char *c         = NULL;
   if(m) {
     debugf("Loading the built-in XML config of board %u", ram_mirror_board);
     c = (char *)m->xml;
-  } else if(why == MENUS_NO_HEADER && (c = sys_get_config()) != NULL)
-    debugf("Loading XML config from core");
+  } else if(why == MENUS_NO_HEADER && (c = sys_get_config()) != NULL) debugf("Loading XML config from core");
   else {
     debugf("No menu for this core (board %u, tag %04x, why %d), loading the basic XML config",
            ram_mirror_board, ram_mirror_tag, why);
     c = (char *)menus_basic_xml;
   }
   *mismatch = why != MENUS_FOUND && probe != 0xE1;
-  ra_task_hardcore_block(RA_HC_BLOCK_MENU, why == MENUS_MISMATCH);   // the core before may have set it
+  ra_task_hardcore_block(RA_HC_BLOCK_MENU, why == MENUS_MISMATCH); // the core before may have set it
   return c;
 }
 
@@ -76,13 +73,13 @@ void core_setup(unsigned char probe, TickType_t t0) {
   // the old menu goes, the log says what the new one takes
   size_t before = xPortGetFreeHeapSize();
   config_free();
-  size_t freed = xPortGetFreeHeapSize();
+  size_t freed  = xPortGetFreeHeapSize();
   bool mismatch = core_config(probe);
   debugf("Core switch: the old config freed %u bytes, the new one takes %u, FreeRTOS heap free %u",
          (unsigned)(freed - before), (unsigned)(freed - xPortGetFreeHeapSize()),
          (unsigned)xPortGetFreeHeapSize());
-  sys_handle_interrupts(sys_irq_ctrl(0xff), true);   // what the cores of the way left
-  hid_handle_event();                                // the new core's DB9 interrupts, as at the start
+  sys_handle_interrupts(sys_irq_ctrl(0xff), true); // what the cores of the way left
+  hid_handle_event();                              // the new core's DB9 interrupts, as at the start
   osd_init();
   menu_rebuild();
   if(mismatch) menu_notify(MENU_EVENT_MISMATCH);

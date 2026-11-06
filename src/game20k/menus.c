@@ -23,9 +23,9 @@ const menus_entry_t *menus_by_board(unsigned char board, const char *set) {
 
 menus_why_t menus_pick(unsigned char board, uint16_t tag, const char *set, const menus_entry_t **menu) {
   const menus_entry_t *e = board ? menus_by_board(board, set) : NULL;
-  *menu = NULL;
-  if(!board)        return MENUS_NO_HEADER;
-  if(!e)            return MENUS_NO_BOARD;
+  *menu                  = NULL;
+  if(!board) return MENUS_NO_HEADER;
+  if(!e) return MENUS_NO_BOARD;
   if(e->tag != tag) return MENUS_MISMATCH;
   *menu = e;
   return MENUS_FOUND;

@@ -10,14 +10,15 @@
 #include <queue.h>
 #include "ra_games.h"
 
-#define RA_QUEUE_HANDOVER 16   /**< unlocks com_task can hand over before the RA task takes them */
+#define RA_QUEUE_HANDOVER 16 /**< unlocks com_task can hand over before the RA task takes them */
 
 /** @brief One unlock waiting for the server. */
 typedef struct {
-  unsigned      id;        /**< achievement id */
-  unsigned long when;      /**< unix time of the unlock, 0 when the clock was not set */
-  bool          hardcore;  /**< earned in hardcore mode, sent as that and nothing else */
-  char          hash[RA_GAMES_HASH_LEN + 1];   /**< the game it was earned under, stamped by ra_queue_add(), read back from the line */
+  unsigned id;        /**< achievement id */
+  unsigned long when; /**< unix time of the unlock, 0 when the clock was not set */
+  bool hardcore;      /**< earned in hardcore mode, sent as that and nothing else */
+  char hash[RA_GAMES_HASH_LEN +
+            1]; /**< the game it was earned under, stamped by ra_queue_add(), read back from the line */
 } ra_unlock_t;
 
 /** @brief Creates the handover queue and returns it, for the RA task's queue set.

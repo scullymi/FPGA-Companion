@@ -38,91 +38,95 @@
 #include "ra_task.h"
 #include "ra_mac.h"
 
-#define RA_CLOCK_WAIT   60000u        /**< ms without time from NTP before the log says so */
-#define RA_BACKOFF_MIN  10000u        /**< ms, first pause after a failed request */
-#define RA_BACKOFF_MAX  600000u       /**< ms, the pause doubles up to this */
-#define RA_LB_QUEUE     4             /**< leaderboard results com_task can hand over before the RA task takes them */
-#define RA_LB_RAM       4             /**< leaderboard results kept until the server has them */
-#define RA_LB_MAX_AGE   (14u * 24u * 3600u)   /**< s, older results the server would not take with their time */
-#define RA_EVENTS       (RA_QUEUE_HANDOVER + 2 + RA_LB_QUEUE)   /**< queue set: unlocks, the clock, the end of a request, leaderboards */
-#define RA_TASK_STACK   2048          /**< words, a TLS handshake leaves about 5 KB of it free */
-#define RA_PING_FIRST   30000u        /**< ms from the session start to the first ping, as rc_client */
-#define RA_PING_EVERY   120000u       /**< ms between pings, the server keeps the session meanwhile */
-#define RA_PATH_MAX     1024          /**< a ping with the rich presence text, url-encoded at three characters per byte */
+#define RA_CLOCK_WAIT  60000u  /**< ms without time from NTP before the log says so */
+#define RA_BACKOFF_MIN 10000u  /**< ms, first pause after a failed request */
+#define RA_BACKOFF_MAX 600000u /**< ms, the pause doubles up to this */
+#define RA_LB_QUEUE    4 /**< leaderboard results com_task can hand over before the RA task takes them */
+#define RA_LB_RAM      4 /**< leaderboard results kept until the server has them */
+#define RA_LB_MAX_AGE  (14u * 24u * 3600u) /**< s, older results the server would not take with their time */
+#define RA_EVENTS                                                                                            \
+  (RA_QUEUE_HANDOVER + 2 +                                                                                   \
+   RA_LB_QUEUE)               /**< queue set: unlocks, the clock, the end of a request, leaderboards */
+#define RA_TASK_STACK 2048    /**< words, a TLS handshake leaves about 5 KB of it free */
+#define RA_PING_FIRST 30000u  /**< ms from the session start to the first ping, as rc_client */
+#define RA_PING_EVERY 120000u /**< ms between pings, the server keeps the session meanwhile */
+#define RA_PATH_MAX 1024 /**< a ping with the rich presence text, url-encoded at three characters per byte */
 
 /** How a login ended, it decides whether to try again. */
 typedef enum {
-  LOGIN_OK,          /**< the server accepted the account */
-  LOGIN_REJECTED,    /**< HTTP 401 or Success:false, no new try until the next start */
-  LOGIN_RETRY        /**< anything else, tried again after a pause */
+  LOGIN_OK,       /**< the server accepted the account */
+  LOGIN_REJECTED, /**< HTTP 401 or Success:false, no new try until the next start */
+  LOGIN_RETRY     /**< anything else, tried again after a pause */
 } login_t;
 
 /** How submitting an unlock ended. */
 typedef enum {
-  SUBMIT_DONE,       /**< the server has it, also as "User already has" */
-  SUBMIT_PARK,       /**< refused for good, it goes to the parked file */
-  SUBMIT_REQUEUE,    /**< refused, but it may pass later, it goes behind the others */
-  SUBMIT_RETRY       /**< no answer from the server, tried again after a pause */
+  SUBMIT_DONE,    /**< the server has it, also as "User already has" */
+  SUBMIT_PARK,    /**< refused for good, it goes to the parked file */
+  SUBMIT_REQUEUE, /**< refused, but it may pass later, it goes behind the others */
+  SUBMIT_RETRY    /**< no answer from the server, tried again after a pause */
 } submit_t;
 
-static TaskHandle_t      task;             // NULL until ra_task_start()
-static StackType_t       task_stack[RA_TASK_STACK];   // outside the FreeRTOS heap, see ra_task_start()
-static StaticTask_t      task_tcb;
-static QueueSetHandle_t  events;           // everything the task waits for
-static SemaphoreHandle_t clock_sem;        // given when NTP has set the clock
-static QueueHandle_t     unlocks;          // com_task -> RA task, see ra_queue.c
-static char              reply_buf[2048];  // replies to the small requests, the longest is a list of unlocked ids
-static const char       *user, *token;     // [RA] in config.ini, the token is never logged
-static bool              account;          // both are set, only then unlocks are kept
-static volatile ra_task_state_t state = RA_TASK_STARTING;   // written here, read by com_task
-static volatile bool     hardcore;         // the mode of session, pings and unlocks, see ra_task_hardcore()
-static volatile bool     hardcore_due;     // hardcore asked for, it applies when the reset for it ends
-static volatile bool     core_running;     // the core is out of reset, a game may be running
-static volatile bool     hc_wanted;        // the menu's 'H'
+static TaskHandle_t task;                     // NULL until ra_task_start()
+static StackType_t task_stack[RA_TASK_STACK]; // outside the FreeRTOS heap, see ra_task_start()
+static StaticTask_t task_tcb;
+static QueueSetHandle_t events;     // everything the task waits for
+static SemaphoreHandle_t clock_sem; // given when NTP has set the clock
+static QueueHandle_t unlocks;       // com_task -> RA task, see ra_queue.c
+static char reply_buf[2048];        // replies to the small requests, the longest is a list of unlocked ids
+static const char *user, *token;    // [RA] in config.ini, the token is never logged
+static bool account;                // both are set, only then unlocks are kept
+static volatile ra_task_state_t state = RA_TASK_STARTING; // written here, read by com_task
+static volatile bool hardcore;     // the mode of session, pings and unlocks, see ra_task_hardcore()
+static volatile bool hardcore_due; // hardcore asked for, it applies when the reset for it ends
+static volatile bool core_running; // the core is out of reset, a game may be running
+static volatile bool hc_wanted;    // the menu's 'H'
 // RA_HC_BLOCK_* reasons that keep hardcore off. ROM, SET and GAME hold from the
 // start until ra_patch_settle() has checked ROM image and board and the
 // achievement set has been checked: nothing is granted before the game is known.
 static volatile unsigned hc_block = RA_HC_BLOCK_ROM | RA_HC_BLOCK_SET | RA_HC_BLOCK_GAME;
-static volatile unsigned char core_flags;  // header byte 9 of the RAM mirror, 0 = release build
-static char              rp_text[RA_RP_MAX];   // rich presence from com_task, under a critical section
-static volatile unsigned frames;           // frames rcheevos evaluated, counted by com_task
-static char              path_buf[RA_PATH_MAX];  // path of session and ping requests, too large for the stack
-static bool              live;             // logged in, once per start
-static bool              playing;          // logged in and this round's game known to the server: session and pings are due
-static TickType_t        next_ping;        // when the next ping, or the next try of the session, is due
-static ra_game_now_t     game;             // the game this round of ra_task_main() works for, a copy
-static bool              session;          // the server took the session of that game
-static unsigned          frames_seen;      // frames at the last ping
+static volatile unsigned char core_flags; // header byte 9 of the RAM mirror, 0 = release build
+static char rp_text[RA_RP_MAX];           // rich presence from com_task, under a critical section
+static volatile unsigned frames;          // frames rcheevos evaluated, counted by com_task
+static char path_buf[RA_PATH_MAX];        // path of session and ping requests, too large for the stack
+static bool live;                         // logged in, once per start
+static bool playing;         // logged in and this round's game known to the server: session and pings are due
+static TickType_t next_ping; // when the next ping, or the next try of the session, is due
+static ra_game_now_t game;   // the game this round of ra_task_main() works for, a copy
+static bool session;         // the server took the session of that game
+static unsigned frames_seen; // frames at the last ping
 
 /** A leaderboard result on its way to the server. It lives in RAM for this start
     only, under the hash of the game it was reached in: a switch to another game
     must not send it under the new one. */
 typedef struct {
-  unsigned   id;       /**< leaderboard id */
-  int32_t    score;    /**< the value */
-  TickType_t tick;     /**< when it was reached, for seconds_since_completion */
-  char       hash[RA_GAMES_HASH_LEN + 1];   /**< the game it was reached in */
+  unsigned id;                      /**< leaderboard id */
+  int32_t score;                    /**< the value */
+  TickType_t tick;                  /**< when it was reached, for seconds_since_completion */
+  char hash[RA_GAMES_HASH_LEN + 1]; /**< the game it was reached in */
 } lb_entry_t;
-static QueueHandle_t      lb_queue;                          // com_task -> RA task
-static StaticQueue_t      lb_queue_ctl;
-static uint8_t            lb_queue_mem[RA_LB_QUEUE * sizeof(lb_entry_t)];
-static lb_entry_t         lb_ram[RA_LB_RAM];                 // waiting for the server, oldest first
-static volatile unsigned  lb_n;                              // volatile: ra_task_lboard_pending() reads it from com_task
-static volatile bool      lb_taking;                         // lb_take() holds a result between the queue and lb_ram[]
-static ra_lboard_result_t lb_result;                         // the server's latest answer
-static volatile unsigned  lb_seq;                            // counts answers, see ra_task_lboard_result()
+static QueueHandle_t lb_queue; // com_task -> RA task
+static StaticQueue_t lb_queue_ctl;
+static uint8_t lb_queue_mem[RA_LB_QUEUE * sizeof(lb_entry_t)];
+static lb_entry_t lb_ram[RA_LB_RAM]; // waiting for the server, oldest first
+static volatile unsigned lb_n;       // volatile: ra_task_lboard_pending() reads it from com_task
+static volatile bool lb_taking;      // lb_take() holds a result between the queue and lb_ram[]
+static ra_lboard_result_t lb_result; // the server's latest answer
+static volatile unsigned lb_seq;     // counts answers, see ra_task_lboard_result()
 
-#define RA_REFUSE_MAX 3   /**< refusals of a queued unlock of another game before it is parked, see refusals() */
-#define RA_REFUSE_MEM 8   /**< such lines counted at once, beyond that a line is parked at its first refusal */
+#define RA_REFUSE_MAX                                                                                        \
+  3 /**< refusals of a queued unlock of another game before it is parked, see refusals() */
+#define RA_REFUSE_MEM 8 /**< such lines counted at once, beyond that a line is parked at its first refusal */
 /** A queued unlock of another game the server refused, counted per boot. */
 typedef struct {
-  unsigned id;                          /**< achievement id */
-  char     hash[RA_GAMES_HASH_LEN + 1]; /**< the game it was earned under */
-  unsigned n;                           /**< refusals so far, 0 for a free slot */
+  unsigned id;                      /**< achievement id */
+  char hash[RA_GAMES_HASH_LEN + 1]; /**< the game it was earned under */
+  unsigned n;                       /**< refusals so far, 0 for a free slot */
 } refusal_t;
 static refusal_t refused[RA_REFUSE_MEM];
-static bool      set_in_flight;         // fetch_set() has the server's reply on its way into ra_patch's body[]
-static volatile bool set_reread_failed; // a card set asked for again was not there: the server is asked once more
+static bool set_in_flight; // fetch_set() has the server's reply on its way into ra_patch's body[]
+static volatile bool
+    set_reread_failed; // a card set asked for again was not there: the server is asked once more
 
 ra_task_state_t ra_task_state(void) { return state; }
 bool ra_task_hardcore(void) { return hardcore && hc_wanted && !hc_block; }
@@ -142,14 +146,13 @@ static void hc_update(void) {
   // come after, outside.
   taskENTER_CRITICAL();
   if(!hc_wanted || hc_block) {
-    to_soft = hardcore || hardcore_due;
+    to_soft  = hardcore || hardcore_due;
     hardcore = hardcore_due = false;
   } else if(!hardcore && !hardcore_due) {
-    if(!core_running)
-      hardcore = true;          // no game runs, the next one starts in hardcore
+    if(!core_running) hardcore = true; // no game runs, the next one starts in hardcore
     else {
-      hardcore_due = true;      // a running game is reset first, see ra_task_game_start()
-      reset = true;
+      hardcore_due = true; // a running game is reset first, see ra_task_game_start()
+      reset        = true;
     }
   }
   taskEXIT_CRITICAL();
@@ -173,7 +176,9 @@ static void hc_block_set(unsigned reason, bool on, bool any, unsigned gen) {
 }
 
 void ra_task_hardcore_block(unsigned reason, bool on) { hc_block_set(reason, on, true, 0); }
-void ra_task_hardcore_block_for(unsigned gen, unsigned reason, bool on) { hc_block_set(reason, on, false, gen); }
+void ra_task_hardcore_block_for(unsigned gen, unsigned reason, bool on) {
+  hc_block_set(reason, on, false, gen);
+}
 
 void ra_task_core_flags(unsigned char flags) {
   // set on every snapshot, not only on a change: a bit lost to another task's
@@ -199,7 +204,7 @@ void ra_task_game_start(void) {
   // hardcore asked for while the game ran begins here
   bool on;
   taskENTER_CRITICAL();
-  on = hardcore_due && hc_wanted && !hc_block;   // a reason may have come up meanwhile
+  on           = hardcore_due && hc_wanted && !hc_block; // a reason may have come up meanwhile
   hardcore_due = false;
   if(on) hardcore = true;
   taskEXIT_CRITICAL();
@@ -225,15 +230,15 @@ void ra_task_set_richpresence(const char *text) {
 }
 
 void ra_task_wake(void) {
-  if(clock_sem) xSemaphoreGive(clock_sem);  // the task looks around itself when it wakes
+  if(clock_sem) xSemaphoreGive(clock_sem); // the task looks around itself when it wakes
 }
 
 void ra_task_clock_set(void) {
-  ra_task_wake();                           // the task checks time() itself
+  ra_task_wake(); // the task checks time() itself
 }
 
 void ra_task_lboard(unsigned id, int32_t score) {
-  lb_entry_t e = { id, score, xTaskGetTickCount(), "" };
+  lb_entry_t e = {id, score, xTaskGetTickCount(), ""};
   // com_task changes the identity itself, the hash here is whole
   snprintf(e.hash, sizeof(e.hash), "%s", ra_game_hash());
   if(!lb_queue || xQueueSend(lb_queue, &e, 0) != pdTRUE)
@@ -244,7 +249,10 @@ bool ra_task_lboard_result(unsigned *seen, ra_lboard_result_t *out) {
   bool newer;
   taskENTER_CRITICAL();
   newer = lb_seq != *seen;
-  if(newer) { *out = lb_result; *seen = lb_seq; }
+  if(newer) {
+    *out  = lb_result;
+    *seen = lb_seq;
+  }
   taskEXIT_CRITICAL();
   return newer;
 }
@@ -267,7 +275,7 @@ static void lb_take_one(void) {
 }
 
 static void lb_take(void) {
-  lb_taking = true;   // counted by ra_task_lboard_pending() from before the receive
+  lb_taking = true; // counted by ra_task_lboard_pending() from before the receive
   lb_take_one();
   lb_taking = false;
 }
@@ -279,8 +287,8 @@ static void lb_take(void) {
    server's reply on its way into the same buffer. When the card does not give it,
    the logged-in loop asks the server once more. */
 static void on_event(QueueSetMemberHandle_t m) {
-  if(m == unlocks)        ra_queue_take(account);
-  else if(m == lb_queue)  lb_take();
+  if(m == unlocks) ra_queue_take(account);
+  else if(m == lb_queue) lb_take();
   else if(m == clock_sem) xSemaphoreTake(clock_sem, 0);
   if(!set_in_flight && !ra_patch_set_again()) set_reread_failed = true;
 }
@@ -309,7 +317,7 @@ static void pause_ms(uint32_t ms) {
   TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(ms);
   for(;;) {
     keep_alive();
-    TickType_t now = xTaskGetTickCount();
+    TickType_t now  = xTaskGetTickCount();
     TickType_t left = end - now;
     if((int32_t)left <= 0 || game_moved()) return;
     // wake for the next ping too, when it comes first. One already due wakes at
@@ -337,16 +345,15 @@ static bool check_server(void) {
   snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
   rc_api_destroy_request(&request);
 
-  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 ||
-     reply.result != 0 || reply.status != 200)
+  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 || reply.result != 0 || reply.status != 200)
     return false;
 
   // rcheevos also reads the JSON reply
   rc_api_resolve_hash_response_t response;
   rc_api_server_response_t server;
   memset(&server, 0, sizeof(server));
-  server.body = reply_buf;
-  server.body_length = reply.len;
+  server.body             = reply_buf;
+  server.body_length      = reply.len;
   server.http_status_code = (int)reply.status;
   if(rc_api_process_resolve_hash_server_response(&response, &server) == RC_OK &&
      response.response.succeeded) {
@@ -377,21 +384,19 @@ static login_t login(void) {
   snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
   rc_api_destroy_request(&request);
 
-  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 || reply.result != 0)
-    return LOGIN_RETRY;
+  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 || reply.result != 0) return LOGIN_RETRY;
   if(reply.status != 200 && reply.status != 401 && reply.status != 403) return LOGIN_RETRY;
 
   // rcheevos reads the reply, only its error text goes to the log
   rc_api_ping_response_t response;
   rc_api_server_response_t server;
   memset(&server, 0, sizeof(server));
-  server.body = reply_buf;
-  server.body_length = reply.len;
+  server.body             = reply_buf;
+  server.body_length      = reply.len;
   server.http_status_code = (int)reply.status;
-  int rv = rc_api_process_ping_server_response(&response, &server);
+  int rv                  = rc_api_process_ping_server_response(&response, &server);
   const char *why = response.response.error_message ? response.response.error_message : "no reason given";
-  if(reply.status == 200 && rv == RC_OK && response.response.succeeded)
-    result = LOGIN_OK;
+  if(reply.status == 200 && rv == RC_OK && response.response.succeeded) result = LOGIN_OK;
   else if(reply.status == 403)
     // from RA itself (JSON, e.g. a blocked client) or from Cloudflare (a page,
     // e.g. for the User-Agent). Tried again either way, the log tells which.
@@ -407,8 +412,8 @@ static login_t login(void) {
 /* Reads a reply into rcheevos' server response. */
 static void server_reply(rc_api_server_response_t *server, const ra_reply_t *reply) {
   memset(server, 0, sizeof(*server));
-  server->body = reply_buf;
-  server->body_length = reply->len;
+  server->body             = reply_buf;
+  server->body_length      = reply->len;
   server->http_status_code = (int)reply->status;
 }
 
@@ -432,24 +437,25 @@ static bool start_session(void) {
   rc_api_destroy_request(&request);
   if(n < 0 || n >= (int)sizeof(path_buf)) return false;
 
-  if(ra_net_get(path_buf, reply_buf, sizeof(reply_buf), &reply) != 0 ||
-     reply.result != 0 || reply.status != 200)
+  if(ra_net_get(path_buf, reply_buf, sizeof(reply_buf), &reply) != 0 || reply.result != 0 ||
+     reply.status != 200)
     return false;
   // the reply also lists the account's unlocks, which r=unlocks fetches as well.
   // A list too long for the buffer only cuts the reply, the session stands.
   if(reply.truncated) {
-    debugf("RA: session started (%s, hash %s), reply cut short", hardcore ? "hardcore" : "softcore", game.hash);
+    debugf("RA: session started (%s, hash %s), reply cut short", hardcore ? "hardcore" : "softcore",
+           game.hash);
     return true;
   }
   rc_api_start_session_response_t response;
   server_reply(&server, &reply);
-  int rv = rc_api_process_start_session_server_response(&response, &server);
+  int rv  = rc_api_process_start_session_server_response(&response, &server);
   bool ok = rv == RC_OK && response.response.succeeded;
-  if(ok)
-    debugf("RA: session started (%s, hash %s)", hardcore ? "hardcore" : "softcore", game.hash);
+  if(ok) debugf("RA: session started (%s, hash %s)", hardcore ? "hardcore" : "softcore", game.hash);
   else
-    debugf("RA: session not started (%s)", response.response.error_message ?
-           response.response.error_message : rv != RC_OK ? rc_error_str(rv) : "marked as failed");
+    debugf("RA: session not started (%s)", response.response.error_message ? response.response.error_message
+                                           : rv != RC_OK                   ? rc_error_str(rv)
+                                                                           : "marked as failed");
   rc_api_destroy_start_session_response(&response);
   return ok;
 }
@@ -457,8 +463,8 @@ static bool start_session(void) {
 /* Pings with r=ping: keeps the session and sends the rich presence text, the
    game hash and the mode. The log shows the text only when it changed. */
 static void ping(void) {
-  static char rp[RA_RP_MAX];          // the text this ping sends
-  static char rp_logged[RA_RP_MAX];   // the text the log showed last
+  static char rp[RA_RP_MAX];        // the text this ping sends
+  static char rp_logged[RA_RP_MAX]; // the text the log showed last
   rc_api_ping_request_t params;
   rc_api_request_t request;
   rc_api_server_response_t server;
@@ -484,15 +490,16 @@ static void ping(void) {
   }
 
   // ra_net_get() logs the request, only a refusal needs a word more
-  if(ra_net_get(path_buf, reply_buf, sizeof(reply_buf), &reply) != 0 ||
-     reply.result != 0 || reply.status != 200)
+  if(ra_net_get(path_buf, reply_buf, sizeof(reply_buf), &reply) != 0 || reply.result != 0 ||
+     reply.status != 200)
     return;
   rc_api_ping_response_t response;
   server_reply(&server, &reply);
   int rv = rc_api_process_ping_server_response(&response, &server);
   if(rv != RC_OK || !response.response.succeeded)
-    debugf("RA: ping refused (%s)", response.response.error_message ?
-           response.response.error_message : rv != RC_OK ? rc_error_str(rv) : "marked as failed");
+    debugf("RA: ping refused (%s)", response.response.error_message ? response.response.error_message
+                                    : rv != RC_OK                   ? rc_error_str(rv)
+                                                                    : "marked as failed");
   else if(strcmp(rp, rp_logged)) {
     debugf("RA: rich presence '%s'", rp);
     memcpy(rp_logged, rp, sizeof(rp_logged));
@@ -531,15 +538,19 @@ static void keep_alive(void) {
 static unsigned refusals(const ra_unlock_t *u) {
   unsigned i, free_slot = RA_REFUSE_MEM;
   for(i = 0; i < RA_REFUSE_MEM; i++) {
-    if(!refused[i].n) { if(free_slot == RA_REFUSE_MEM) free_slot = i; continue; }
+    if(!refused[i].n) {
+      if(free_slot == RA_REFUSE_MEM) free_slot = i;
+      continue;
+    }
     if(refused[i].id == u->id && !strcmp(refused[i].hash, u->hash)) {
-      if(refused[i].n < RA_REFUSE_MAX) refused[i].n++;   // saturates, see refusals_forget()
+      if(refused[i].n < RA_REFUSE_MAX) refused[i].n++; // saturates, see refusals_forget()
       return refused[i].n;
     }
   }
   if(free_slot == RA_REFUSE_MEM) {
-    debugf("RA: more than %u refused unlocks of other games at once, unlock %u is parked at its first refusal",
-           (unsigned)RA_REFUSE_MEM, u->id);
+    debugf(
+        "RA: more than %u refused unlocks of other games at once, unlock %u is parked at its first refusal",
+        (unsigned)RA_REFUSE_MEM, u->id);
     return RA_REFUSE_MAX;
   }
   refused[free_slot].id = u->id;
@@ -553,7 +564,10 @@ static unsigned refusals(const ra_unlock_t *u) {
 static void refusals_forget(const ra_unlock_t *u) {
   unsigned i;
   for(i = 0; i < RA_REFUSE_MEM; i++)
-    if(refused[i].n && refused[i].id == u->id && !strcmp(refused[i].hash, u->hash)) { refused[i].n = 0; return; }
+    if(refused[i].n && refused[i].id == u->id && !strcmp(refused[i].hash, u->hash)) {
+      refused[i].n = 0;
+      return;
+    }
 }
 
 /* Sends one unlock with r=awardachievement, under the hash it was earned with.
@@ -568,7 +582,7 @@ static submit_t submit(const ra_unlock_t *u) {
   rc_api_request_t request;
   char path[320];
   ra_reply_t reply;
-  submit_t result = SUBMIT_RETRY;
+  submit_t result   = SUBMIT_RETRY;
   unsigned long now = (unsigned long)time(NULL);
 
   // rcheevos builds the query with its signature. The mode is the one the unlock
@@ -588,22 +602,20 @@ static submit_t submit(const ra_unlock_t *u) {
     return SUBMIT_RETRY;
   }
 
-  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 ||
-     reply.result != 0 || reply.status != 200)
+  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 || reply.result != 0 || reply.status != 200)
     return SUBMIT_RETRY;
 
   // rcheevos reads the reply and turns "User already has" into success
   rc_api_award_achievement_response_t response;
   rc_api_server_response_t server;
   memset(&server, 0, sizeof(server));
-  server.body = reply_buf;
-  server.body_length = reply.len;
+  server.body             = reply_buf;
+  server.body_length      = reply.len;
   server.http_status_code = (int)reply.status;
-  int rv = rc_api_process_award_achievement_server_response(&response, &server);
+  int rv                  = rc_api_process_award_achievement_server_response(&response, &server);
   const char *why = response.response.error_message ? response.response.error_message : "no reason given";
   if(rv == RC_OK && response.response.succeeded) {
-    if(response.response.error_message)
-      debugf("RA: unlock %u already on the account", u->id);
+    if(response.response.error_message) debugf("RA: unlock %u already on the account", u->id);
     else
       debugf("RA: unlock %u confirmed, score %u, softcore %u, %u left", u->id,
              (unsigned)response.new_player_score, (unsigned)response.new_player_score_casual,
@@ -634,7 +646,7 @@ static submit_t submit(const ra_unlock_t *u) {
    which is why com_task hands over only hardcore results. A refusal in a normal
    reply drops it, as rc_client does. */
 static submit_t submit_lboard(const lb_entry_t *e) {
-  static rc_api_submit_lboard_entry_response_t response;   // about 300 bytes, the stack is for TLS
+  static rc_api_submit_lboard_entry_response_t response; // about 300 bytes, the stack is for TLS
   rc_api_submit_lboard_entry_request_t params;
   rc_api_request_t request;
   rc_api_server_response_t server;
@@ -651,15 +663,15 @@ static submit_t submit_lboard(const lb_entry_t *e) {
   params.api_token                = token;
   params.leaderboard_id           = e->id;
   params.score                    = e->score;
-  params.game_hash                = e->hash;   // the game it was reached in
+  params.game_hash                = e->hash; // the game it was reached in
   params.seconds_since_completion = age;
   if(rc_api_init_submit_lboard_entry_request(&request, &params) != RC_OK) return SUBMIT_RETRY;
   int n = snprintf(path_buf, sizeof(path_buf), "/dorequest.php?%s", request.post_data);
   rc_api_destroy_request(&request);
   if(n < 0 || n >= (int)sizeof(path_buf)) return SUBMIT_RETRY;
 
-  if(ra_net_get(path_buf, reply_buf, sizeof(reply_buf), &reply) != 0 ||
-     reply.result != 0 || reply.status != 200)
+  if(ra_net_get(path_buf, reply_buf, sizeof(reply_buf), &reply) != 0 || reply.result != 0 ||
+     reply.status != 200)
     return SUBMIT_RETRY;
   if(reply.truncated) {
     debugf("RA: leaderboard %u: submitted, reply cut short", e->id);
@@ -669,8 +681,9 @@ static submit_t submit_lboard(const lb_entry_t *e) {
   memset(&response, 0, sizeof(response));
   int rv = rc_api_process_submit_lboard_entry_server_response(&response, &server);
   if(rv == RC_OK && response.response.succeeded) {
-    debugf("RA: leaderboard %u: %ld submitted for hash %s, best %ld, rank %u of %u", e->id, (long)response.submitted_score,
-           e->hash, (long)response.best_score, (unsigned)response.new_rank, (unsigned)response.num_entries);
+    debugf("RA: leaderboard %u: %ld submitted for hash %s, best %ld, rank %u of %u", e->id,
+           (long)response.submitted_score, e->hash, (long)response.best_score, (unsigned)response.new_rank,
+           (unsigned)response.num_entries);
     taskENTER_CRITICAL();
     lb_result.id      = e->id;
     lb_result.score   = e->score;
@@ -685,8 +698,7 @@ static submit_t submit_lboard(const lb_entry_t *e) {
     debugf("RA: leaderboard %u refused (%s), dropped", e->id,
            response.response.error_message ? response.response.error_message : "no reason given");
     result = SUBMIT_PARK;
-  } else
-    result = SUBMIT_RETRY;
+  } else result = SUBMIT_RETRY;
   rc_api_destroy_submit_lboard_entry_response(&response);
   return result;
 }
@@ -710,21 +722,22 @@ static bool fetch_list(bool hardcore, rc_api_fetch_user_unlocks_response_t *resp
   snprintf(path, sizeof(path), "/dorequest.php?%s", request.post_data);
   rc_api_destroy_request(&request);
 
-  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 ||
-     reply.result != 0 || reply.status != 200 || reply.truncated)
+  if(ra_net_get(path, reply_buf, sizeof(reply_buf), &reply) != 0 || reply.result != 0 ||
+     reply.status != 200 || reply.truncated)
     return false;
 
   // rcheevos reads the list, only its error text goes to the log
   rc_api_server_response_t server;
   memset(&server, 0, sizeof(server));
-  server.body = reply_buf;
-  server.body_length = reply.len;
+  server.body             = reply_buf;
+  server.body_length      = reply.len;
   server.http_status_code = (int)reply.status;
-  int rv = rc_api_process_fetch_user_unlocks_server_response(response, &server);
+  int rv                  = rc_api_process_fetch_user_unlocks_server_response(response, &server);
   if(rv == RC_OK && response->response.succeeded) return true;
   debugf("RA: %s list unusable (%s)", hardcore ? "hardcore" : "softcore",
-         response->response.error_message ? response->response.error_message :
-         rv != RC_OK ? rc_error_str(rv) : "marked as failed");
+         response->response.error_message ? response->response.error_message
+         : rv != RC_OK                    ? rc_error_str(rv)
+                                          : "marked as failed");
   return false;
 }
 
@@ -751,14 +764,12 @@ static bool fetch_set(void) {
 
   // the buffer is taken from here on: a card set asked for again waits, see on_event()
   set_in_flight = true;
-  if(ra_net_get_set(path, buf, cap, &reply) != 0 || reply.result != 0 || reply.status != 200 ||
-     reply.broken)
+  if(ra_net_get_set(path, buf, cap, &reply) != 0 || reply.result != 0 || reply.status != 200 || reply.broken)
     ok = false;
   else if(reply.truncated) {
     debugf("RA: set from the server is larger than %u bytes, not used", cap - 1);
     ok = true;
-  } else
-    ok = ra_patch_from_server(reply.len, game.gen) >= 0;   // dropped there when the game moved on
+  } else ok = ra_patch_from_server(reply.len, game.gen) >= 0; // dropped there when the game moved on
   set_in_flight = false;
   return ok;
 }
@@ -768,11 +779,10 @@ static bool fetch_set(void) {
    another game runs are dropped, the next round loads that game's. */
 static bool fetch_state(void) {
   rc_api_fetch_user_unlocks_response_t hard, soft;
-  memset(&hard, 0, sizeof(hard));     // destroy is safe on a zeroed response
+  memset(&hard, 0, sizeof(hard)); // destroy is safe on a zeroed response
   memset(&soft, 0, sizeof(soft));
   bool ok = fetch_list(true, &hard) && fetch_list(false, &soft);
-  if(ok && game_moved())
-    debugf("RA: lists of game %u dropped, another game runs", game.id);
+  if(ok && game_moved()) debugf("RA: lists of game %u dropped, another game runs", game.id);
   else if(ok) {
     // the card only when something changed, a write holds the SPI bus for the mirror.
     // The lists are this round's game's, its id names the file
@@ -801,15 +811,21 @@ static void serve(void);
 
 static void ra_task_main(__attribute__((unused)) void *p) {
   uint32_t backoff;
-  bool rejected = false;   // the server refused the account: no new login until the next start
+  bool rejected = false; // the server refused the account: no new login until the next start
 
   debugf("RA: client %s", ra_user_agent());
   // the device key for the tags on the card: without one, no hardcore
   switch(ra_mac_state()) {
-  case RA_MAC_CREATED:  debugf("RA: device key created"); break;
-  case RA_MAC_PRESENT:  debugf("RA: device key present"); break;
-  case RA_MAC_REPLACED: debugf("RA: device key made anew, its flash sector held other data. "
-                               "Unlocks tagged with an earlier key are set aside"); break;
+  case RA_MAC_CREATED:
+    debugf("RA: device key created");
+    break;
+  case RA_MAC_PRESENT:
+    debugf("RA: device key present");
+    break;
+  case RA_MAC_REPLACED:
+    debugf("RA: device key made anew, its flash sector held other data. "
+           "Unlocks tagged with an earlier key are set aside");
+    break;
   default:
     debugf("RA: no device key (%s), softcore only", ra_mac_error());
     ra_task_hardcore_block(RA_HC_BLOCK_KEY, true);
@@ -838,7 +854,7 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   for(;;) {
     ra_game_now(&game);
     playing = session = false;
-    backoff = RA_BACKOFF_MIN;
+    backoff           = RA_BACKOFF_MIN;
     // the card set of a new game, when no event read it yet. A failed read needs
     // no mark: the round asks the server for the set anyway
     set_reread_failed = false;
@@ -870,13 +886,13 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     // 4. certificates are checked against the clock, so wait until NTP has set it.
     //    Without a time server this can take forever, so say it once in the log.
     TickType_t tell = xTaskGetTickCount() + pdMS_TO_TICKS(RA_CLOCK_WAIT);
-    bool told = false;
-    state = live ? RA_TASK_LOGGED_IN : RA_TASK_CONNECTING;
+    bool told       = false;
+    state           = live ? RA_TASK_LOGGED_IN : RA_TASK_CONNECTING;
     while((unsigned long)time(NULL) < RA_CLOCK_VALID && !game_moved()) {
       TickType_t left = tell - xTaskGetTickCount();
       if(!told && (int32_t)left <= 0) {
         debugf("RA: no time from NTP yet, achievements wait for it (see [NTP] IP in config.ini)");
-        told = true;            // said once, now sleep until the clock is set
+        told  = true; // said once, now sleep until the clock is set
         state = RA_TASK_NO_TIME;
       }
       wait_event(told ? portMAX_DELAY : left);
@@ -920,19 +936,19 @@ static void ra_task_main(__attribute__((unused)) void *p) {
         wait_to_retry(&backoff, "login failed");
         state = RA_TASK_CONNECTING;
       }
-      if(r == LOGIN_RETRY) continue;   // another game runs, its round logs in
+      if(r == LOGIN_RETRY) continue; // another game runs, its round logs in
       if(r == LOGIN_REJECTED) {
         rejected = true;
-        state = RA_TASK_REJECTED;
+        state    = RA_TASK_REJECTED;
         wait_game();
         continue;
       }
       debugf("RA: logged in");
       live = true;
     }
-    state = RA_TASK_LOGGED_IN;
-    playing = true;
-    next_ping = xTaskGetTickCount();   // the session right away
+    state     = RA_TASK_LOGGED_IN;
+    playing   = true;
+    next_ping = xTaskGetTickCount(); // the session right away
     serve();
   }
 }
@@ -949,19 +965,23 @@ static void serve(void) {
   char what[40];
   bool state_due = true, state_failed = false, state_stale = false;
   bool set_due = true, set_failed = false;
-  TickType_t retry_at = 0;            // when failed fetches are asked again
-  bool       retry_set = false;       // ... and that time is set
+  TickType_t retry_at = 0;     // when failed fetches are asked again
+  bool retry_set      = false; // ... and that time is set
   for(;;) {
     ra_unlock_t u;
-    if(game_moved()) return;          // the next round is the new game's
+    if(game_moved()) return; // the next round is the new game's
     keep_alive();
-    if(game_moved()) return;          // a ping or a session start takes seconds
+    if(game_moved()) return; // a ping or a session start takes seconds
     // a card set asked for again (the game's ROM is back after another game's
     // file) was not on the card, or had no valid tag: the server's set once more,
     // ra_patch_from_server() writes and hands it over anew
-    if(set_reread_failed) { set_reread_failed = false; set_due = true; retry_set = false; }
+    if(set_reread_failed) {
+      set_reread_failed = false;
+      set_due           = true;
+      retry_set         = false;
+    }
     if(state_due) {
-      state_due = false;
+      state_due    = false;
       state_failed = !fetch_state();
       if(!state_failed) backoff = RA_BACKOFF_MIN;
     }
@@ -969,11 +989,14 @@ static void serve(void) {
     // from being read for as long as it loads (set_in_flight)
     if(game_moved()) return;
     if(set_due) {
-      set_due = false;
+      set_due    = false;
       set_failed = !fetch_set();
       if(!set_failed) backoff = RA_BACKOFF_MIN;
       // a card set asked for while the fetch had the buffer; not there: once more
-      if(!ra_patch_set_again()) { set_due = true; retry_set = false; }
+      if(!ra_patch_set_again()) {
+        set_due   = true;
+        retry_set = false;
+      }
     }
     // both fetched, by whatever path: a retry time from an earlier failure is void
     if(!state_failed && !set_failed) retry_set = false;
@@ -990,28 +1013,30 @@ static void serve(void) {
     }
     int h = ra_queue_head(&u);
     if(h == 0) {
-      TickType_t now = xTaskGetTickCount();
-      TickType_t wake = next_ping;    // nothing to send: sleep until the next ping at most
+      TickType_t now  = xTaskGetTickCount();
+      TickType_t wake = next_ping; // nothing to send: sleep until the next ping at most
       if(state_stale) {
-        state_stale = false;          // the lists changed, ask once more
-        state_due = true;
+        state_stale = false; // the lists changed, ask once more
+        state_due   = true;
         continue;
       }
       if(state_failed || set_failed) {
         // ask again after a pause. A new unlock ends the wait, it goes out first
         if(!retry_set) {
           debugf("RA: %s not fetched, what the card has stays, next try in %lu s",
-                 state_failed && set_failed ? "unlocked state and set" : state_failed ? "unlocked state" : "set",
+                 state_failed && set_failed ? "unlocked state and set"
+                 : state_failed             ? "unlocked state"
+                                            : "set",
                  (unsigned long)(backoff / 1000));
           retry_at  = now + pdMS_TO_TICKS(backoff);
           retry_set = true;
-          backoff = backoff < RA_BACKOFF_MAX / 2 ? backoff * 2 : RA_BACKOFF_MAX;
+          backoff   = backoff < RA_BACKOFF_MAX / 2 ? backoff * 2 : RA_BACKOFF_MAX;
         }
         if((int32_t)(now - retry_at) >= 0) {
-          state_due = state_failed;
-          set_due   = set_failed;
+          state_due    = state_failed;
+          set_due      = set_failed;
           state_failed = set_failed = false;
-          retry_set = false;
+          retry_set                 = false;
           continue;
         }
         if((int32_t)(retry_at - wake) < 0) wake = retry_at;
@@ -1030,29 +1055,27 @@ static void serve(void) {
       continue;
     }
     submit_t r = submit(&u);
-    bool kept = r == SUBMIT_DONE    ? ra_queue_pop()     :
-                r == SUBMIT_PARK    ? ra_queue_park()    :
-                r == SUBMIT_REQUEUE ? ra_queue_requeue() : false;
-    if(r == SUBMIT_RETRY)
-      snprintf(what, sizeof(what), "unlock %u not submitted", u.id);
-    else if(!kept)
-      snprintf(what, sizeof(what), "unlock %u: card not updated", u.id);
-    else if(r == SUBMIT_REQUEUE)
-      snprintf(what, sizeof(what), "unlock %u refused", u.id);
+    bool kept  = r == SUBMIT_DONE      ? ra_queue_pop()
+                 : r == SUBMIT_PARK    ? ra_queue_park()
+                 : r == SUBMIT_REQUEUE ? ra_queue_requeue()
+                                       : false;
+    if(r == SUBMIT_RETRY) snprintf(what, sizeof(what), "unlock %u not submitted", u.id);
+    else if(!kept) snprintf(what, sizeof(what), "unlock %u: card not updated", u.id);
+    else if(r == SUBMIT_REQUEUE) snprintf(what, sizeof(what), "unlock %u refused", u.id);
     else {
-      backoff = RA_BACKOFF_MIN;
-      state_stale = true;             // DONE or PARK: the server's lists may differ now
-      if(!ra_queue_own(u.hash)) refusals_forget(&u);   // the card took the line, its count is free
+      backoff     = RA_BACKOFF_MIN;
+      state_stale = true;                            // DONE or PARK: the server's lists may differ now
+      if(!ra_queue_own(u.hash)) refusals_forget(&u); // the card took the line, its count is free
       continue;
     }
     // a pause also after a refusal, so a queue of refused unlocks cannot hammer the server
     wait_to_retry(&backoff, what);
     // a fetch that failed is due again after that pause too, so a refused unlock
     // cannot keep the lists or the set from being asked for
-    state_due = state_due || state_failed;
-    set_due   = set_due   || set_failed;
+    state_due    = state_due || state_failed;
+    set_due      = set_due || set_failed;
     state_failed = set_failed = false;
-    retry_set = false;
+    retry_set                 = false;
   }
 }
 
@@ -1064,7 +1087,7 @@ void ra_task_start(void) {
   clock_sem = xSemaphoreCreateBinary();
   unlocks   = ra_queue_init();
   // static storage: the FreeRTOS heap is nearly full once FTP runs
-  lb_queue  = xQueueCreateStatic(RA_LB_QUEUE, sizeof(lb_entry_t), lb_queue_mem, &lb_queue_ctl);
+  lb_queue = xQueueCreateStatic(RA_LB_QUEUE, sizeof(lb_entry_t), lb_queue_mem, &lb_queue_ctl);
   if(!events || !clock_sem || !unlocks || !lb_queue || !ra_patch_init() ||
      xQueueAddToSet(unlocks, events) != pdPASS || xQueueAddToSet(clock_sem, events) != pdPASS ||
      xQueueAddToSet(lb_queue, events) != pdPASS || !ra_net_init(events, on_event)) {
@@ -1074,7 +1097,7 @@ void ra_task_start(void) {
   // below com_task, like wifi_task. The stack is a static array and not taken from
   // the FreeRTOS heap: that heap (112 KB) is nearly full once an FTP session runs
   // (12 KB), and 8 KB more would leave FTP no room for a data connection
-  task = xTaskCreateStatic(ra_task_main, "RA", RA_TASK_STACK, NULL, configMAX_PRIORITIES - 10,
-                           task_stack, &task_tcb);
+  task = xTaskCreateStatic(ra_task_main, "RA", RA_TASK_STACK, NULL, configMAX_PRIORITIES - 10, task_stack,
+                           &task_tcb);
   if(!task) debugf("RA: task could not be created");
 }

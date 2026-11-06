@@ -14,8 +14,8 @@ size_t ra_text_size(const char *title, const char *desc);
 /** @brief Copies title and description, cut as ra_text_size() counts them, to *at and points *t and *d at the copies.
  *
  *  *at moves past them. False, and nothing copied, when *at is NULL or they do not fit before end. */
-bool ra_text_put(char **at, const char *end, const char *title, const char *desc,
-                 const char **t, const char **d);
+bool ra_text_put(char **at, const char *end, const char *title, const char *desc, const char **t,
+                 const char **d);
 
 /** @brief What ra_text_each() calls for one achievement, title and description decoded, NULL when missing. */
 typedef void (*ra_text_fn)(void *arg, unsigned id, const char *title, const char *desc);

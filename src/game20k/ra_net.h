@@ -11,12 +11,12 @@
 
 /** @brief What came back from a request. */
 typedef struct {
-  int           result;      /**< httpc_result_t, 0 = HTTPC_RESULT_OK */
-  int           err;         /**< lwIP error of a failed request */
-  unsigned long status;      /**< HTTP status, 0 when none arrived */
-  unsigned      len;         /**< bytes in the buffer, which is NUL-terminated */
-  bool          truncated;   /**< the reply did not fit into the buffer */
-  bool          broken;      /**< the body was cut short or its framing not as expected */
+  int result;           /**< httpc_result_t, 0 = HTTPC_RESULT_OK */
+  int err;              /**< lwIP error of a failed request */
+  unsigned long status; /**< HTTP status, 0 when none arrived */
+  unsigned len;         /**< bytes in the buffer, which is NUL-terminated */
+  bool truncated;       /**< the reply did not fit into the buffer */
+  bool broken;          /**< the body was cut short or its framing not as expected */
 } ra_reply_t;
 
 /** @brief Joins the RA task's queue set. Once, before the first request.

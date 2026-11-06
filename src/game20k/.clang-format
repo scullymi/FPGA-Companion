@@ -1,0 +1,16 @@
+# game20k's own code: two spaces, no space before a parenthesis, lines up to 110 characters
+BasedOnStyle: LLVM
+IndentWidth: 2
+ColumnLimit: 110
+SpaceBeforeParens: Never
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AlignConsecutiveMacros: Consecutive
+AlignConsecutiveAssignments: Consecutive
+AlignConsecutiveDeclarations: None
+AlignTrailingComments: true
+PointerAlignment: Right
+SortIncludes: Never
+ReflowComments: false
+BreakBeforeBraces: Attach

@@ -25,24 +25,24 @@
 #include "ra_net.h"
 #include "ra_slim.h"
 
-uint32_t getFreeHeap(void);   // mcu_hw.c: the SDK heap left, for the log
+uint32_t getFreeHeap(void); // mcu_hw.c: the SDK heap left, for the log
 
-#define RA_HOST "retroachievements.org"   /**< the server, and the name its certificate must carry */
+#define RA_HOST "retroachievements.org" /**< the server, and the name its certificate must carry */
 
 static struct altcp_tls_config *tls;
-static altcp_allocator_t        allocator;
-static httpc_connection_t       conn;
-static httpc_state_t           *req;
-static SemaphoreHandle_t        done;      /* given by on_done, a member of the RA task's queue set */
-static volatile bool            busy;      /* set at the start, cleared by on_done or when the request cannot start */
-static QueueSetHandle_t         events;    /* the RA task's queue set */
-static void (*on_event)(QueueSetMemberHandle_t);   /* its handler for everything but done */
+static altcp_allocator_t allocator;
+static httpc_connection_t conn;
+static httpc_state_t *req;
+static SemaphoreHandle_t done;  /* given by on_done, a member of the RA task's queue set */
+static volatile bool busy;      /* set at the start, cleared by on_done or when the request cannot start */
+static QueueSetHandle_t events; /* the RA task's queue set */
+static void (*on_event)(QueueSetMemberHandle_t); /* its handler for everything but done */
 
-static char       *dst;
-static unsigned    dst_cap, dst_len;
+static char *dst;
+static unsigned dst_cap, dst_len;
 static ra_reply_t *out;
-static ra_slim_t   slim;      /* takes the framing off while the reply arrives, and a set's unused fields */
-static ra_net_framing_t framing;   /* how the reply's header frames its body */
+static ra_slim_t slim; /* takes the framing off while the reply arrives, and a set's unused fields */
+static ra_net_framing_t framing; /* how the reply's header frames its body */
 
 /* RetroAchievements knows a client by its User-Agent, so it names this firmware
    truthfully and never another emulator. Version and platform come from the
@@ -65,20 +65,19 @@ static struct altcp_pcb *alloc_sni(void *arg, u8_t ip_type) {
   if(!pcb) return NULL;
   mbedtls_ssl_context *ssl = (mbedtls_ssl_context *)altcp_tls_context(pcb);
   if(!ssl || mbedtls_ssl_set_hostname(ssl, RA_HOST) != 0) {
-    altcp_abort(pcb);       // the request then fails at its start
+    altcp_abort(pcb); // the request then fails at its start
     return NULL;
   }
   return pcb;
 }
 
-static err_t on_recv(__attribute__((unused)) void *arg, struct altcp_pcb *pcb,
-                     struct pbuf *p, __attribute__((unused)) err_t err) {
+static err_t on_recv(__attribute__((unused)) void *arg, struct altcp_pcb *pcb, struct pbuf *p,
+                     __attribute__((unused)) err_t err) {
   if(!p) return ERR_OK;
   framing.got += p->tot_len;
   // piece by piece through ra_slim, nothing more once the buffer is full
   for(struct pbuf *q = p; q && !out->truncated; q = q->next)
-    if(!ra_slim_feed(&slim, (const char *)q->payload, q->len, dst, dst_cap, &dst_len))
-      out->truncated = true;
+    if(!ra_slim_feed(&slim, (const char *)q->payload, q->len, dst, dst_cap, &dst_len)) out->truncated = true;
   altcp_recved(pcb, p->tot_len);
   pbuf_free(p);
   return ERR_OK;
@@ -103,15 +102,15 @@ static void on_done(__attribute__((unused)) void *arg, httpc_result_t result,
   out->err    = (int)err;
   out->status = status;
   out->len    = dst_len;
-  req  = NULL;
-  busy = false;
+  req         = NULL;
+  busy        = false;
   xSemaphoreGive(done);
 }
 
 /* the kind of request, the r= parameter, for the log */
 static void kind_of(const char *path, char *kind, size_t size) {
   const char *r = strstr(path, "r=");
-  size_t n = 0;
+  size_t n      = 0;
   if(r) {
     r += 2;
     while(r[n] && r[n] != '&' && n < size - 1) n++;
@@ -131,13 +130,17 @@ bool ra_net_init(QueueSetHandle_t set, void (*handler)(QueueSetMemberHandle_t)) 
 }
 
 static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, bool set) {
-  char kind[24];                      // "awardachievement" is the longest
+  char kind[24]; // "awardachievement" is the longest
   err_t e = ERR_MEM;
 
   if(busy || !events || !buf || cap < 2 || !reply) return -1;
 
   memset(reply, 0, sizeof(*reply));
-  dst = buf; dst_cap = cap; dst_len = 0; dst[0] = 0; out = reply;
+  dst     = buf;
+  dst_cap = cap;
+  dst_len = 0;
+  dst[0]  = 0;
+  out     = reply;
   ra_slim_init(&slim);
   slim.keep = !set;
   ra_net_framing_init(&framing);
@@ -155,22 +158,31 @@ static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, boo
     conn.altcp_allocator = &allocator;
     conn.result_fn       = on_done;
     conn.headers_done_fn = on_headers;
-    busy = true;
-    e = httpc_get_file_dns(RA_HOST, 443, path, &conn, on_recv, NULL, &req);
-    if(e != ERR_OK) busy = false;     // no callback follows then
+    busy                 = true;
+    e                    = httpc_get_file_dns(RA_HOST, 443, path, &conn, on_recv, NULL, &req);
+    if(e != ERR_OK) busy = false; // no callback follows then
   }
   UNLOCK_TCPIP_CORE();
 
-  if(!tls) { debugf("RA: TLS setup failed"); return -1; }
-  if(e != ERR_OK) { debugf("RA: r=%s could not start, error %d", kind, (int)e); return -1; }
+  if(!tls) {
+    debugf("RA: TLS setup failed");
+    return -1;
+  }
+  if(e != ERR_OK) {
+    debugf("RA: r=%s could not start, error %d", kind, (int)e);
+    return -1;
+  }
 
   // lwIP always ends a request with on_done, its own timeouts included. Until
   // then the task's other events are handled here, none waits for the server.
   for(;;) {
     QueueSetMemberHandle_t m = xQueueSelectFromSet(events, pdMS_TO_TICKS(30000));
-    if(m == done) { xSemaphoreTake(done, 0); break; }
+    if(m == done) {
+      xSemaphoreTake(done, 0);
+      break;
+    }
     if(m) on_event(m);
-    else  debugf("RA: r=%s still waiting for the server", kind);
+    else debugf("RA: r=%s still waiting for the server", kind);
   }
 
   unsigned long ms = (unsigned long)(absolute_time_diff_us(t0, get_absolute_time()) / 1000);
@@ -183,11 +195,10 @@ static int get(const char *path, char *buf, unsigned cap, ra_reply_t *reply, boo
   if(reply->result == HTTPC_RESULT_OK) {
     debugf("RA: r=%s -> HTTP %lu, %u bytes%s%s%s, %lu ms, heap free %lu/%u", kind, reply->status, reply->len,
            framing.chunked ? " (chunked)" : "", reply->truncated ? " (truncated)" : "",
-           reply->broken ? " (not whole)" : "", ms,
-           (unsigned long)getFreeHeap(), (unsigned)xPortGetFreeHeapSize());
+           reply->broken ? " (not whole)" : "", ms, (unsigned long)getFreeHeap(),
+           (unsigned)xPortGetFreeHeapSize());
     if(set) debugf("RA: r=%s %lu bytes of unused fields left out", kind, slim.dropped);
-  } else
-    debugf("RA: r=%s failed, result %d, lwIP error %d, %lu ms", kind, reply->result, reply->err, ms);
+  } else debugf("RA: r=%s failed, result %d, lwIP error %d, %lu ms", kind, reply->result, reply->err, ms);
   return 0;
 }
 

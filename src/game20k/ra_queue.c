@@ -38,18 +38,21 @@
 #include "../debug.h"
 #include "../sdc.h"
 #include "ra_task.h"
-#include "ra_patch.h"   // ra_game_hash(): the running game, stamped into every new unlock in com_task
+#include "ra_patch.h" // ra_game_hash(): the running game, stamped into every new unlock in com_task
 #include "ra_state.h"
 #include "ra_queue.h"
 #include "ra_mac.h"
 
-#define RA_QUEUE_FILE     "/sd/ra_pending.txt"   /**< one line "id unixtime user mode hash tag" per unlock, '#' in front once done */
-#define RA_QUEUE_PARKED   "/sd/ra_parked.txt"    /**< unlocks that are not sent: refused for good, or of another account */
-#define RA_QUEUE_LINE_MAX 160                    /**< 10+1+10+1+31+1+1+1+32+1+64+1 = 154 characters at most, and the NUL */
-#define RA_QUEUE_LABEL    "g20k-q2"              /**< what the tag of a queue line is made over, keeps it apart from other tags */
-#define RA_QUEUE_USER_MAX 32                     /**< longest user name kept */
-#define RA_QUEUE_RAM      8                      /**< unlocks kept in RAM while the card fails */
-#define RA_QUEUE_DONE     '#'                    /**< written over the first digit of a line that is done */
+#define RA_QUEUE_FILE                                                                                        \
+  "/sd/ra_pending.txt" /**< one line "id unixtime user mode hash tag" per unlock, '#' in front once done */
+#define RA_QUEUE_PARKED                                                                                      \
+  "/sd/ra_parked.txt"         /**< unlocks that are not sent: refused for good, or of another account */
+#define RA_QUEUE_LINE_MAX 160 /**< 10+1+10+1+31+1+1+1+32+1+64+1 = 154 characters at most, and the NUL */
+#define RA_QUEUE_LABEL                                                                                       \
+  "g20k-q2"                  /**< what the tag of a queue line is made over, keeps it apart from other tags */
+#define RA_QUEUE_USER_MAX 32 /**< longest user name kept */
+#define RA_QUEUE_RAM      8  /**< unlocks kept in RAM while the card fails */
+#define RA_QUEUE_DONE     '#' /**< written over the first digit of a line that is done */
 
 /** What the first line not yet done is. */
 enum { LINE_NONE, LINE_OWN, LINE_OTHER, LINE_BAD, LINE_FORGED };
@@ -57,24 +60,24 @@ enum { LINE_NONE, LINE_OWN, LINE_OTHER, LINE_BAD, LINE_FORGED };
 /** How a line parses: torn, fine, a tag that does not check out, a malformed token. */
 enum { PARSE_BAD, PARSE_OK, PARSE_FORGED, PARSE_JUNK };
 
-static QueueHandle_t handover;                  // com_task -> RA task
+static QueueHandle_t handover; // com_task -> RA task
 // static storage for it, like the leaderboard queue in ra_task.c: the FreeRTOS
 // heap is nearly full once FTP runs
 static StaticQueue_t handover_ctl;
-static uint8_t       handover_mem[RA_QUEUE_HANDOVER * sizeof(ra_unlock_t)];
-static char          owner[RA_QUEUE_USER_MAX];  // the account unlocks are kept for
-static char          own_hash[RA_GAMES_HASH_LEN + 1];   // the game ra_state's lists belong to, see ra_queue_game()
-static unsigned      own_id;                    // ... and its id, 0 until the server resolved a fallback identity
-static unsigned      pending;                   // this account's lines not done, plus ram[]
-static ra_unlock_t   ram[RA_QUEUE_RAM];         // unlocks the card did not take
-static volatile unsigned ram_n;                 // volatile: ra_queue_in_transit() reads it from com_task
-static volatile bool taking;                    // ra_queue_take() holds an unlock between the queue and the card
-static ra_unlock_t   head;                      // what ra_queue_head() returned last
-static bool          head_in_ram;               // ... it is ram[0]
-static bool          head_taken;                // ... and a submit is using it
-static FSIZE_t       head_at;                   // file offset of its line
-static char          head_line[RA_QUEUE_LINE_MAX];
-static char          head_user[RA_QUEUE_USER_MAX];
+static uint8_t handover_mem[RA_QUEUE_HANDOVER * sizeof(ra_unlock_t)];
+static char owner[RA_QUEUE_USER_MAX];        // the account unlocks are kept for
+static char own_hash[RA_GAMES_HASH_LEN + 1]; // the game ra_state's lists belong to, see ra_queue_game()
+static unsigned own_id;               // ... and its id, 0 until the server resolved a fallback identity
+static unsigned pending;              // this account's lines not done, plus ram[]
+static ra_unlock_t ram[RA_QUEUE_RAM]; // unlocks the card did not take
+static volatile unsigned ram_n;       // volatile: ra_queue_in_transit() reads it from com_task
+static volatile bool taking;          // ra_queue_take() holds an unlock between the queue and the card
+static ra_unlock_t head;              // what ra_queue_head() returned last
+static bool head_in_ram;              // ... it is ram[0]
+static bool head_taken;               // ... and a submit is using it
+static FSIZE_t head_at;               // file offset of its line
+static char head_line[RA_QUEUE_LINE_MAX];
+static char head_user[RA_QUEUE_USER_MAX];
 
 unsigned ra_queue_in_transit(void) {
   // in this order: an unlock leaves the queue only after taking is set, and taking
@@ -85,12 +88,13 @@ unsigned ra_queue_in_transit(void) {
 }
 
 QueueHandle_t ra_queue_init(void) {
-  if(!handover) handover = xQueueCreateStatic(RA_QUEUE_HANDOVER, sizeof(ra_unlock_t), handover_mem, &handover_ctl);
+  if(!handover)
+    handover = xQueueCreateStatic(RA_QUEUE_HANDOVER, sizeof(ra_unlock_t), handover_mem, &handover_ctl);
   return handover;
 }
 
 void ra_queue_add(unsigned id, bool hardcore) {
-  ra_unlock_t u = { id, (unsigned long)time(NULL), hardcore, "" };
+  ra_unlock_t u = {id, (unsigned long)time(NULL), hardcore, ""};
   if(u.when < RA_CLOCK_VALID) u.when = 0;
   // the running game: the only one whose set runs. com_task changes the identity
   // itself, so the hash is whole and the one the set was activated for. Not while
@@ -157,13 +161,13 @@ static FRESULT append_line(const char *path, const char *text) {
    game it was earned under, never the running one. */
 static FRESULT append_unlock(const char *path, const ra_unlock_t *u) {
   char line[RA_QUEUE_LINE_MAX], tag[RA_MAC_HEX + 1];
-  int n = snprintf(line, sizeof(line), "%u %lu %s %c %s", u->id, u->when, owner, u->hardcore ? 'h' : 's', u->hash);
+  int n = snprintf(line, sizeof(line), "%u %lu %s %c %s", u->id, u->when, owner, u->hardcore ? 'h' : 's',
+                   u->hash);
   // the tag over everything before it, the hash included. Without a device key
   // the line has none and counts as softcore when it is read back.
   if(n > 0 && n < (int)sizeof(line) && ra_mac_tag(RA_QUEUE_LABEL, line, (size_t)n, tag))
     snprintf(line + n, sizeof(line) - (size_t)n, " %s\n", tag);
-  else
-    snprintf(line + n, sizeof(line) - (size_t)n, "\n");
+  else snprintf(line + n, sizeof(line) - (size_t)n, "\n");
   return append_line(path, line);
 }
 
@@ -199,7 +203,7 @@ static int parse(const char *line, ra_unlock_t *u, char *user) {
   size_t len = strlen(line);
   if(len < 2 || line[len - 1] != '\n' || line[0] < '0' || line[0] > '9') return PARSE_BAD;
   char *end;
-  u->id   = (unsigned)strtoul(line, &end, 10);   // strtoul, sscanf would pull about 47 KB of newlib in
+  u->id   = (unsigned)strtoul(line, &end, 10); // strtoul, sscanf would pull about 47 KB of newlib in
   u->when = strtoul(end, &end, 10);
   while(*end == ' ') end++;
   size_t n = strcspn(end, " \r\n");
@@ -223,7 +227,7 @@ static int parse(const char *line, ra_unlock_t *u, char *user) {
   end += n;
   while(*end == ' ') end++;
   n = strcspn(end, " \r\n");
-  if(*end == '\r' || *end == '\n') return PARSE_OK;   // no tag: softcore
+  if(*end == '\r' || *end == '\n') return PARSE_OK; // no tag: softcore
   // the tag, over the text before the space in front of it
   size_t text = (size_t)(end - line);
   while(text && line[text - 1] == ' ') text--;
@@ -246,9 +250,9 @@ static int parse(const char *line, ra_unlock_t *u, char *user) {
 static int scan(void) {
   FIL f;
   char line[RA_QUEUE_LINE_MAX], user[RA_QUEUE_USER_MAX];
-  int kind = LINE_NONE;
+  int kind     = LINE_NONE;
   unsigned own = 0;
-  bool lines = false;
+  bool lines   = false;
 
   sdc_lock();
   FRESULT r = f_open(&f, RA_QUEUE_FILE, FA_READ);
@@ -258,10 +262,12 @@ static int scan(void) {
       if(!f_gets(line, sizeof(line), &f)) break;
       lines = true;
       if(line[0] == RA_QUEUE_DONE || line[0] == '\n' || line[0] == '\r') continue;
-      ra_unlock_t u = { 0, 0, false, "" };
-      int p = parse(line, &u, user);
-      int k = p == PARSE_BAD || p == PARSE_JUNK ? LINE_BAD : p == PARSE_FORGED ? LINE_FORGED :
-              strcasecmp(user, owner) ? LINE_OTHER : LINE_OWN;
+      ra_unlock_t u = {0, 0, false, ""};
+      int p         = parse(line, &u, user);
+      int k         = p == PARSE_BAD || p == PARSE_JUNK ? LINE_BAD
+                      : p == PARSE_FORGED               ? LINE_FORGED
+                      : strcasecmp(user, owner)         ? LINE_OTHER
+                                                        : LINE_OWN;
       // every line to send counts as pending; queued counts as unlocked, in the
       // mode it was earned in, when it is the running game's
       if(k == LINE_OWN) {
@@ -269,7 +275,9 @@ static int scan(void) {
         if(ra_queue_own(u.hash)) ra_state_add(u.id, u.hardcore);
       }
       if(kind == LINE_NONE) {
-        kind = k; head = u; head_at = at;
+        kind    = k;
+        head    = u;
+        head_at = at;
         snprintf(head_line, sizeof(head_line), "%s", line);
         snprintf(head_user, sizeof(head_user), "%s", k == LINE_OWN || k == LINE_OTHER ? user : "");
       }
@@ -300,10 +308,8 @@ static void flush_ram(void) {
 
 void ra_queue_open(const char *user) {
   snprintf(owner, sizeof(owner), "%s", user);
-  if(scan() < 0)
-    debugf("RA: %s not readable", RA_QUEUE_FILE);
-  else if(pending)
-    debugf("RA: %u unlocks pending from before", pending);
+  if(scan() < 0) debugf("RA: %s not readable", RA_QUEUE_FILE);
+  else if(pending) debugf("RA: %u unlocks pending from before", pending);
 }
 
 static void take_one(bool keep) {
@@ -325,20 +331,19 @@ static void take_one(bool keep) {
   flush_ram();
   FRESULT r = append_unlock(RA_QUEUE_FILE, &u);
   if(r == FR_OK) {
-    if(own) ra_state_add(u.id, u.hardcore);   // on the card, so from now on it counts as unlocked
+    if(own) ra_state_add(u.id, u.hardcore); // on the card, so from now on it counts as unlocked
     pending++;
-    debugf("RA: %s unlock %u queued (%u pending)%s", u.hardcore ? "hardcore" : "softcore", u.id,
-           pending, u.when ? "" : ", clock not set, unlock time unknown");
+    debugf("RA: %s unlock %u queued (%u pending)%s", u.hardcore ? "hardcore" : "softcore", u.id, pending,
+           u.when ? "" : ", clock not set, unlock time unknown");
   } else if(ram_n < RA_QUEUE_RAM) {
     ram[ram_n++] = u;
     pending++;
     debugf("RA: unlock %u NOT on the card (error %d), kept in RAM until it can be written", u.id, (int)r);
-  } else
-    debugf("RA: unlock %u lost, card error %d and no room in RAM", u.id, (int)r);
+  } else debugf("RA: unlock %u lost, card error %d and no room in RAM", u.id, (int)r);
 }
 
 void ra_queue_take(bool keep) {
-  taking = true;   // counted by ra_queue_in_transit() from before the receive
+  taking = true; // counted by ra_queue_in_transit() from before the receive
   take_one(keep);
   taking = false;
 }
@@ -368,17 +373,17 @@ int ra_queue_head(ra_unlock_t *u) {
         if(append_line(RA_QUEUE_PARKED, head_line) != FR_OK) return -1;
       } else if(k == LINE_FORGED) {
         debugf("RA: unlock %u %s, set aside to %s, not sent", head.id,
-               ra_mac_ready() ? "with a tag that does not check out" : "with a tag, but no device key to check it",
+               ra_mac_ready() ? "with a tag that does not check out"
+                              : "with a tag, but no device key to check it",
                RA_QUEUE_PARKED);
         if(append_line(RA_QUEUE_PARKED, head_line) != FR_OK) return -1;
-      } else
-        debugf("RA: unreadable or malformed line in %s marked done, skipped", RA_QUEUE_FILE);
+      } else debugf("RA: unreadable or malformed line in %s marked done, skipped", RA_QUEUE_FILE);
       if(mark_done(head_at) != FR_OK) return -1;
     }
-    if(k != LINE_OWN) return k;               // LINE_NONE is 0, a card error -1
+    if(k != LINE_OWN) return k; // LINE_NONE is 0, a card error -1
   }
   head_taken = true;
-  *u = head;
+  *u         = head;
   return 1;
 }
 

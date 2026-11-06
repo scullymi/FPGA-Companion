@@ -2,7 +2,7 @@
 /* Copyright (C) 2026 scullymi */
 /** @file ra_events.c
  *  @brief rcheevos over each good snapshot of the game RAM, and what its events cause. */
-#include <malloc.h>           /* mallinfo(), the SDK heap's top after a game switch */
+#include <malloc.h> /* mallinfo(), the SDK heap's top after a game switch */
 #include <stdio.h>
 #include <string.h>
 
@@ -17,23 +17,23 @@
 #include "ra_state.h"
 #include "ra_task.h"
 
-uint32_t getFreeHeap(void);   /* mcu_hw.c: the SDK heap left for mbedTLS and rcheevos */
-uint32_t getTotalHeap(void);  /* mcu_hw.c: the SDK heap, all of it */
+uint32_t getFreeHeap(void);  /* mcu_hw.c: the SDK heap left for mbedTLS and rcheevos */
+uint32_t getTotalHeap(void); /* mcu_hw.c: the SDK heap, all of it */
 
 /* rcheevos evaluates the achievement conditions over each good snapshot. The set
    is defined on the flat layout the core sends, per game (Galaga: bgram 2048, then
    wram1..3 of 1024 each), so an address is the offset in the snapshot. */
-static rc_runtime_t   ra_rt;
-static bool           ra_ready;
-static unsigned       ra_gen;               /* the game generation ra_rt is made for, ra_patch_generation() */
-static unsigned char  ra_triggered;         /* achievements triggered, saturating */
-static unsigned char  ra_last;              /* last one, 1-based position in the set */
-static unsigned short ra_us;                /* evaluation time of the last snapshot */
-static unsigned       ra_oob;               /* reads outside the mirror */
-static unsigned       ra_rp_frames;         /* frames since the rich presence text was read */
-#define RA_RP_EVERY   60                    /* frames between two readings, about a second */
-static const unsigned char *ra_ram;        /* the game RAM of the snapshot being evaluated */
-static unsigned       ra_ram_size;         /* and its size, the running core's */
+static rc_runtime_t ra_rt;
+static bool ra_ready;
+static unsigned ra_gen;             /* the game generation ra_rt is made for, ra_patch_generation() */
+static unsigned char ra_triggered;  /* achievements triggered, saturating */
+static unsigned char ra_last;       /* last one, 1-based position in the set */
+static unsigned short ra_us;        /* evaluation time of the last snapshot */
+static unsigned ra_oob;             /* reads outside the mirror */
+static unsigned ra_rp_frames;       /* frames since the rich presence text was read */
+#define RA_RP_EVERY 60              /* frames between two readings, about a second */
+static const unsigned char *ra_ram; /* the game RAM of the snapshot being evaluated */
+static unsigned ra_ram_size;        /* and its size, the running core's */
 
 /* rcheevos asks for num_bytes from address into buffer and gets back how many of them
    exist. Outside the running core's game RAM there is nothing: say so once instead of
@@ -45,8 +45,7 @@ static uint32_t ra_peek(uint32_t address, uint8_t *buffer, uint32_t num_bytes, v
     if(!ra_oob++) debugf("RA: condition reads 0x%lx, outside the mirror", (unsigned long)address);
     return 0;
   }
-  if(num_bytes > ra_ram_size - address)
-    num_bytes = ra_ram_size - address;
+  if(num_bytes > ra_ram_size - address) num_bytes = ra_ram_size - address;
   memcpy(buffer, ra_ram + address, num_bytes);
   return num_bytes;
 }
@@ -61,8 +60,8 @@ static void ra_primed_set(unsigned id, bool on) {
   unsigned i = ra_patch_index(id);
   if(!i || i > RA_PATCH_MAX) return;
   i--;
-  if(on) ra_primed[i / 32] |=  (1u << (i % 32));
-  else   ra_primed[i / 32] &= ~(1u << (i % 32));
+  if(on) ra_primed[i / 32] |= (1u << (i % 32));
+  else ra_primed[i / 32] &= ~(1u << (i % 32));
 }
 
 static bool ra_primed_any(void) {
@@ -84,7 +83,7 @@ static bool ra_done(unsigned id) {
    allows leaderboard popups to be off, not the submission. */
 static void ra_lboard_event(const rc_runtime_event_t *ev) {
   ra_patch_lboard_t lb;
-  char text[64], value[24];   // banner_show() cuts to the banner, at a word where it can
+  char text[64], value[24]; // banner_show() cuts to the banner, at a word where it can
   bool hardcore = ra_task_hardcore();
   if(!ra_patch_lboard(ev->id, &lb)) return;
   switch(ev->type) {
@@ -110,7 +109,7 @@ static void ra_lboard_event(const rc_runtime_event_t *ev) {
     ra_task_lboard(ev->id, ev->value);
     break;
   default:
-    break;   // UPDATED comes with every change of the value, DISABLED needs address checks this firmware does not make
+    break; // UPDATED comes with every change of the value, DISABLED needs address checks this firmware does not make
   }
 }
 
@@ -148,8 +147,8 @@ static void ra_event(const rc_runtime_event_t *ev) {
   bool hardcore = ra_task_hardcore();
   if(ra_triggered < 255) ra_triggered++;
   ra_last = (unsigned char)ra_patch_index(ev->id);
-  debugf("RA: %s achievement %u triggered: %s", hardcore ? "hardcore" : "softcore",
-         (unsigned)ev->id, ra_patch_title(ev->id));
+  debugf("RA: %s achievement %u triggered: %s", hardcore ? "hardcore" : "softcore", (unsigned)ev->id,
+         ra_patch_title(ev->id));
   // gold in hardcore, white in softcore, as on the RA site. The mark is green when
   // the unlock is new in this mode, grey when the account has it already or one
   // is queued. Asked before the queue takes this one.
@@ -170,7 +169,8 @@ static void ra_heap_log(void) {
   vPortGetHeapStats(&h);
   debugf("RA: game switch %u, SDK heap free %lu, top %lu, %u free chunks, FreeRTOS heap free %u, largest %u",
          ra_gen, (unsigned long)getFreeHeap(), (unsigned long)(getTotalHeap() - m.arena + m.keepcost),
-         (unsigned)m.ordblks, (unsigned)h.xAvailableHeapSpaceInBytes, (unsigned)h.xSizeOfLargestFreeBlockInBytes);
+         (unsigned)m.ordblks, (unsigned)h.xAvailableHeapSpaceInBytes,
+         (unsigned)h.xSizeOfLargestFreeBlockInBytes);
 }
 
 /* The back channel for the diagnostic bars of the FPGA: the rcheevos state. */
@@ -180,7 +180,7 @@ void ra_events_header(unsigned char *hdr_tx) {
   hdr_tx[2] = (unsigned char)(ra_us & 0xff);
   hdr_tx[3] = (unsigned char)(ra_us >> 8);
   hdr_tx[4] = ra_last;
-  hdr_tx[5] = ra_primed_any() ? 0x01 : 0x00;   /* bit 0: a challenge is on, the marker shows */
+  hdr_tx[5] = ra_primed_any() ? 0x01 : 0x00; /* bit 0: a challenge is on, the marker shows */
 }
 
 /* Before a snapshot that passed every check goes to rcheevos. */
@@ -200,7 +200,7 @@ void ra_events_prepare(void) {
     ra_oob       = 0;
     ra_rp_frames = 0;
     memset(ra_primed, 0, sizeof(ra_primed));
-    ra_task_set_richpresence("");      /* the old game's text never reaches a ping of the new one */
+    ra_task_set_richpresence(""); /* the old game's text never reaches a ping of the new one */
     ra_heap_log();
   }
   if(!ra_ready) {
@@ -211,22 +211,25 @@ void ra_events_prepare(void) {
 
 /* Evaluates one snapshot: ram is its game RAM of size bytes. */
 void ra_events_frame(const unsigned char *ram, unsigned size) {
-  ra_ram      = ram;
-  ra_ram_size = size;
+  ra_ram        = ram;
+  ra_ram_size   = size;
   unsigned what = ra_patch_apply_pending(&ra_rt);
   /* the SDK heap is where rcheevos keeps the set and mbedTLS a connection: a large
      set leaves less for the next request, so the log shows what is left */
-  if(what & RA_PATCH_NEW_SET) debugf("RA: set active, SDK heap free %lu, FreeRTOS heap free %u",
-                                     (unsigned long)getFreeHeap(), (unsigned)xPortGetFreeHeapSize());
-  if(what & RA_PATCH_RESET) {                                /* a game starts */
-    ra_task_game_start();                                    /* hardcore due begins with this frame */
+  if(what & RA_PATCH_NEW_SET)
+    debugf("RA: set active, SDK heap free %lu, FreeRTOS heap free %u", (unsigned long)getFreeHeap(),
+           (unsigned)xPortGetFreeHeapSize());
+  if(what & RA_PATCH_RESET) { /* a game starts */
+    ra_task_game_start();     /* hardcore due begins with this frame */
     banner_ask_mode();
   }
-  if(what) memset(ra_primed, 0, sizeof(ra_primed));   /* after a reset nothing is primed, a new set moves the positions */
+  if(what)
+    memset(ra_primed, 0,
+           sizeof(ra_primed)); /* after a reset nothing is primed, a new set moves the positions */
   absolute_time_t t0 = get_absolute_time();
   rc_runtime_do_frame(&ra_rt, ra_event, ra_peek, NULL, NULL);
   int64_t dt = absolute_time_diff_us(t0, get_absolute_time());
-  ra_us = dt > 65535 ? 65535 : (unsigned short)dt;
+  ra_us      = dt > 65535 ? 65535 : (unsigned short)dt;
 
   /* the RA task pings only while frames arrive, and sends the rich presence text,
      read here where the snapshot is valid, about once a second */
@@ -236,6 +239,6 @@ void ra_events_frame(const unsigned char *ram, unsigned size) {
     ra_rp_frames = 0;
     rc_runtime_get_richpresence(&ra_rt, rp, sizeof(rp), ra_peek, NULL, NULL);
     ra_task_set_richpresence(rp);
-    ra_patch_update_progress(&ra_rt);   /* progress and challenges for the menu's list */
+    ra_patch_update_progress(&ra_rt); /* progress and challenges for the menu's list */
   }
 }

@@ -17,23 +17,23 @@
 
 /** @brief The menu of a board, or of one set on it. */
 typedef struct {
-  unsigned char board;   /**< header byte 12 of the core */
-  const char   *set;     /**< NULL for the board's menu, else the set this menu is for, ahead of the board's */
-  uint16_t      tag;     /**< IFACE_TAG of the core built from the same sources, header bytes 16 and 17 */
-  const char   *xml;     /**< the menu, as the Companion parses it */
+  unsigned char board; /**< header byte 12 of the core */
+  const char *set;     /**< NULL for the board's menu, else the set this menu is for, ahead of the board's */
+  uint16_t tag;        /**< IFACE_TAG of the core built from the same sources, header bytes 16 and 17 */
+  const char *xml;     /**< the menu, as the Companion parses it */
 } menus_entry_t;
 
 extern const menus_entry_t menus_rows[];
-extern const unsigned      menus_rows_n;      /**< rows in menus_rows */
-extern const char          menus_basic_xml[]; /**< the menu for a core the table has no fitting menu for */
-extern const char          menus_origin[];    /**< "generated" for game20k's table, "example" for menus_example.c */
+extern const unsigned menus_rows_n;  /**< rows in menus_rows */
+extern const char menus_basic_xml[]; /**< the menu for a core the table has no fitting menu for */
+extern const char menus_origin[];    /**< "generated" for game20k's table, "example" for menus_example.c */
 
 /** @brief Why menus_pick() found a menu or none. */
 typedef enum {
-  MENUS_FOUND,      /**< the table's menu for this core */
-  MENUS_NO_HEADER,  /**< no RAM mirror header of this layout: another core, it may bring its own menu */
-  MENUS_NO_BOARD,   /**< a game20k core whose board the table lacks */
-  MENUS_MISMATCH    /**< the board's menu has another tag: core and firmware of different sources */
+  MENUS_FOUND,     /**< the table's menu for this core */
+  MENUS_NO_HEADER, /**< no RAM mirror header of this layout: another core, it may bring its own menu */
+  MENUS_NO_BOARD,  /**< a game20k core whose board the table lacks */
+  MENUS_MISMATCH   /**< the board's menu has another tag: core and firmware of different sources */
 } menus_why_t;
 
 /** @brief The entry of the set on that board, else the board's, NULL when there is none. set may be NULL. */

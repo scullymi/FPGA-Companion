@@ -43,17 +43,15 @@ void menu_version_status(void) {
    mark is a disk when the account has it in hardcore, a ring when only in
    softcore, an exclamation mark while its challenge is on. OK on a line shows
    the details. RetroAchievements asks that progress and challenges show here. */
-static const unsigned char icn_hard_bits[]   = { 0x3c,0x7e,0xff,0xff,0xff,0xff,0x7e,0x3c };
-static const unsigned char icn_primed_bits[] = { 0x18,0x18,0x18,0x18,0x18,0x00,0x18,0x18 };
+static const unsigned char icn_hard_bits[]   = {0x3c, 0x7e, 0xff, 0xff, 0xff, 0xff, 0x7e, 0x3c};
+static const unsigned char icn_primed_bits[] = {0x18, 0x18, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18};
 
 /* Unlocked in the mode that counts: hardcore counts in both modes, softcore only in softcore. */
 static bool ra_list_done(unsigned id) {
   return ra_state_known(id) || (!ra_task_hardcore() && ra_state_softcore_only(id));
 }
 
-int ra_list_length(void) {
-  return (int)ra_patch_count();
-}
+int ra_list_length(void) { return (int)ra_patch_count(); }
 
 void ra_list_draw(void) {
   const int width = u8g2_GetDisplayWidth(&u8g2);
@@ -73,13 +71,13 @@ void ra_list_draw(void) {
     ra_patch_item_t it;
     int i = row + menu_page_scroll();
     if(!ra_patch_item((unsigned)i, &it)) break;
-    int y = menu_page_y(row);
+    int y     = menu_page_y(row);
     bool done = ra_list_done(it.id);
 
     // right column: the progress while the achievement is open, else its points
     char right[RA_PATCH_PROGRESS_MAX + 4];
     if(it.progress[0] && !done) snprintf(right, sizeof(right), "%s", it.progress);
-    else                        snprintf(right, sizeof(right), "%u", it.points);
+    else snprintf(right, sizeof(right), "%u", it.points);
     int rw = u8g2_GetStrWidth(&u8g2, right);
 
     // the title between mark and right column, cut with "..." when too long
@@ -91,14 +89,13 @@ void ra_list_draw(void) {
       strcat(title, "...");
     }
 
-    if(it.primed && !done)             u8g2_DrawXBM(&u8g2, 1, y - 8, 8, 8, icn_primed_bits);
-    else if(ra_state_known(it.id))     u8g2_DrawXBM(&u8g2, 1, y - 8, 8, 8, icn_hard_bits);
+    if(it.primed && !done) u8g2_DrawXBM(&u8g2, 1, y - 8, 8, 8, icn_primed_bits);
+    else if(ra_state_known(it.id)) u8g2_DrawXBM(&u8g2, 1, y - 8, 8, 8, icn_hard_bits);
     else if(ra_state_softcore_only(it.id)) u8g2_DrawXBM(&u8g2, 1, y - 8, 8, 8, icn_off_bits);
     u8g2_DrawStr(&u8g2, menu_page_x(), y, title);
     u8g2_DrawStr(&u8g2, width - rw - 1, y, right);
 
-    if(menu_page_selected() == i + 1)
-      u8g2_DrawButtonFrame(&u8g2, 0, y, U8G2_BTN_INV, width, 1, 1);
+    if(menu_page_selected() == i + 1) u8g2_DrawButtonFrame(&u8g2, 0, y, U8G2_BTN_INV, width, 1, 1);
   }
 }
 
@@ -117,7 +114,7 @@ static void ra_list_ellipsize(char *s, int width) {
    with "...". Returns the number of lines. */
 static int ra_list_wrap(const char *text, char out[][80], int max) {
   const int width = u8g2_GetDisplayWidth(&u8g2);
-  int n = 0;
+  int n           = 0;
   menu_page_font();
   while(*text && n < max) {
     size_t take = 0, gap = 0, i;
@@ -125,7 +122,7 @@ static int ra_list_wrap(const char *text, char out[][80], int max) {
     while(*text == ' ') text++;
     if(!*text) break;
     for(i = 0; text[i] && i < 80 - 4; i++) {
-      line[i] = text[i];
+      line[i]     = text[i];
       line[i + 1] = 0;
       if(u8g2_GetStrWidth(&u8g2, line) > width) break;
       if(text[i] == ' ') gap = i;
@@ -137,7 +134,7 @@ static int ra_list_wrap(const char *text, char out[][80], int max) {
     text += take;
     n++;
     while(*text == ' ') text++;
-    if(n == max && *text) ra_list_ellipsize(line, width);   // more text than lines
+    if(n == max && *text) ra_list_ellipsize(line, width); // more text than lines
   }
   return n;
 }
@@ -154,12 +151,12 @@ void ra_list_select(int line) {
 
   if(!ra_patch_item((unsigned)line, &it)) return;
   // where it stands: done in this mode first, else what is going on
-  if(ra_state_known(it.id))                                state = "hardcore";
+  if(ra_state_known(it.id)) state = "hardcore";
   else if(ra_state_softcore_only(it.id) && !ra_task_hardcore()) state = "softcore";
-  else if(it.primed)                                       state = "challenge on";
-  else if(it.progress[0])                                  state = it.progress;
-  else if(ra_state_softcore_only(it.id))                   state = "softcore only";
-  else                                                     state = "open";
+  else if(it.primed) state = "challenge on";
+  else if(it.progress[0]) state = it.progress;
+  else if(ra_state_softcore_only(it.id)) state = "softcore only";
+  else state = "open";
 
   // the heading in the dialog's bold font, cut to the display
   u8g2_SetFont(&u8g2, u8g2_font_helvB08_tr);
@@ -169,9 +166,12 @@ void ra_list_select(int line) {
   menu_page_font();
   snprintf(stat, sizeof(stat), "%u points, %s", it.points, state);
   if(u8g2_GetStrWidth(&u8g2, stat) > width) snprintf(stat, sizeof(stat), "%u pts, %s", it.points, state);
-  n = ra_list_wrap(it.desc, desc, 3);
+  n    = ra_list_wrap(it.desc, desc, 3);
   t[0] = 0;
-  for(i = 0; i < n; i++) { strcat(t, desc[i]); strcat(t, "\n"); }
+  for(i = 0; i < n; i++) {
+    strcat(t, desc[i]);
+    strcat(t, "\n");
+  }
   strcat(t, stat);
   menu_draw_dialog_for(head, t, pdMS_TO_TICKS(10000));
 }
@@ -182,9 +182,7 @@ void ra_list_select(int line) {
    core switch, see switch_step() in game_switch.c. The list is read when the page opens. A
    later change of the card is read before the menu task draws the page next, before a
    key acts on it and before the OSD comes on, see menu_do(). */
-int games_list_length(void) {
-  return (int)games_count();
-}
+int games_list_length(void) { return (int)games_count(); }
 
 /* The scroll that shows line sel (lines count from 1), as stepping down to it would
    scroll, see menu_entry_go() */
@@ -219,8 +217,7 @@ bool games_list_reread(void) {
   int n = (int)games_count();
   if(sel > n) sel = n;
   if(!was && n) sel = 1;
-  if(sel < scroll + 1 || sel > scroll + 4 || scroll > (n > 4 ? n - 4 : 0))
-    scroll = games_list_scroll(sel);
+  if(sel < scroll + 1 || sel > scroll + 4 || scroll > (n > 4 ? n - 4 : 0)) scroll = games_list_scroll(sel);
   menu_page_move(sel, scroll);
   return on_game ? !line : sel != before;
 }
@@ -241,8 +238,7 @@ void games_list_draw(void) {
     snprintf(title, sizeof(title), "%s", it.title);
     ra_list_ellipsize(title, width - 2);
     u8g2_DrawStr(&u8g2, 1, y, title);
-    if(menu_page_selected() == i + 1)
-      u8g2_DrawButtonFrame(&u8g2, 0, y, U8G2_BTN_INV, width, 1, 1);
+    if(menu_page_selected() == i + 1) u8g2_DrawButtonFrame(&u8g2, 0, y, U8G2_BTN_INV, width, 1, 1);
   }
 }
 
@@ -253,8 +249,8 @@ void games_list_select(int line) {
   const char *img = sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
   if(!games_item((unsigned)line, &it)) return;
   // the file that runs already, with no restart pending: nothing to start, the menu closes
-  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT) && games_name_crc(img) == it.crc &&
-     !ra_patch_switch_to() && !games_picked(&pk)) {
+  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT) && games_name_crc(img) == it.crc && !ra_patch_switch_to() &&
+     !games_picked(&pk)) {
     osd_enable(OSD_INVISIBLE);
     return;
   }
@@ -272,11 +268,10 @@ void games_list_select(int line) {
 int games_list_first(void) {
   const char *cwd = sdc_get_cwd(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
   const char *img = sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
-  int sel = 0;
+  int sel         = 0;
   games_read();
   // the running file's line, as games_list_select() tells it; lines count from 1
-  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT))
-    sel = games_list_line(games_name_crc(img));
+  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT)) sel = games_list_line(games_name_crc(img));
   if(!sel && games_count()) sel = 1;
   return sel;
 }
@@ -287,8 +282,7 @@ static const config_list_t *menu_find_list(const config_menu_t *menu, char id) {
     if(me->type == CONFIG_MENU_ENTRY_MENU) {
       const config_list_t *l = menu_find_list(me->menu, id);
       if(l) return l;
-    } else if(me->type == CONFIG_MENU_ENTRY_LIST && me->list->id == (unsigned char)id)
-      return me->list;
+    } else if(me->type == CONFIG_MENU_ENTRY_LIST && me->list->id == (unsigned char)id) return me->list;
   }
   return NULL;
 }
@@ -302,7 +296,7 @@ static bool menu_dip_wanted(char *buf, size_t size) {
   const ra_dip_t *dip = ra_game_dips(&n);
   for(i = 0; dip && i < n; i++) {
     if(!menu_variable_exists(dip[i].id) || menu_variable_get(dip[i].id) == dip[i].value) continue;
-    const config_list_t *l = cfg ? menu_find_list(cfg->menu, dip[i].id) : NULL;
+    const config_list_t *l       = cfg ? menu_find_list(cfg->menu, dip[i].id) : NULL;
     const config_listentry_t *le = l ? l->listentries : NULL;
     while(le && le->value != dip[i].value) le = le->next;
     snprintf(buf, size, "%s %s", l ? l->label : "DIP", le ? le->label : "?");
@@ -312,9 +306,7 @@ static bool menu_dip_wanted(char *buf, size_t size) {
 }
 
 /* game20k: true when every DIP switch the running game's set expects has that value */
-bool menu_dips_as_expected(void) {
-  return !menu_dip_wanted(NULL, 0);
-}
+bool menu_dips_as_expected(void) { return !menu_dip_wanted(NULL, 0); }
 
 /* game20k: "Set for RA" in the DIP switches. Every switch the running game's set
    expects goes to that value, and a change resets the game as a change by hand
@@ -331,8 +323,9 @@ void menu_dips_set(void) {
     config_action_t *reset = config_get_action("reset");
     if(reset) sys_run_action(reset);
   }
-  menu_draw_dialog("DIP switches", !dip ? "This game's set expects no DIP switches." :
-                   changed ? "Set as the game's achievement set expects." : "Already as the set expects.");
+  menu_draw_dialog("DIP switches", !dip      ? "This game's set expects no DIP switches."
+                                   : changed ? "Set as the game's achievement set expects."
+                                             : "Already as the set expects.");
 }
 
 // The Account dialog: the account and where it stands, the count, and the
@@ -355,13 +348,27 @@ void menu_ra_status(void) {
   }
 
   switch(ra_task_state()) {
-  case RA_TASK_LOGGED_IN:  state = "logged in";      break;
-  case RA_TASK_REJECTED:   state = "login rejected"; break;
-  case RA_TASK_NO_ACCOUNT: state = "no account";     break;
-  case RA_TASK_NO_TIME:    state = "no time server"; break;
-  case RA_TASK_RETRYING:   state = "offline";        break;
-  case RA_TASK_NO_GAME:    state = "no game";        break;
-  default:                 state = "connecting";     break;
+  case RA_TASK_LOGGED_IN:
+    state = "logged in";
+    break;
+  case RA_TASK_REJECTED:
+    state = "login rejected";
+    break;
+  case RA_TASK_NO_ACCOUNT:
+    state = "no account";
+    break;
+  case RA_TASK_NO_TIME:
+    state = "no time server";
+    break;
+  case RA_TASK_RETRYING:
+    state = "offline";
+    break;
+  case RA_TASK_NO_GAME:
+    state = "no game";
+    break;
+  default:
+    state = "connecting";
+    break;
   }
   // the mode in front, it decides how the unlocks count. Softcore although the
   // menu asks for hardcore names the reason instead of the login state. A wrong
@@ -369,24 +376,26 @@ void menu_ra_status(void) {
   char line[40];
   unsigned why = ra_task_hardcore_blocked();
   // SET without a login: the login state says more than "till online"
-  if((why & ~RA_HC_BLOCK_SET) == 0 && (ra_task_state() == RA_TASK_REJECTED || ra_task_state() == RA_TASK_NO_ACCOUNT))
+  if((why & ~RA_HC_BLOCK_SET) == 0 &&
+     (ra_task_state() == RA_TASK_REJECTED || ra_task_state() == RA_TASK_NO_ACCOUNT))
     why = 0;
   if(!ra_task_hardcore() && ra_task_hardcore_wanted() && why)
     snprintf(line, sizeof(line), "softcore: %s",
-             (why & RA_HC_BLOCK_CORE) ? "test core" : (why & RA_HC_BLOCK_XML) ? "config.xml" :
-             (why & RA_HC_BLOCK_MENU) ? "mismatch" :
-             (why & RA_HC_BLOCK_KEY)  ? "key error" : (why & RA_HC_BLOCK_SIZE) ? "set too big" :
-             (why & RA_HC_BLOCK_GAME) ? "wrong game" :
-             (why & RA_HC_BLOCK_ROM)  ? "ROM unknown" : "till online");
-  else
-    snprintf(line, sizeof(line), "%s, %s", ra_task_hardcore() ? "hardcore" : "softcore", state);
+             (why & RA_HC_BLOCK_CORE)   ? "test core"
+             : (why & RA_HC_BLOCK_XML)  ? "config.xml"
+             : (why & RA_HC_BLOCK_MENU) ? "mismatch"
+             : (why & RA_HC_BLOCK_KEY)  ? "key error"
+             : (why & RA_HC_BLOCK_SIZE) ? "set too big"
+             : (why & RA_HC_BLOCK_GAME) ? "wrong game"
+             : (why & RA_HC_BLOCK_ROM)  ? "ROM unknown"
+                                        : "till online");
+  else snprintf(line, sizeof(line), "%s, %s", ra_task_hardcore() ? "hardcore" : "softcore", state);
   // the counts refer to the active set, without one there is nothing to count
-  if(!ra_patch_count())
-    snprintf(count, sizeof(count), "no set loaded");
+  if(!ra_patch_count()) snprintf(count, sizeof(count), "no set loaded");
   else if(ra_state_softcore_count())
-    snprintf(count, sizeof(count), "%u of %u, %u softcore", ra_state_count(), ra_patch_count(), ra_state_softcore_count());
-  else
-    snprintf(count, sizeof(count), "%u of %u unlocked", ra_state_count(), ra_patch_count());
+    snprintf(count, sizeof(count), "%u of %u, %u softcore", ra_state_count(), ra_patch_count(),
+             ra_state_softcore_count());
+  else snprintf(count, sizeof(count), "%u of %u unlocked", ra_state_count(), ra_patch_count());
 
   // the note: a DIP switch the set does not expect comes first, its conditions
   // would never fire, then what still waits for the server, then in hardcore
@@ -445,7 +454,8 @@ bool menu_page_event(long cmd) {
   }
   if(cmd == MENU_EVENT_ROM_DAMAGED) {
     // game20k: the core stays in reset, the player picks another game
-    menu_draw_dialog_for("ROM file damaged", "Copy the file again.\nThe game does not start.", pdMS_TO_TICKS(6000));
+    menu_draw_dialog_for("ROM file damaged", "Copy the file again.\nThe game does not start.",
+                         pdMS_TO_TICKS(6000));
     menu_games_show();
     return true;
   }
@@ -457,8 +467,7 @@ bool menu_page_event(long cmd) {
   if(cmd == MENU_EVENT_GAMES_CHANGED) {
     // game20k: the card changed. The page on screen draws again, and menu_do() reads the
     // card first. A message on top or a hidden OSD waits for the page's next draw
-    if(games_page_shown() && osd_is_visible() && games_stale())
-      menu_do(MENU_EVENT_NONE);
+    if(games_page_shown() && osd_is_visible() && games_stale()) menu_do(MENU_EVENT_NONE);
     return true;
   }
   if(cmd == MENU_EVENT_MISMATCH) {

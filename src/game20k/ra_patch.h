@@ -17,9 +17,9 @@
 
 /** @brief The identity of the running game as one copy, see ra_game_now(). */
 typedef struct {
-  unsigned gen;                           /**< the generation it belongs to, see ra_patch_generation() */
-  unsigned id;                            /**< as ra_game_id() */
-  char     hash[RA_GAMES_HASH_LEN + 1];   /**< as ra_game_hash() */
+  unsigned gen;                     /**< the generation it belongs to, see ra_patch_generation() */
+  unsigned id;                      /**< as ra_game_id() */
+  char hash[RA_GAMES_HASH_LEN + 1]; /**< as ra_game_hash() */
 } ra_game_now_t;
 
 /** @brief Copies the running game's identity, one game's whole. Any task. */
@@ -35,7 +35,7 @@ bool ra_patch_current(unsigned gen);
  *  new game rewrites the text in place. */
 const char *ra_game_hash(void);
 /** @brief Id of the current game on the server. 0 when there is none, or the server has not resolved it yet. Any task. */
-unsigned    ra_game_id(void);
+unsigned ra_game_id(void);
 /** @brief The DIP switches the set expects, n of them. NULL when it expects none, or there is no game. */
 const ra_dip_t *ra_game_dips(unsigned *n);
 /** @brief Title of the table entry, for the menu. NULL for a fallback identity or before settle. */
@@ -45,7 +45,7 @@ unsigned char ra_game_board(void);
 /** @brief What the ROM file is: the known file's label, "ROM unknown", "ROM not checked" (the stream had not ended at settle), "no ROM". "" before settle. */
 const char *ra_game_rom_label(void);
 
-#define RA_PATCH_ROM_IMAGE 0   /**< the core's image index of the ROM set, "ROM set" in the core's XML */
+#define RA_PATCH_ROM_IMAGE 0 /**< the core's image index of the ROM set, "ROM set" in the core's XML */
 
 /* The ROM hooks run in the task that drives the transfer: rom_data and rom_end in
    com_task, rom_start and rom_gone also in menu_task (a file picked, ejected or
@@ -176,7 +176,6 @@ bool ra_patch_switch_commit(const ra_game_t *g);
  *  the ROM in the core. */
 void ra_patch_switch_cancel(void);
 
-
 /** @brief The id the server resolved the hash of the game of generation gen to. RA task, after r=gameid.
  *
  *  Nothing happens once that game no longer runs. For a table entry a differing
@@ -191,8 +190,8 @@ void ra_patch_resolved(unsigned gen, unsigned server_id);
 /** @brief Sets up the handover of a parsed set to com_task. Once, before the RA task runs. False when it failed. */
 bool ra_patch_init(void);
 
-#define RA_PATCH_RESET   1u   /**< ra_patch_apply_pending(): the core was reset, a game starts */
-#define RA_PATCH_NEW_SET 2u   /**< ra_patch_apply_pending(): a new set is active, table positions changed */
+#define RA_PATCH_RESET   1u /**< ra_patch_apply_pending(): the core was reset, a game starts */
+#define RA_PATCH_NEW_SET 2u /**< ra_patch_apply_pending(): a new set is active, table positions changed */
 
 /** @brief Activates a set the RA task handed over, if one waits. com_task only, before each frame.
  *
@@ -239,18 +238,18 @@ char *ra_patch_body(unsigned *cap);
  *  asked for, the hardcore block and the handover check the generation. */
 int ra_patch_from_server(unsigned len, unsigned gen);
 
-#define RA_PATCH_TITLE_MAX    32   /**< titles are cut to 31 characters, the FPGA banner shows 24 */
-#define RA_PATCH_DESC_MAX     256  /**< descriptions up to 255 characters, as the server allows them */
-#define RA_PATCH_PROGRESS_MAX 24   /**< measured progress, "4294967295/4294967295" fits */
+#define RA_PATCH_TITLE_MAX    32  /**< titles are cut to 31 characters, the FPGA banner shows 24 */
+#define RA_PATCH_DESC_MAX     256 /**< descriptions up to 255 characters, as the server allows them */
+#define RA_PATCH_PROGRESS_MAX 24  /**< measured progress, "4294967295/4294967295" fits */
 
 /** @brief One achievement of the active set, as the menu shows it. */
 typedef struct {
-  unsigned id;                              /**< achievement id on the server */
-  unsigned points;                          /**< its points */
-  char     title[RA_PATCH_TITLE_MAX];        /**< title, cut to fit */
-  char     desc[RA_PATCH_DESC_MAX];          /**< description, cut to fit */
-  char     progress[RA_PATCH_PROGRESS_MAX];  /**< measured progress, "" when it has none */
-  bool     primed;                          /**< challenge on: all its conditions but the trigger hold */
+  unsigned id;                          /**< achievement id on the server */
+  unsigned points;                      /**< its points */
+  char title[RA_PATCH_TITLE_MAX];       /**< title, cut to fit */
+  char desc[RA_PATCH_DESC_MAX];         /**< description, cut to fit */
+  char progress[RA_PATCH_PROGRESS_MAX]; /**< measured progress, "" when it has none */
+  bool primed;                          /**< challenge on: all its conditions but the trigger hold */
 } ra_patch_item_t;
 
 /** @brief Copies achievement i (0-based, in the set's order) to out. Any task.
@@ -269,15 +268,15 @@ void ra_patch_format_progress(const rc_runtime_t *rt, unsigned id, char *buf, si
  *  About once a second is enough, the menu shows what it read last. */
 void ra_patch_update_progress(const rc_runtime_t *rt);
 
-#define RA_PATCH_MAX    128  /**< achievements kept per set, e.g. Galaga 17, Pang 114 */
-#define RA_PATCH_LB_MAX 12   /**< leaderboards kept per set, e.g. Galaga 1, Ms. Pac-Man 10 */
+#define RA_PATCH_MAX    128 /**< achievements kept per set, e.g. Galaga 17, Pang 114 */
+#define RA_PATCH_LB_MAX 12  /**< leaderboards kept per set, e.g. Galaga 1, Ms. Pac-Man 10 */
 
 /** @brief One leaderboard of the active set. */
 typedef struct {
-  unsigned id;                          /**< leaderboard id on the server */
-  int      format;                      /**< how its value reads, for rc_runtime_format_lboard_value() */
-  bool     lower_is_better;             /**< e.g. a time */
-  char     title[RA_PATCH_TITLE_MAX];    /**< title, cut to fit */
+  unsigned id;                    /**< leaderboard id on the server */
+  int format;                     /**< how its value reads, for rc_runtime_format_lboard_value() */
+  bool lower_is_better;           /**< e.g. a time */
+  char title[RA_PATCH_TITLE_MAX]; /**< title, cut to fit */
 } ra_patch_lboard_t;
 
 /** @brief Copies the leaderboard with this id to out. Any task. False when the set has none such. */
@@ -296,9 +295,9 @@ bool ra_patch_lboard(unsigned id, ra_patch_lboard_t *out);
 bool ra_patch_warning(char *out, size_t size);
 
 /** @brief Number of core achievements in the active set. */
-unsigned    ra_patch_count(void);
+unsigned ra_patch_count(void);
 /** @brief 1-based position of an achievement id in the set, 0 when not in it. */
-unsigned    ra_patch_index(unsigned id);
+unsigned ra_patch_index(unsigned id);
 /** @brief Title of an achievement, "" when unknown. */
 const char *ra_patch_title(unsigned id);
 

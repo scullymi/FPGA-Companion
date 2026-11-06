@@ -28,7 +28,7 @@
 
 uint32_t games_crc32(const void *data, size_t len) {
   const unsigned char *p = data;
-  uint32_t crc = 0xFFFFFFFFu;
+  uint32_t crc           = 0xFFFFFFFFu;
   // bit by bit: 124 bytes per footer, a table would cost 1 KB of flash for nothing
   while(len--) {
     crc ^= *p++;
