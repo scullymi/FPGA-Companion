@@ -148,6 +148,8 @@ add_executable(${PROJECT}
 	../game20k/ra_state.c
 	../game20k/games_file.c
 	../game20k/games.c
+	../game20k/core_boot.c
+	../game20k/game_switch.c
 	../game20k/ra_events.c
 	../game20k/banner.c
 	# rcheevos: the runtime that evaluates the conditions and the reader for the
