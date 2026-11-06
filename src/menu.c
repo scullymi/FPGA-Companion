@@ -911,7 +911,7 @@ void menu_stop_repeat(void);
 /* ================ the Games page ================
    One line per game on the card, by title (games.c). OK on a line starts it: a game
    of this board streams its file to the core in place, one of another board needs a
-   core switch, see switch_step() in main.c. The list is read when the page opens. A
+   core switch, see switch_step() in game_switch.c. The list is read when the page opens. A
    later change of the card is read before the menu task draws the page next, before a
    key acts on it and before the OSD comes on, see menu_do(). */
 static int games_list_length(void) {
@@ -990,7 +990,7 @@ static void games_list_select(int line) {
     osd_enable(OSD_INVISIBLE);
     return;
   }
-  // main.c takes it from here. A game of this board streams at once and the menu
+  // game_switch.c takes it from here. A game of this board streams at once and the menu
   // closes onto it, a core switch says so, see MENU_EVENT_CORE_SWITCH
   games_pick(&it);
   if(it.board == ra_game_board()) {
@@ -1372,7 +1372,7 @@ static void menu_fileselector_select(sdc_dir_entry_t *entry) {
   } else {
     // game20k: the ROM file of a known game of another board, e.g. galaga.rom in
     // the Pac-Man core, needs that board's core. Nothing streams to this one:
-    // main.c switches the core and starts the game there, see switch_step()
+    // game_switch.c switches the core and starts the game there, see switch_step()
     if(drive == MAX_DRIVES + RA_PATCH_ROM_IMAGE) {
       // a file without a footer is an old one, it neither switches nor streams
       games_footer_t ft;
@@ -1747,7 +1747,7 @@ static void menu_handle_latin1(uint8_t code) {
   else          menu_debugf("menu_handle_latin1(%d)", code);
 }
 
-/* game20k: another core comes up without a restart of the Pico (main.c). The menu
+/* game20k: another core comes up without a restart of the Pico (game_switch.c). The menu
    task stops here, between two events: no drawing, no action, nothing of the old
    core's menu in use, until com_task lets it go on (menu_resume(), menu_rebuild()).
    The timers stop first, the dialog's and the key repeat's draw from the timer task. */
@@ -1859,7 +1859,7 @@ static void menu_task(__attribute__((unused)) void *parms) {
 #endif
 
     if(cmd == MENU_EVENT_CORE_SWITCH) {
-      // game20k: the game picked runs on another board, main.c loads its core in
+      // game20k: the game picked runs on another board, game_switch.c loads its core in
       // a few seconds. A game picked on the Games page goes first. A game of this
       // board needs no core switch, it streams in place
       const ra_game_t *g = ra_patch_switch_to();

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Copyright (C) 2026 scullymi */
+/* Copyright (C) 2026 scullymi, parts from main.c of FPGA-Companion by Till Harbaum */
 /** @file core_boot.c
  *  @brief Setting up the core that runs: its menu, its images, the ready action. */
 #include <stdio.h>

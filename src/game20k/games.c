@@ -10,7 +10,7 @@
  *  to the core: sdc.c compares the SHA-256 the stream yields with the footer's, a
  *  file that fails stays off the list until the card changes.
  *
- *  A game picked on the page reaches main.c as the CRC-32 of its file name and its
+ *  A game picked on the page reaches game_switch.c as the CRC-32 of its file name and its
  *  board: switch_step() switches the core for another board, and switch_rom()
  *  finds the file again by that CRC. The start game is a file
  *  name in GAMES_START_FILE: config.ini belongs to the user and holds secrets, the

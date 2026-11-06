@@ -113,7 +113,7 @@ typedef struct {
   unsigned id;        /**< leaderboard id */
   int32_t  score;     /**< the value submitted */
   int32_t  best;      /**< the account's best value on this leaderboard */
-  unsigned rank;      /**< the rank of that best value, also for an entry the server did not keep, see banner_lboard() in main.c */
+  unsigned rank;      /**< the rank of that best value, also for an entry the server did not keep, see banner_lboard() in banner.c */
   unsigned entries;   /**< entries on the leaderboard */
   char     hash[RA_GAMES_HASH_LEN + 1];   /**< the game it was reached in, as ra_game_hash() */
 } ra_lboard_result_t;

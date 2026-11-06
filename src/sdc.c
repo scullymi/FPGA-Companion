@@ -1266,7 +1266,7 @@ void sdc_set_cwd(int drive, char *path) {
   cwd[drive] = StrDup(path);  
 }
 
-/* game20k: another core came up without a restart of the Pico (main.c). Every
+/* game20k: another core came up without a restart of the Pico (game_switch.c). Every
    image of the old core is closed and its name and folder forgotten, as at the
    start, and the core is told nothing: the new one knows none of them, the init
    action of its menu names its own. A ROM stream cut here ends without a settle,

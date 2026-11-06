@@ -1117,7 +1117,7 @@ void ra_patch_settle(void) {
     new_core = false;
     // the newest pick wins: a ROM that streamed to this core takes a pending core
     // switch back, unless a game of another board was picked after this stream
-    // began or the switch is under way (switch_step() in main.c)
+    // began or the switch is under way (switch_step() in game_switch.c)
     const ra_game_t *was;
     bool later;
     taskENTER_CRITICAL();   // the menu may pick a game of another board meanwhile
@@ -1183,7 +1183,7 @@ void ra_patch_new_game(const ra_ident_t *ident) {
   table_wrong   = false;
   card_fp_valid = card_fp_runs = false;
   warning[0]    = 0;
-  // the old set's table, texts and leaderboards. main.c makes rcheevos anew before
+  // the old set's table, texts and leaderboards. ra_events.c makes rcheevos anew before
   // the next frame, so every entry of the next set is activated, none kept running
   set_n = lb_n = 0;
   memset(live, 0, sizeof(live));

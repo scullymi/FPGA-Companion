@@ -125,7 +125,7 @@ bool ra_patch_settled(void);
  *  ident as the first settle does, SET by the card set with a valid tag or the
  *  server's set. RA_HC_BLOCK_SIZE goes, the new set decides it. The RA task reads
  *  the card set, it owns the set buffer, and begins a round for the new game.
- *  main.c makes rcheevos anew before the next frame, see ra_patch_generation(). */
+ *  ra_events.c makes rcheevos anew before the next frame, see ra_patch_generation(). */
 void ra_patch_new_game(const ra_ident_t *ident);
 
 /** @brief A core of another board came up without a restart of the Pico. com_task only, after the board of the new core was fed (ra_patch_board()).
@@ -147,7 +147,7 @@ bool ra_patch_foreign_rom(void);
 
 /** @brief The game of another board a core switch should start, NULL when none. Any task.
  *
- *  Set by ra_patch_pick_other_board(): main.c switches the core and starts the game
+ *  Set by ra_patch_pick_other_board(): game_switch.c switches the core and starts the game
  *  there. The newest pick wins: a later pick replaces the target, any file that
  *  streams to this core takes it back, until ra_patch_switch_commit() fixes it. A
  *  known ROM of another game of this board needs no core switch, the settle makes

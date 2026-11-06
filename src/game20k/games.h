@@ -50,7 +50,7 @@ void games_damaged(const char *name);
 /** @brief The CRC-32 of a file name, as the list and the switch marker carry it. */
 uint32_t games_name_crc(const char *name);
 
-/** @brief Picks a game for switch_step() in main.c: the newest pick wins until it is committed. Menu task. */
+/** @brief Picks a game for switch_step() in game_switch.c: the newest pick wins until it is committed. Menu task. */
 void games_pick(const games_item_t *it);
 /** @brief Copies the pending pick, false when there is none. Any task. */
 bool games_picked(games_pick_t *out);
