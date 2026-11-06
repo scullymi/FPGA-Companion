@@ -96,8 +96,8 @@ void ra_patch_board(unsigned char board);
 
 /** @brief Decides the game from the ROM in the core and reads its card set. com_task only.
  *
- *  Called when board and ROM are known: from ra_patch_rom_end(), or from main.c
- *  when nothing streams or the stream stalled. The first call selects the game
+ *  Called when board and ROM are known: from ra_patch_rom_end(), else at the start of a core
+ *  and from main.c when nothing streams or the stream stalled. The first call selects the game
  *  from board, digest and image name, sets RA_HC_BLOCK_ROM and RA_HC_BLOCK_GAME,
  *  moves the card files of the firmware before this one into the game's folder,
  *  and reads the card set: before the RA task is started from the main loop, so
