@@ -14,11 +14,11 @@
 /** @{ */
 #define MBEDTLS_PLATFORM_C
 #define MBEDTLS_ALLOW_PRIVATE_ACCESS
-#define MBEDTLS_NO_PLATFORM_ENTROPY     /* no /dev/urandom */
-#define MBEDTLS_ENTROPY_HARDWARE_ALT    /* mbedtls_hardware_poll from pico_mbedtls */
+#define MBEDTLS_NO_PLATFORM_ENTROPY  /* no /dev/urandom */
+#define MBEDTLS_ENTROPY_HARDWARE_ALT /* mbedtls_hardware_poll from pico_mbedtls */
 #define MBEDTLS_HAVE_TIME
-#define MBEDTLS_HAVE_TIME_DATE          /* certificate dates, needs the NTP clock */
-#define MBEDTLS_PLATFORM_MS_TIME_ALT    /* mbedtls_ms_time() in ra_net.c */
+#define MBEDTLS_HAVE_TIME_DATE       /* certificate dates, needs the NTP clock */
+#define MBEDTLS_PLATFORM_MS_TIME_ALT /* mbedtls_ms_time() in ra_net.c */
 /** @} */
 
 /** @name TLS 1.2 client
@@ -27,7 +27,7 @@
 #define MBEDTLS_SSL_TLS_C
 #define MBEDTLS_SSL_CLI_C
 #define MBEDTLS_SSL_PROTO_TLS1_2
-#define MBEDTLS_SSL_SERVER_NAME_INDICATION   /* the server needs SNI */
+#define MBEDTLS_SSL_SERVER_NAME_INDICATION /* the server needs SNI */
 #define MBEDTLS_KEY_EXCHANGE_ECDHE_ECDSA_ENABLED
 /** @} */
 
@@ -40,7 +40,7 @@
 #define MBEDTLS_ECDSA_C
 #define MBEDTLS_ECP_DP_SECP256R1_ENABLED
 #define MBEDTLS_ECP_DP_SECP384R1_ENABLED
-#define MBEDTLS_ECP_NIST_OPTIM          /* fast reduction for both curves, a request takes 1.3 s with it and 6.8 s without */
+#define MBEDTLS_ECP_NIST_OPTIM /* fast reduction for both curves, a request takes 1.3 s with it and 6.8 s without */
 #define MBEDTLS_AES_C
 #define MBEDTLS_AES_ROM_TABLES
 #define MBEDTLS_GCM_C
@@ -65,14 +65,14 @@
 #define MBEDTLS_X509_USE_C
 #define MBEDTLS_X509_CRT_PARSE_C
 #define MBEDTLS_BASE64_C
-#define MBEDTLS_PEM_PARSE_C             /* the anchor is PEM */
+#define MBEDTLS_PEM_PARSE_C /* the anchor is PEM */
 
 /* Record buffers: the server's replies come in records of up to 16 KB, so the input
    buffer keeps the full size. Our requests are short GETs, so the output buffer needs
    no 16 KB; 4 KB saves 12 KB of SDK heap per connection, which the achievement sets
    and their parse need. */
-#define MBEDTLS_SSL_IN_CONTENT_LEN      16384
-#define MBEDTLS_SSL_OUT_CONTENT_LEN     4096
+#define MBEDTLS_SSL_IN_CONTENT_LEN  16384
+#define MBEDTLS_SSL_OUT_CONTENT_LEN 4096
 /** @} */
 
 #endif /* GAME20K_MBEDTLS_CONFIG_H */
