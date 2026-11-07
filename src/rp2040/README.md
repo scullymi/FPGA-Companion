@@ -81,7 +81,7 @@ git clone https://github.com/MiSTle-Dev/FPGA-Companion.git  --recursive
 cd FPGA-Companion
 ```
 
-Alternally do a
+Alternatively do a
 
 ```bash
 git submodule update --init
@@ -100,6 +100,7 @@ mkdir build
 cd build
 cmake -DBOARD=PICO ..
 # for Pico OSD core loader use: cmake -DBOARD=MSP20K ..
+# for Pico2 OSD core loader use: cmake -DBOARD=MSP2_20K ..
 make
 ```
 
@@ -179,6 +180,9 @@ On the regular Pico, the FPGA Companion uses the following pins:
 [^2]: specific for DEV20k GW2A board  
 
 Location JTAG connection TN20k PCBA top side.  
+
+> [!WARNING]
+>If you are using stock ```20K's FRIEND``` BL616 firmware the JTAG pins are **blocked** and Pico JTAG loader won't work. On fused (encrypted) boards update to 'partner' and on unfused ones you need to keep BL616 in reset / fw update mode ```Bouffalo CDC DEMO```.
 
 ![Tang Nano 20k JTAG](jtag_tn20k.png)
 

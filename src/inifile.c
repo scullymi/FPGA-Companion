@@ -10,6 +10,7 @@
 #include "sdc.h"      // for CARD_MOUNTPOINT
 #include "menu.h"     // to access menu variables
 #include "config.h"
+#include "hidkeys.h"
 #include "debug.h"
 
 #ifdef ESP_PLATFORM
@@ -24,25 +25,171 @@ static int iswhite(char c) {
   return c == ' ' || c == '\r' || c == '\n' || c == '\t';
 }
 
-static const struct option_S { char *name; char *info; int index; } option_ids[] = {
-  {"hotkey", "; HID key code of OSD/menu hotkey\n",  INIFILE_OPTION_HOTKEY },
-  {"led",    "; led state (0=blink, 1=on, 2=off)\n", INIFILE_OPTION_LED },
-  {NULL,     NULL,                                   -1 }
-};
+// ------------ the config selected through a <cfgselector> ------------
+//
+// The default ini (e.g. amiga.ini) stores the ini the user selected last in a
+// line "config=<file>". Reading is done by the cfgselector code, the settings
+// themselves are not parsed from that line.
 
-static int options[2] = { 0x45, 0 };  // default options: hotkey=F12, led=blink
-static void inifile_parse_option(char *id, char *value) {
-  for(const struct option_S *oid = option_ids;oid->name;oid++) {
-    if(!strcasecmp(oid->name, id)) {
-      options[oid->index] = atoi(value);
-      ini_debugf("option %s: %d", id, options[oid->index]);
-    }
-  }
+#define INIFILE_SELECTION_KEY  "config"
+#define INIFILE_MAX_SIZE       8192   // bigger files are not rewritten (and thus never truncated)
+
+// is the line (len bytes, not 0 terminated) a "config=<file>" line?
+static bool ini_is_selection(const char *l, size_t len, const char **val, size_t *vlen) {
+  size_t klen = strlen(INIFILE_SELECTION_KEY), i = klen;
+  if(len < klen || strncasecmp(l, INIFILE_SELECTION_KEY, klen)) return false;
+  while(i < len && (l[i] == ' ' || l[i] == '\t')) i++;
+  if(i >= len || l[i] != '=') return false;
+  i++;
+  while(i < len && (l[i] == ' ' || l[i] == '\t')) i++;
+
+  // the value ends at a comment or the end of the line, like everywhere else in the ini
+  size_t e = i;
+  while(e < len && l[e] != ';' && l[e] != '\r' && l[e] != '\n') e++;
+  while(e > i && iswhite(l[e-1])) e--;
+
+  *val = l+i;
+  *vlen = e-i;
+  return true;
 }
 
-int inifile_option_get(int id) {
-  if((id < 0) || (id > 1)) return -1;
-  return options[id];
+static char *ini_filename(const char *name) {
+  char *filename = pvPortMalloc(strlen(CARD_MOUNTPOINT) + strlen(name) + 2);  // MP+'/'+name+'\0'
+  strcpy(filename, CARD_MOUNTPOINT);
+  strcat(filename, "/");
+  strcat(filename, name);
+  return filename;
+}
+
+// reads the selection from a file. The caller has the file system locked.
+static int ini_selection_read(const char *filename, char *buf, size_t size) {
+  FIL fil;
+  buf[0] = '\0';
+  if(f_open(&fil, filename, FA_OPEN_EXISTING | FA_READ) != FR_OK) return -1;
+
+  char line[FF_LFN_BUF+10];
+  while(f_gets(line, sizeof(line), &fil) != NULL) {
+    const char *val; size_t vlen;
+    if(ini_is_selection(line, strlen(line), &val, &vlen)) {
+      if(vlen < size) { memcpy(buf, val, vlen); buf[vlen] = '\0'; }
+      else            buf[0] = '\0';
+    }
+  }
+  f_close(&fil);
+  return 0;
+}
+
+// true if the ini file can be opened
+int inifile_exists(const char *name) {
+  char *filename = ini_filename(name);
+  FIL fil;
+
+  sdc_lock();
+  int ok = (f_open(&fil, filename, FA_OPEN_EXISTING | FA_READ) == FR_OK);
+  if(ok) f_close(&fil);
+  sdc_unlock();
+  vPortFree(filename);
+  return ok;
+}
+
+// Deletes an ini file. 0 = deleted, -1 = failed
+int inifile_remove(const char *name) {
+  char *filename = ini_filename(name);
+  sdc_lock();
+  FRESULT r = f_unlink(filename);
+  sdc_unlock();
+  vPortFree(filename);
+  return (r == FR_OK) ? 0 : -1;
+}
+
+// Creates a new, empty ini. An existing file is never overwritten.
+// 0 = created, 1 = exists already, -1 = failed
+int inifile_create(const char *name) {
+  char *filename = ini_filename(name);
+  FIL fil;
+
+  sdc_lock();
+  FRESULT r = f_open(&fil, filename, FA_WRITE | FA_CREATE_NEW);
+  if(r == FR_OK) r = f_close(&fil);
+  sdc_unlock();
+  vPortFree(filename);
+
+  if(r == FR_EXIST) return 1;
+  return (r == FR_OK) ? 0 : -1;
+}
+
+// 0 = ini could be read (buf is empty if no selection is stored in it), -1 = it couldn't
+int inifile_selection_get(const char *def, char *buf, size_t size) {
+  char *filename = ini_filename(def);
+  sdc_lock();
+  int ret = ini_selection_read(filename, buf, size);
+  sdc_unlock();
+  vPortFree(filename);
+  return ret;
+}
+
+// Stores the selection in the default ini. Everything else in that file is kept
+// as it is. 0 = stored, -1 = failed (and the file was not touched, unless
+// writing itself failed)
+int inifile_selection_set(const char *def, const char *name) {
+  char *filename = ini_filename(def);
+  size_t nlen = strlen(name);
+  char *buf = NULL;
+  FSIZE_t size = 0;
+  FIL fil;
+  int ret = -1;
+
+  sdc_lock();
+
+  // read the whole ini ...
+  FRESULT r = f_open(&fil, filename, FA_OPEN_EXISTING | FA_READ);
+  if(r == FR_OK) {
+    size = f_size(&fil);
+    UINT n = 0;
+    // room for "config=" + name + '\n' and a '\n' if the last line has none
+    if(size <= INIFILE_MAX_SIZE && (buf = pvPortMalloc(size + nlen + 16)) != NULL) {
+      if(f_read(&fil, buf, size, &n) != FR_OK || n != size) {
+	vPortFree(buf);
+	buf = NULL;
+      }
+    }
+    f_close(&fil);
+  } else if(r == FR_NO_FILE)
+    buf = pvPortMalloc(nlen + 16);    // no default ini, yet. Create one
+  // Anything else (card problem, file too big): buf stays NULL and the file is
+  // not touched.
+
+  if(buf) {
+    // ... drop the old selection ...
+    char *w = buf;
+    const char *l = buf, *end = buf + size;
+    while(l < end) {
+      const char *e = memchr(l, '\n', end - l);
+      size_t len = e ? (size_t)(e - l) + 1 : (size_t)(end - l);
+      const char *v; size_t vl;
+      if(!ini_is_selection(l, len, &v, &vl)) {
+	memmove(w, l, len);
+	w += len;
+      }
+      l += len;
+    }
+    if(w > buf && w[-1] != '\n') *w++ = '\n';
+    
+    // ... add the new one (the buffer has room for it, see above) ...
+    w += snprintf(w, (size_t)((buf + size + nlen + 16) - w), "%s=%s\n", INIFILE_SELECTION_KEY, name);
+
+    // ... and write it back
+    if(f_open(&fil, filename, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+      UINT bw = 0;
+      FRESULT wr = f_write(&fil, buf, w - buf, &bw);
+      if(f_close(&fil) == FR_OK && wr == FR_OK && bw == (UINT)(w - buf)) ret = 0;
+    }
+    vPortFree(buf);
+  }
+
+  sdc_unlock();
+  vPortFree(filename);
+  return ret;
 }
 
 int inifile_read(char *name) {
@@ -133,34 +280,6 @@ int inifile_read(char *name) {
 	  }
 	}
       }
-
-      // check for firmware options
-      if(strncasecmp(buffer, "option ", 7) == 0) {
-	// skip "option"
-	char *p = buffer+7;
-	// skip to first char
-	while(*p && iswhite(*p)) p++;
-	if(*p) {	  
-	  char *id = p;
-	  // skip to end of if
-	  while(*p && !iswhite(*p) && *p != '=') p++;
-	  if(p && *p == '=') {
-	    *p++ = '\0'; // terminate id (overwrites the '=')
-	  } else {
-	    *p++ = '\0'; // terminate id
-	    // skip until '='
-	    while(*p && *p != '=') p++;
-	    p++;  // skip =
-	  }
-	    
-	  if(*p) {
-	    // skip all whites
-	    while(*p && iswhite(*p)) p++;
-	    if(*p)
-	      inifile_parse_option(id, p);
-	  }
-	}
-      }      
     }
     f_close(&fil);
   } else {
@@ -189,6 +308,11 @@ int inifile_write(char *name) {
   ini_debugf("Write settings to %s", filename);
   
   sdc_lock();  // get exclusive access to the file system
+
+  // the file is rewritten from scratch. Keep the config the user selected
+  // through a <cfgselector> if this is the default ini storing it
+  char selection[FF_LFN_BUF+1];
+  ini_selection_read(filename, selection, sizeof(selection));
   
   int ok = 0;
   FIL file;
@@ -200,21 +324,12 @@ int inifile_write(char *name) {
 
     menu_variable_t *vars = menu_get_variables();
     while(vars) {
-      char str[10];
-      sprintf(str, "var %c=%d\n", vars->id, vars->value);
+      char str[16];   // "var X=-128\n" needs 12 bytes, 10 were not enough (stack overflow)
+      snprintf(str, sizeof(str), "var %c=%d\n", vars->id, vars->value);
       f_puts(str, &file);
       vars = vars->next;
     }
 
-    // write options
-    f_puts("\n; firmware options\n", &file);
-    for(const struct option_S *oid = option_ids;oid->name;oid++) {
-      char str[32];
-      f_puts(oid->info, &file);
-      sprintf(str, "option %s=%d\n", oid->name, options[oid->index]);
-      f_puts(str, &file);
-    }
-    
     // write disk and ROM image file names
     f_puts("\n; image files\n", &file);
 
@@ -235,6 +350,13 @@ int inifile_write(char *name) {
 #endif
 	f_puts(str, &file);
       }      
+    }
+
+    if(selection[0]) {
+      f_puts("\n; config selected with the config selector\n", &file);
+      f_puts(INIFILE_SELECTION_KEY "=", &file);
+      f_puts(selection, &file);
+      f_puts("\n", &file);
     }
 
     f_puts("\n", &file);
@@ -260,6 +382,7 @@ enum {
   CONFIG_TYPE_STRING,
   CONFIG_TYPE_IP,
   CONFIG_TYPE_INT,
+  CONFIG_TYPE_HIDKEY,
   CONFIG_TYPE_CHOICE,
   CONFIG_TYPE_SECRET   // string, debug output shows only its length
 };
@@ -300,7 +423,7 @@ static const struct {
   { "NETWORK", "IP", CONFIG_TYPE_IP, NULL },
   { "NETWORK", "MASK", CONFIG_TYPE_IP, NULL },
   { "NETWORK", "GW", CONFIG_TYPE_IP, NULL },
-  { "NETWORK", "DNS", CONFIG_TYPE_IP, NULL },   // game20k: name server of a static configuration
+  { "NETWORK", "DNS", CONFIG_TYPE_IP, NULL },
 
   // wifi settings
   { "WIFI", "SSID", CONFIG_TYPE_STRING, NULL },
@@ -311,7 +434,11 @@ static const struct {
   { "NTP", "TIMEZONE", CONFIG_TYPE_INT, NULL },
 
   // MENU/OSD
-  { "MENU", "GAMEPAD_TRIGGER", CONFIG_TYPE_INT, NULL },
+  { "MENU", "GAMEPAD_TRIGGER", CONFIG_TYPE_INT, NULL },  
+  { "MENU", "HOTKEY", CONFIG_TYPE_HIDKEY, NULL },
+
+  // System
+  { "SYSTEM", "LED", CONFIG_TYPE_CHOICE, "blink,on,off" },
 
 #if GAME20K_RA
   // game20k, RetroAchievements: USER is the account name, TOKEN the connect token
@@ -365,6 +492,12 @@ static void inifile_config_dump(void) {
 	case CONFIG_TYPE_INT:
 	  ini_debugf("    %d", val->data.val);	
 	  break;
+	  
+	case CONFIG_TYPE_HIDKEY: {
+	  const char *name = hidkeys_get_name(val->data.val);
+	  if(name) ini_debugf("    %s (%d)", name, val->data.val);
+	  else     ini_debugf("    %d", val->data.val);	
+	} break;
 	  
 	case CONFIG_TYPE_IP:
 	  ini_debugf("    %lu.%lu.%lu.%lu",
@@ -539,6 +672,16 @@ static void inifile_config_parse_line(char *line) {
 	// parse integer	
 	inifile_config_append_value(cfg)->data.val = atoi(value);
 	break;
+	
+      case CONFIG_TYPE_HIDKEY: {
+	// try to get key code, if not a valid key code, then parse as
+	// integer
+	int8_t code = hidkeys_get_code(value);
+	if(code < 0) 	
+	  inifile_config_append_value(cfg)->data.val = atoi(value);
+	else
+	  inifile_config_append_value(cfg)->data.val = code;
+      } break;
 	
       case CONFIG_TYPE_CHOICE:
 	// check if the choice is actually a valid one

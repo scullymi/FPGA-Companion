@@ -196,6 +196,7 @@ static void mcu_hw_jtag_init(void);
 #include <hardware/bl616.h>
 
 #define MAX_REPORT_SIZE   256
+#define MAX_JS_PER_IFACE  2
 #define MAX_HID_REPORT_DESC_SIZE 2048
 #define XBOX_REPORT_SIZE 20
 
@@ -215,6 +216,28 @@ static void mcu_hw_jtag_init(void);
 #define XINPUT_GAMEPAD_RIGHT_THUMB	0x0080
 #define XINPUT_GAMEPAD_LEFT_SHOULDER 0x0100
 #define XINPUT_GAMEPAD_RIGHT_SHOULDER 0x0200
+
+static const UsbGamepadMap data_frog_pc07 =
+  { "03000000100800000100000010010000", "DATA FROG PC07 Twin SNES Adapter",
+    0x0810, 0x0001, 0x0110,
+    2, 1, 3, 0,
+    8, -1, 9,
+    4, 5,
+    -1, -1,
+    -1, -1, -1, -1,
+    0,
+    1, 2, 4, 8,
+    0, 1, 3, 2,
+    0, 0, 0, 0,
+    -1, -1,
+    0, 0,
+    -1, -1,
+    0, 0, 0, 0,
+    0, 0,
+    -1, -1, -1, -1,
+    0, 0, 0, 0,
+    0, 0, 0, 0
+  };
 
 extern void shell_init_with_task(struct bflb_device_s *shell);
 
@@ -325,7 +348,8 @@ static struct usb_config {
     struct usbh_hid *class;
     uint8_t *buffer;
     int nbytes;
-    hid_report_t report;
+    hid_report_t report[MAX_JS_PER_IFACE];
+    uint8_t report_count;
     struct usbh_hid_report_info cherry_report;
     uint16_t input_report_size;
     bool report_ids_present;
@@ -337,7 +361,7 @@ static struct usb_config {
     TickType_t rate_start;
     unsigned long rate_events;
 #endif
-    hid_state_t hid_state;
+    hid_state_t hid_state[MAX_JS_PER_IFACE];
     volatile uint8_t stop;
   } hid_info[CONFIG_USBHOST_MAX_HID_CLASS];
 } usb_config;
@@ -629,7 +653,7 @@ static bool usbh_hid_keyboard_report_parse(struct hid_info_S *hid,
   if (!found_keyboard_data)
     return false;
 
-  kbd_parse_usage_state(&hid->hid_state.kbd, modifiers, keys);
+  kbd_parse_usage_state(&hid->hid_state[0].kbd, modifiers, keys);
   return true;
 }
 
@@ -647,49 +671,53 @@ static void usbh_hid_client_thread(void *argument) {
   usb_debugf("idVendor: 0x%04x          ", vendor_id);
   usb_debugf("idProduct: 0x%04x         ", product_id);
   usb_debugf("bcdDevice(version): 0x%04x         ", version_id);
-  usb_debugf("report type: 0x%04x          ", hid->report.type);
+  usb_debugf("report type: 0x%04x          ", hid->report[0].type);
 
   const UsbGamepadMap *map;
-
-  if (hid->report.type == REPORT_TYPE_JOYSTICK) {
-    usb_debugf("HID client #%d: trying to allocate joystick", hid->index);
-    hid->hid_state.joystick.js_index = hid_allocate_joystick();
-    usb_debugf("  -> joystick %d", hid->hid_state.joystick.js_index);
-  }
-
-  
-  if (hid->report.type == REPORT_TYPE_JOYSTICK)
-  {
-
-    // lookup for VID/PID/Version
-    map = find_usb_gamepad_map(vendor_id, product_id, version_id);
-
-    if (map)
-    {
-      usb_debugf("Found gamepad map: %s (VID=%04x PID=%04x VER=%04x)",
-                 map->name, map->vid, map->pid, map->version);
-
-      hid->report.map = map;
-      hid->report.map_found = 1;
-      hid->report.map_checked = 1;
-    }
-    else
-    {
-      usb_debugf("No map for VID=%04x PID=%04x, VERSION=%04x", vendor_id, product_id, version_id);
-      hid->report.map = NULL;
-      hid->report.map_found = 0;
-      hid->report.map_checked = 1;
+  size_t len = hid->use_cherry_keyboard ? hid->input_report_size : 0;
+  if (!hid->use_cherry_keyboard) {
+    for (uint8_t i = 0; i < hid->report_count; i++) {
+      size_t report_len = hid->report[i].report_size +
+          (hid->report[i].report_id_present ? 1 : 0);
+      if (report_len > len)
+        len = report_len;
     }
   }
-
-  size_t len = hid->use_cherry_keyboard ? hid->input_report_size :
-      hid->report.report_size + (hid->report.report_id_present ? 1 : 0);
   if (len == 0 || len > sizeof(hid_buffer[0])) {
     usb_debugf("HID client #%d: input report too large (%u bytes)",
                hid->index, (unsigned int)len);
     hid->task_handle = NULL;
     vTaskDelete(NULL);
     return;
+  }
+
+  for (uint8_t i = 0; i < hid->report_count; i++) {
+    if (hid->report[i].type != REPORT_TYPE_JOYSTICK)
+      continue;
+
+    usb_debugf("HID client #%d: trying to allocate joystick", hid->index);
+    hid->hid_state[i].joystick.js_index = hid_allocate_joystick();
+    usb_debugf("  -> joystick %d", hid->hid_state[i].joystick.js_index);
+
+    map = find_usb_gamepad_map(vendor_id, product_id, version_id);
+    if (map) {
+      if (hid->report_count > 1 &&
+          hid->report[1].type == REPORT_TYPE_JOYSTICK &&
+          map->vid == 0x0810 && map->pid == 0x0001)
+        map = &data_frog_pc07;
+
+      usb_debugf("Found gamepad map: %s (VID=%04x PID=%04x VER=%04x)",
+                 map->name, map->vid, map->pid, map->version);
+      hid->report[i].map = map;
+      hid->report[i].map_found = 1;
+      hid->report[i].map_checked = 1;
+    } else {
+      usb_debugf("No map for VID=%04x PID=%04x, VERSION=%04x",
+                 vendor_id, product_id, version_id);
+      hid->report[i].map = NULL;
+      hid->report[i].map_found = 0;
+      hid->report[i].map_checked = 1;
+    }
   }
 
   uint32_t hid_interval_ms;
@@ -773,8 +801,20 @@ static void usbh_hid_client_thread(void *argument) {
     if (hid->nbytes > 0) {
       if (hid->use_cherry_keyboard)
         usbh_hid_keyboard_report_parse(hid, hid->buffer, hid->nbytes);
-      else
-        hid_parse(&hid->report, &hid->hid_state, hid->buffer, hid->nbytes);
+      else if (!hid->report[0].report_id_present)
+        hid_parse(&hid->report[0], &hid->hid_state[0],
+                  hid->buffer, hid->nbytes);
+      else if (hid->nbytes > 0) {
+        for (uint8_t i = 0; i < hid->report_count; i++) {
+          uint16_t report_len = hid->report[i].report_size +
+              (hid->report[i].report_id_present ? 1 : 0);
+          if (hid->report[i].report_id_present &&
+              hid->buffer[0] == hid->report[i].report_id &&
+              (size_t)hid->nbytes >= report_len)
+            hid_parse(&hid->report[i], &hid->hid_state[i],
+                      hid->buffer, report_len);
+        }
+      }
     }
 
     hid->nbytes = 0;
@@ -792,9 +832,11 @@ static void usbh_hid_client_thread(void *argument) {
   }
 
   usb_debugf("HID client #%d: stopping", hid->index);
-  if (hid->hid_state.joystick.js_index != NO_JOYSTICK) {
-    hid_release_joystick(hid->hid_state.joystick.js_index);
-    hid->hid_state.joystick.js_index = NO_JOYSTICK;
+  for (uint8_t i = 0; i < hid->report_count; i++) {
+    if (hid->hid_state[i].joystick.js_index != NO_JOYSTICK) {
+      hid_release_joystick(hid->hid_state[i].joystick.js_index);
+      hid->hid_state[i].joystick.js_index = NO_JOYSTICK;
+    }
   }
   hid->task_handle = NULL;
   vTaskDelete(NULL);
@@ -1042,7 +1084,13 @@ void usbh_hid_run(struct usbh_hid *hid_class)
     usb->hid_info[i].class = hid_class;
 
     usb_debugf("NEW HID %d", i);
-    memset(&usb->hid_info[i].report, 0, sizeof(usb->hid_info[i].report));
+    struct hid_info_S *hid = &usb->hid_info[i];
+    memset(hid->report, 0, sizeof(hid->report));
+    memset(hid->hid_state, 0, sizeof(hid->hid_state));
+    memset(&hid->cherry_report, 0, sizeof(hid->cherry_report));
+    hid->report_count = 0;
+    for (uint8_t report = 0; report < MAX_JS_PER_IFACE; report++)
+      hid->hid_state[report].joystick.js_index = NO_JOYSTICK;
 
     if (hid_class->report_size > sizeof(report_desc)) {
       usb_debugf("HID report descriptor too large (%u bytes)",
@@ -1067,24 +1115,40 @@ void usbh_hid_run(struct usbh_hid *hid_class)
 			  hid_class->hport->device_desc.bcdDevice,
               report_desc, hid_class->report_size);
 
+    uint16_t report_bytes = 0;
     bool project_report_parsed = parse_report_descriptor(
-    report_desc, hid_class->report_size,
-        &usb->hid_info[i].report, NULL);
+        report_desc, hid_class->report_size, &hid->report[0], &report_bytes);
+    if (project_report_parsed) {
+      hid->report_count = 1;
+      if (hid->report[0].type == REPORT_TYPE_JOYSTICK &&
+          report_bytes < hid_class->report_size) {
+        uint16_t second_report_bytes = 0;
+        if (parse_report_descriptor(report_desc + report_bytes,
+                                    hid_class->report_size - report_bytes,
+                                    &hid->report[1], &second_report_bytes) &&
+            hid->report[1].type == REPORT_TYPE_JOYSTICK) {
+          hid->report_count = 2;
+          usb_debugf("Found second joystick report descriptor");
+        }
+      }
+    }
     int cherry_parse_result = usbh_hid_parse_report_descriptor(
     report_desc, hid_class->report_size,
         &usb->hid_info[i].cherry_report);
     if (cherry_parse_result == 0 &&
         usbh_hid_prepare_report_info(&usb->hid_info[i])) {
       if (usb->hid_info[i].use_cherry_keyboard)
-        usb->hid_info[i].report.type = REPORT_TYPE_KEYBOARD;
+        usb->hid_info[i].report[0].type = REPORT_TYPE_KEYBOARD;
     }
+    if (usb->hid_info[i].use_cherry_keyboard)
+      usb->hid_info[i].report_count = 1;
   
     if (!usb->hid_info[i].use_cherry_keyboard && !project_report_parsed) {
       usb->hid_info[i].state = STATE_FAILED;
       return;
     }
 
-    if (usb->hid_info[i].report.type == REPORT_TYPE_KEYBOARD &&
+    if (usb->hid_info[i].report[0].type == REPORT_TYPE_KEYBOARD &&
         !usb->hid_info[i].use_cherry_keyboard) {
       usb_debugf("HID keyboard report descriptor is unsupported");
       usb->hid_info[i].state = STATE_FAILED;
@@ -1104,10 +1168,15 @@ void usbh_hid_stop(struct usbh_hid *hid_class)
   uint8_t i = hid_class->minor;
   usb_config.hid_info[i].stop = 1;
 
-  if (usb_config.hid_info[i].hid_state.joystick.js_index != NO_JOYSTICK)
-  {
-    hid_release_joystick(usb_config.hid_info[i].hid_state.joystick.js_index);
-    usb_config.hid_info[i].hid_state.joystick.js_index = NO_JOYSTICK;
+  for (uint8_t report = 0;
+       report < usb_config.hid_info[i].report_count; report++) {
+    if (usb_config.hid_info[i].hid_state[report].joystick.js_index !=
+        NO_JOYSTICK) {
+      hid_release_joystick(
+          usb_config.hid_info[i].hid_state[report].joystick.js_index);
+      usb_config.hid_info[i].hid_state[report].joystick.js_index =
+          NO_JOYSTICK;
+    }
   }
 }
 
@@ -1781,6 +1850,26 @@ static void network_get_static_ipv4(ip4_addr_t *ipaddr, ip4_addr_t *netmask,
                    htonl(inifile_config_get_ip("network", "gw", 0xc0a80001)));
 }
 
+static void network_set_static_dns_callback(void *arg)
+{
+  (void)arg;
+
+  ip_addr_t dns;
+  ip_addr_set_ip4_u32(&dns,
+                      htonl(inifile_config_get_ip("network", "dns", 0)));
+  dns_setserver(0, &dns);
+}
+
+static void network_apply_static_dns(void)
+{
+  if (!inifile_config_has("network", "dns"))
+    return;
+
+  if (tcpip_callback_with_block(network_set_static_dns_callback, NULL, 1) !=
+      ERR_OK)
+    debugf("Failed to apply static DNS configuration");
+}
+
 static void network_apply_static_ipv4(struct netif *netif)
 {
   ip4_addr_t ipaddr, netmask, gateway;
@@ -1789,6 +1878,8 @@ static void network_apply_static_ipv4(struct netif *netif)
     debugf("Failed to apply static network configuration");
     return;
   }
+
+  network_apply_static_dns();
 
   if (!(network_status & NETWORK_STATUS_HAS_ADDR))
     menu_notify_ip(ip4addr_ntoa(&ipaddr));
@@ -2033,6 +2124,7 @@ void wifi_event_handler(async_input_event_t ev, void *priv)
       ip4_addr_t ipaddr, netmask, gateway;
       network_get_static_ipv4(&ipaddr, &netmask, &gateway);
       if (wifi_mgmr_sta_ip_set(ipaddr.addr, netmask.addr, gateway.addr, 0) == 0) {
+        network_apply_static_dns();
         wifi_got_ip(&ipaddr, true);
         static_ip_applied = true;
       } else {
@@ -2952,8 +3044,41 @@ delete:
 
 void usbh_msc_run(struct usbh_msc *msc_class)
 {
-  xTaskCreate(usbh_msc_thread, "usbh_msc", 2048, msc_class,
-              CONFIG_USBHOST_PSC_PRIO - 1, &usbh_msc_handle);
+  // short-lived task (scsi init + fatfs register), keep the stack small as the
+  // device may be enumerated while wifi/wpa is under heavy heap pressure
+  if (xTaskCreate(usbh_msc_thread, "usbh_msc", 1024, msc_class,
+                  CONFIG_USBHOST_PSC_PRIO - 1, &usbh_msc_handle) != pdPASS) {
+    usbh_msc_handle = NULL;
+    usb_debugf("usbh_msc: task creation failed\r\n");
+  }
+}
+
+volatile size_t xMallocFailedSize = 0;
+
+// overrides the SDK's weak hook to report the heap state before aborting
+void vApplicationMallocFailedHook(void)
+{
+  usb_debugf("vApplicationMallocFailedHook: request %u bytes, task %s\r\n",
+         (unsigned)xMallocFailedSize, pcTaskGetName(NULL));
+
+  for (uint32_t i = 0; i < CONFIG_MM_HEAP_COUNT; i++) {
+    mm_heap_t *heap = g_mem_manager.heaps[i];
+    if (!heap || !heap->is_active) continue;
+
+    const mm_allocator_t *allocator = g_mem_manager.allocators[heap->allocator_id];
+    if (!allocator || !allocator->get_usage_info) continue;
+
+    struct mm_usage_info usage;
+    uintptr_t flags = mm_lock_save();
+    allocator->get_usage_info(heap, &usage);
+    mm_unlock_restore(flags);
+
+    usb_debugf("  heap %u (%s): total %u, free %u, largest free block %u\r\n",
+           (unsigned)i, heap->name, (unsigned)usage.total_size,
+           (unsigned)usage.free_size, (unsigned)usage.max_free_size);
+  }
+
+  abort();
 }
 
 void usbh_msc_stop(struct usbh_msc *msc_class)
@@ -3082,7 +3207,6 @@ static void usbh_lwip_netif_link_callback(struct netif *netif)
   if (netif_is_link_up(netif)) {
     network_status |= NETWORK_STATUS_UP;
     if (network_uses_dhcp()) {
-      dhcp_start(netif);
       if (dhcp_handle)
         xTimerStart(dhcp_handle, 0);
     } else {
@@ -3514,4 +3638,3 @@ void usbh_asix_stop(struct usbh_asix *asix_class)
 //   be removed.
 // - CONSOLE60K GPIO 29/30 are the default TWI/DDC pins (FPGA L13/M13).
 // - MEGA138KPRO GPIO 27/28 are the default PLL1_TWI pins (FPGA K26/K25).
-

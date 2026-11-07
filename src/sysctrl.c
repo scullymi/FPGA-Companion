@@ -297,7 +297,7 @@ static void sys_handle_event(bool ignore_coldboot) {
 
     // the second button controls the OSD, so it can be used in conjunction
     // with 
-#if defined(M0S_DOCK)||defined(TANG_CONSOLE60K)||defined(TANG_NANO20K)||defined(TANG_NANO20K_V3923)||defined(TANG_MEGA138KPRO)||defined(TANG_MEGA60K)||defined(TANG_PRIMER25K)||(MISTLE_BOARD == 2)||(MISTLE_BOARD == 4)||(MISTLE_BOARD == 5)||(MISTLE_BOARD == 6)
+#if defined(M0S_DOCK)||defined(TANG_CONSOLE60K)||defined(TANG_NANO20K)||defined(TANG_NANO20K_V3923)||defined(TANG_MEGA138KPRO)||defined(TANG_MEGA60K)||defined(TANG_PRIMER25K)||(MISTLE_BOARD == 2)||(MISTLE_BOARD == 4)||(MISTLE_BOARD == 5)||(MISTLE_BOARD == 6)||(MISTLE_BOARD == 7)
     if(!mcu_hw_jtag_is_active())
 #endif
 
@@ -312,7 +312,7 @@ static void sys_handle_event(bool ignore_coldboot) {
     else {
       sys_debugf("FPGA cold boot detected, reseting MCU ...");
 
-#if defined(M0S_DOCK)||defined(TANG_CONSOLE60K)||defined(TANG_NANO20K)||defined(TANG_NANO20K_V3923)||defined(TANG_MEGA138KPRO)||defined(TANG_MEGA60K)||defined(TANG_PRIMER25K)||(MISTLE_BOARD == 2)||(MISTLE_BOARD == 4)||(MISTLE_BOARD == 5)||(MISTLE_BOARD == 6)
+#if defined(M0S_DOCK)||defined(TANG_CONSOLE60K)||defined(TANG_NANO20K)||defined(TANG_NANO20K_V3923)||defined(TANG_MEGA138KPRO)||defined(TANG_MEGA60K)||defined(TANG_PRIMER25K)||(MISTLE_BOARD == 2)||(MISTLE_BOARD == 4)||(MISTLE_BOARD == 5)||(MISTLE_BOARD == 6)||(MISTLE_BOARD == 7)
       // Check for USB-JTAG activity and don't reset (and thus break
       // the JTAG activity)
       if(mcu_hw_jtag_is_active()) {
@@ -417,8 +417,9 @@ void sys_run_action(config_action_t *action) {
       
     case CONFIG_ACTION_COMMAND_SAVE:
       sys_debugf("SAVE %s", command->filename);
-      // tell the user whether saving worked, it was silent before
-      if(inifile_write(command->filename) == 0) {
+      // tell the user whether saving worked, it was silent before. The settings
+      // go into the config in use, not into the default ini while another is selected
+      if(inifile_write((char*)menu_cfgsel_save_name(command->filename)) == 0) {
         games_save_start();   // game20k: the running ROM file is the start game at power-on
         menu_draw_dialog("Settings", "saved");
       }
