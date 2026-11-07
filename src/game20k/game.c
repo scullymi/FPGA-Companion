@@ -153,8 +153,6 @@ bool game_rom_end(const unsigned char want[32]) {
     debugf("RA: ROM image SHA-256 %02x%02x%02x%02x...%s", rom_sum[0], rom_sum[1], rom_sum[2], rom_sum[3],
            rom_bad ? ", not the footer's: damaged, no game" : "");
   else debugf("RA: hashing the ROM image failed, it counts as unknown");
-  // the core still waits in reset here: the bits settle applies hold from the first frame
-  game_settle();
   return rom_bad;
 }
 

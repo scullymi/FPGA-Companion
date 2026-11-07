@@ -60,7 +60,7 @@ const char *game_rom_label(void);
 void game_rom_start(const char *name);
 /** @brief One block of the ROM image as it goes to the core. com_task, from sdc.c. */
 void game_rom_data(const void *data, unsigned len);
-/** @brief The whole ROM image went to the core: finish the SHA-256 and settle. com_task, from sdc.c, outside sdc_lock.
+/** @brief The whole ROM image went to the core: finish the SHA-256. com_task, from sdc.c, under sdc_lock. No FatFs and no settle here, game_settle() follows outside the lock.
  *
  *  want is the SHA-256 the file's footer names. A content with another one is
  *  damaged: the settle then decides no game at all. Returns true for a damaged one. */

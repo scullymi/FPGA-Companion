@@ -2106,9 +2106,15 @@ void menu_rebuild(void) {
     vPortFree(v);
   }
   memset(&fsel_state, 0, sizeof(fsel_state));
+  // the config selector of the old core is gone with it
+  if(cfgsel_current) vPortFree(cfgsel_current);
+  cfgsel_current = NULL;
+  menu_switching = false;
+  menu_release_pending = false;
   if(cfg) {
     menu_setup_variables();
     sys_run_action_by_name("init");
+    menu_cfgsel_boot();
     menu_goto(cfg->menu);
   }
   sys_set_leds(0x00);

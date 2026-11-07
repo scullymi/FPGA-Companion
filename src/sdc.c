@@ -612,11 +612,26 @@ static void image_send_chunk(int image, uint32_t len) {
   // check if last block has been sent. The file is closed and the core is told that the
   // image is gone under the same lock, the slot may be used again right after.
   bool done = !image_bytes2send[image];
+#ifdef GAME20K
+  bool damaged = false;
+  char *damaged_name = NULL;
+#endif
   if(done) {
     sdc_debugf("IMG %d: download done, closing file", image);
 
     f_close(&fil[MAX_DRIVES+image]);
     memset(&fil[MAX_DRIVES+image], 0, sizeof(FIL));
+
+#ifdef GAME20K
+    // game20k: the whole ROM set is in the core, its SHA-256 against the footer's.
+    // Under the lock, so a ROM picked right after cannot start its digest before
+    // this one is done. A damaged one loses its name, so the settings cannot keep
+    // the file
+    if(image == GAME_ROM_IMAGE && (damaged = game_rom_end(rom_sha))) {
+      damaged_name = image_name[MAX_DRIVES+image];
+      image_name[MAX_DRIVES+image] = NULL;
+    }
+#endif
 
     // inform core that the image has "been removed"
     sdc_spi_begin();
@@ -637,26 +652,24 @@ static void image_send_chunk(int image, uint32_t len) {
   }
 
 #ifdef GAME20K
-  // game20k: the whole ROM set is in the core: rom_end hands the digest to the game
-  // table and settles the game, before the image action resets the core. The settle
-  // reads the card, so this runs without the lock. A content whose SHA-256 is not
-  // the footer's is damaged, rom_end then settles no game. The name goes, so the
-  // settings cannot keep the file, and the Games page leaves it out. The core stays
-  // in reset and the menu says why, a Reset from the menu starts it all the same
-  if(done && image == GAME_ROM_IMAGE && game_rom_end(rom_sha)) {
-    sdc_lock();
-    char *name = image_name[MAX_DRIVES+image];
-    image_name[MAX_DRIVES+image] = NULL;
-    sdc_unlock();
-    sdc_debugf("IMG %d: %s is damaged, its content is not what its footer says, the core stays in reset",
-               image, name ? name : "?");
-    if(name) {
-      games_damaged(name);
-      vPortFree(name);
+  // game20k: the settle hands the digest to the game table. The core still waits in
+  // reset for the image action, so the bits the settle sets hold from its first
+  // frame. The settle reads the card, so it runs without the lock. A damaged ROM
+  // settles no game and the Games page leaves it out, the core stays in reset and
+  // the menu says why. A Reset from the menu starts it all the same
+  if(done && image == GAME_ROM_IMAGE) {
+    game_settle();
+    if(damaged) {
+      sdc_debugf("IMG %d: %s is damaged, its content is not what its footer says, the core stays in reset",
+                 image, damaged_name ? damaged_name : "?");
+      if(damaged_name) {
+        games_damaged(damaged_name);
+        vPortFree(damaged_name);
+      }
+      sys_set_val('R', 1);
+      menu_notify(MENU_EVENT_ROM_DAMAGED);
+      return;
     }
-    sys_set_val('R', 1);
-    menu_notify(MENU_EVENT_ROM_DAMAGED);
-    return;
   }
 #endif
 
@@ -920,16 +933,12 @@ int sdc_image_open(int drive, char *name) {
     sdc_debugf("%s %d: closing file '%s'", (drive < MAX_DRIVES)?"DRV":"IMG",
 	       (drive < MAX_DRIVES)?drive:(drive-MAX_DRIVES),
 	       image_name[drive]?image_name[drive]:"<unknown>");
-    // game20k: ejected in the OSD: no known ROM, nothing left to send. Before the
-    // FIL is cleared, so the settle goes by "no ROM" and not by the stale name. A
-    // file that replaces this one changes nothing for RetroAchievements here: the
-    // core keeps the ROM it has until the loader accepts the new stream, and
-    // rom_start takes over then. A file the loader rejects leaves the old ROM
-    // running, in the mode it earned.
-    if(drive == MAX_DRIVES + GAME_ROM_IMAGE) {
-      if(!name) game_rom_gone();
-      image_bytes2send[GAME_ROM_IMAGE] = 0;
-    }
+    // game20k: ejected in the OSD: no known ROM. Before the FIL is cleared, so the
+    // settle goes by "no ROM" and not by the stale name. A file that replaces this
+    // one changes nothing for RetroAchievements here: the core keeps the ROM it has
+    // until the loader accepts the new stream, and rom_start takes over then. A file
+    // the loader rejects leaves the old ROM running, in the mode it earned.
+    if(drive == MAX_DRIVES + GAME_ROM_IMAGE && !name) game_rom_gone();
     // A rom transfer that is still running is cancelled: the core is told that the image
     // is gone. Its rest must not be sent as part of the next image.
     if(drive >= MAX_DRIVES && drive < MAX_DRIVES+MAX_IMAGES)
