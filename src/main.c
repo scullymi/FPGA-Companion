@@ -16,11 +16,7 @@
 #include "../telnetd.h"
 #include "../xml.h"
 #include "../at_wifi.h"
-#include "../game20k/core_boot.h"
-#include "../game20k/game_switch.h"
-#include "../game20k/game.h"
-#include "../game20k/ra.h"
-#include "../game20k/ram_mirror.h"
+#include "../game20k/game20k.h"
 
 /*-----------------------------------------------------------*/
 /*---            main FPGA communication task            ----*/
@@ -57,8 +53,14 @@ bool core_config(unsigned char probe) {
     } else {
       sdc_unlock();
       // no XML on SD card, try to load from core itself
+#ifdef GAME20K
       // game20k: the firmware's menu goes first, see core_menu()
       char *cfg_str = core_menu(probe, &mismatch);
+#else
+      (void)probe;
+      char *cfg_str = sys_get_config();
+      if(cfg_str) debugf("Loading XML config from core");
+#endif
       if(cfg_str) {
 	config_init();
 	char *c = cfg_str;
@@ -141,6 +143,7 @@ static void com_task(__attribute__((unused)) void *p ) {
 
     debugf("Entering main loop");
   
+#ifdef GAME20K
     // game20k: the RA task starts from the loop once the game is settled, and
     // before that pass's poll, so the first snapshot and any unlock find the
     // task and its handover queue. A stream ejected in the OSD settles on the
@@ -166,6 +169,13 @@ static void com_task(__attribute__((unused)) void *p ) {
       }
       ram_mirror_poll();
     }
+#else
+    for(;;) {
+      mcu_hw_irq_ack();  // (re-)enable interrupt
+      ulTaskNotifyTake( pdTRUE, portMAX_DELAY);    
+      sys_handle_interrupts(sys_irq_ctrl(0xff), false);
+    }
+#endif
   }
 
   /* This will only be reached if the FPGA is not ready */
@@ -192,16 +202,21 @@ void app_main( void )
 int main( void )
 #endif
 {
-  // the device key for the tags on the card, before anything else runs: making it
-  // the first time erases a flash sector with interrupts off, see ra_mac.c
+  // game20k: the device key for the tags on the card, before anything else runs: making
+  // it the first time erases a flash sector with interrupts off, see ra_mac.c
   ra_mac_init();
 
   mcu_hw_init();
   telnetd_init();
   
-  // run FPGA com thread. game20k: 12 KB of stack, about 2.5 times what it used on the Pico
-  // with rcheevos running a set
+  // run FPGA com thread
+#ifdef GAME20K
+  // game20k: 12 KB of stack, about 2.5 times what it used on the Pico with rcheevos
+  // running a set
   xTaskCreate( com_task, "FPGA Com", 3072, NULL, CONFIG_MAX_PRIORITY-1, &com_task_handle );
+#else
+  xTaskCreate( com_task, "FPGA Com", 4096, NULL, CONFIG_MAX_PRIORITY-1, &com_task_handle );
+#endif
 
   mcu_hw_main_loop();
 

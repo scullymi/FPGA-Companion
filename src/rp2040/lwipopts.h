@@ -36,9 +36,13 @@
 #define MEM_ALIGNMENT               4
 #define MEM_SIZE                    (MAX_CONCURRENT_CX_HINT * TCP_MSS)
 #define MEMP_NUM_ARP_QUEUE          10
+#ifdef GAME20K
 // game20k: 16 instead of 24, 12 KB more for the achievement sets. The receive window is
 // TCP_WND = 6 * TCP_MSS, 8.8 KB, so 16 buffers of about 1.5 KB still hold more than a window.
 #define PBUF_POOL_SIZE              16
+#else
+#define PBUF_POOL_SIZE              24
+#endif
 #define LWIP_ARP                    1
 #define LWIP_ETHERNET               1
 #define LWIP_ICMP                   1
@@ -85,7 +89,8 @@ void sntp_set_system_time(uint32_t sec);
 #define SO_REUSE                    1
 #define MEMP_NUM_SYS_TIMEOUT        (LWIP_NUM_SYS_TIMEOUT_INTERNAL + 2)
 
-// HTTPS to retroachievements.org (ra_net.c): the certificate must pass, the
+#if GAME20K_RA
+// game20k: HTTPS to retroachievements.org (ra_net.c): the certificate must pass, the
 // lwIP default MBEDTLS_SSL_VERIFY_OPTIONAL would connect even when it fails
 #define LWIP_ALTCP                  1
 #define LWIP_ALTCP_TLS              1
@@ -99,14 +104,17 @@ const char *ra_user_agent(void);
 // failed TLS handshake (ALTCP_MBEDTLS_DEBUG). Everything else stays off, above
 // all HTTPC_DEBUG, which would print the query with the token.
 #define LWIP_DEBUG                  1
-#ifndef NDEBUG
-#define LWIP_STATS                  1
-#define LWIP_STATS_DISPLAY          1
-#endif
 #define ALTCP_MBEDTLS_DEBUG         LWIP_DBG_ON
 #define ALTCP_MBEDTLS_LIB_DEBUG     LWIP_DBG_OFF
 #define HTTPC_DEBUG                 LWIP_DBG_OFF
 #define HTTPC_DEBUG_REQUEST         0
+#endif
+
+#ifndef NDEBUG
+#define LWIP_DEBUG                  1
+#define LWIP_STATS                  1
+#define LWIP_STATS_DISPLAY          1
+#endif
 
 #define ETHARP_DEBUG                LWIP_DBG_OFF
 #define NETIF_DEBUG                 LWIP_DBG_OFF
@@ -138,9 +146,13 @@ const char *ra_user_agent(void);
 #define DHCP_DEBUG                  LWIP_DBG_OFF
 #define SNTP_DEBUG                  LWIP_DBG_OFF
 
-// in bytes. lwIP's TCP timers also run TLS code in this thread, a handshake
+#ifdef GAME20K
+// game20k, in bytes. lwIP's TCP timers also run TLS code in this thread, a handshake
 // leaves about 3.4 KB of it free. Not enough for mbedTLS debug output on top.
 #define TCPIP_THREAD_STACKSIZE 4096
+#else
+#define TCPIP_THREAD_STACKSIZE 1024
+#endif
 #define DEFAULT_THREAD_STACKSIZE 1024
 #define TCPIP_THREAD_PRIO 4
 #if defined(PICO_RP2350)

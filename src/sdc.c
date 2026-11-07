@@ -18,8 +18,7 @@
 #include <task.h>
 #endif
 #include "sdc.h"
-#include "game20k/game.h"   // the ROM set is checked against the known files
-#include "game20k/games.h"      // game20k: the footer of a ROM file
+#include "game20k/game20k.h"   // game20k: the ROM set is checked against the known files
 #include "menu.h"
 #include "sysctrl.h"
 
@@ -49,10 +48,12 @@ static DWORD *lktbl[MAX_DRIVES];
 
 // information about image data to be sent
 static uint32_t image_bytes2send[MAX_IMAGES];
-// game20k: what of an image goes to the core, the content before its footer, and
-// the SHA-256 the footer of the ROM set gives for it
+// what of an image goes to the core: the whole file, with game20k the content before
+// its footer, and the SHA-256 the footer of the ROM set gives for it
 static uint32_t image_content[MAX_IMAGES];
+#ifdef GAME20K
 static unsigned char rom_sha[32];
+#endif
 
 static void sdc_spi_begin(void) {
   mcu_hw_spi_begin();  
@@ -609,11 +610,12 @@ static void image_send_chunk(int image, uint32_t len) {
     f_close(&fil[MAX_DRIVES+image]);
     memset(&fil[MAX_DRIVES+image], 0, sizeof(FIL));
 
-    // the whole ROM set is in the core: rom_end hands the digest to the game
-    // table and settles the game, before the image action resets the core.
-    // game20k: a content whose SHA-256 is not the footer's is damaged, rom_end
-    // then settles no game. The name goes, so the settings cannot keep the file,
-    // and the Games page leaves it out
+#ifdef GAME20K
+    // game20k: the whole ROM set is in the core: rom_end hands the digest to the
+    // game table and settles the game, before the image action resets the core.
+    // A content whose SHA-256 is not the footer's is damaged, rom_end then
+    // settles no game. The name goes, so the settings cannot keep the file, and
+    // the Games page leaves it out
     bool damaged = image == GAME_ROM_IMAGE && game_rom_end(rom_sha);
     if(damaged) {
       sdc_debugf("IMG %d: %s is damaged, its content is not what its footer says, the core stays in reset",
@@ -624,6 +626,7 @@ static void image_send_chunk(int image, uint32_t len) {
         image_name[MAX_DRIVES+image] = NULL;
       }
     }
+#endif
 
     // inform core that the image has "been removed"
     sdc_spi_begin();
@@ -633,6 +636,7 @@ static void image_send_chunk(int image, uint32_t len) {
     for(int i=0;i<4;i++) mcu_hw_spi_tx_u08(0);    // send size of 0
     mcu_hw_spi_end();
 
+#ifdef GAME20K
     // game20k: a damaged ROM never runs, the core stays in reset and the menu
     // says why. A Reset from the menu starts it all the same
     if(damaged) {
@@ -640,6 +644,7 @@ static void image_send_chunk(int image, uint32_t len) {
       menu_notify(MENU_EVENT_ROM_DAMAGED);
       return;
     }
+#endif
 
     // the image download have either been triggered by the ini file at
     // boot time or by the user. run image action will take care of both
@@ -1015,6 +1020,7 @@ int sdc_image_open(int drive, char *name) {
       return -1;
     }
 
+#ifdef GAME20K
     // game20k: a ROM file ends with a footer that names its content (games_file.c).
     // A file without one is from before it, the core never gets it: the card is
     // rebuilt with make_sdcard.sh
@@ -1030,6 +1036,9 @@ int sdc_image_open(int drive, char *name) {
     }
     image_content[(int)image] = ft.content;
     if(image == GAME_ROM_IMAGE) memcpy(rom_sha, ft.sha, 32);
+#else
+    image_content[(int)image] = fil[drive].obj.objsize;
+#endif
 
     // remember current image name
     image_name[drive] = StrDup(name);

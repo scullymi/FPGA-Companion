@@ -95,14 +95,16 @@
 #else
 #define configTOTAL_HEAP_SIZE                   (106*1024)
 #endif
-#else
-// game20k (built without Bluetooth): the task stacks take most of this heap (tcpip 16 KB,
+#elif defined(GAME20K)
+// game20k (built without Bluetooth): the task stacks take most of this heap (tcpip 4 KB,
 // com 12 KB, an FTP session 12 KB while it runs, menu and usb 6 KB each, at_wifi 4 KB),
 // sized to a few times what each used on the Pico. What is not needed here goes to the
 // SDK heap for rcheevos and mbedTLS, which a large achievement set needs.
 // configCHECK_FOR_STACK_OVERFLOW stops the firmware with the task's name when a stack
 // runs over.
 #define configTOTAL_HEAP_SIZE                   (92*1024)
+#else
+#define configTOTAL_HEAP_SIZE                   (112*1024)
 #endif
 #define configAPPLICATION_ALLOCATED_HEAP        0
 

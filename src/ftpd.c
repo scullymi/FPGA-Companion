@@ -32,8 +32,7 @@
 #include "sdc.h"
 
 #include "ftpd.h"
-#include "game20k/ra.h"        /* ra_task_hardcore() */
-#include "game20k/games.h"     /* game20k: a ROM file changed, the Games page reads the card again */
+#include "game20k/game20k.h"   /* game20k: hardcore, a ROM file changed */
 
 #define FTP_PORT             21
 #if defined(PICO_RP2040)
@@ -98,7 +97,7 @@ static bool disk_path_mounted(const char *path)
     return false;
 }
 
-/* In hardcore mode the files that decide what counts cannot be changed over
+/* game20k: in hardcore mode the files that decide what counts cannot be changed over
  * FTP: the RetroAchievements files ra_* and config.ini in the card's root, and
  * the folder ra with the per-game files below it (game20k). FAT names are
  * compared without case, and the short 8.3 names of these files start with the

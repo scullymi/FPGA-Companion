@@ -29,7 +29,7 @@
 #include "../at_wifi.h"
 #include "../inifile.h"
 #include "../menu.h"
-#include "../game20k/ra.h"
+#include "../game20k/game20k.h"
 #include "../gowin.h"
 
 #include "../mcu_hw.h"
@@ -653,7 +653,8 @@ unsigned char mcu_hw_spi_tx_u08(unsigned char b) {
   return retval;
 }
 
-/* Block read for the RAM mirror (about 6.7 kB per poll) by DMA: one channel sends
+#ifdef GAME20K
+/* game20k: block read for the RAM mirror (about 6.7 kB per poll) by DMA: one channel sends
    0x00, one stores what comes back, both paced by the SPI. Bytes follow back to
    back, which is why the FPGA counts them in the SPI clock. */
 static int spi_dma_tx = -1, spi_dma_rx = -1;
@@ -691,6 +692,7 @@ void mcu_hw_spi_rx_block(unsigned char *buf, unsigned int len) {
 void mcu_hw_spi_txrx_block(const unsigned char *tx, unsigned char *rx, unsigned int len) {
   spi_write_read_blocking(SPI_BUS, tx, rx, len);
 }
+#endif // GAME20K
 
 /* ======================================================================= */
 /* ======                   custom usb host drivers              ========= */
@@ -867,7 +869,7 @@ void sntp_set_system_time(u32_t sec) {
 	       timeinfo->tm_year, timeinfo->tm_mon, timeinfo->tm_mday + (timeinfo->tm_wday << 5),
 	       timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
 
-  // the clock is set, RetroAchievements can start now
+  // game20k: the clock is set, RetroAchievements can start now
   ra_task_clock_set();
 }
 
@@ -2508,8 +2510,12 @@ void mcu_hw_init(void) {
   tusb_init(BOARD_TUD_RHPORT, &dev_init);
 #endif
 
+#ifdef GAME20K
   // game20k: 6 KB of stack, several times what it used with a stick plugged in at power-on
   xTaskCreate(pio_usb_task, "usb_task", 1536, NULL, configMAX_PRIORITIES, &pio_usb_task_handle);
+#else
+  xTaskCreate(pio_usb_task, "usb_task", 2048, NULL, configMAX_PRIORITIES, &pio_usb_task_handle);
+#endif
 
 #ifdef WS2812_PIN
   uint offset = pio_add_program(pio0, &ws2812_program);  

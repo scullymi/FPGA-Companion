@@ -66,9 +66,12 @@ if (PICO_SDK_VERSION_STRING VERSION_LESS "2.2.0")
     message(FATAL_ERROR "Raspberry Pi Pico SDK version 2.2.0 (or later) required. Your version is ${PICO_SDK_VERSION_STRING}")
 endif()
 
-# mbedTLS for HTTPS to RetroAchievements; pico_mbedtls reads this when its
-# target is created, so it has to come before pico_sdk_init()
-set(PICO_MBEDTLS_CONFIG_FILE ${CMAKE_CURRENT_LIST_DIR}/game20k_mbedtls_config.h)
+# game20k's own code: games, core switch and RetroAchievements, see ../game20k/game20k.cmake.
+# Before pico_sdk_init(), which reads its mbedTLS configuration
+option(GAME20K "Build the firmware of game20k" OFF)
+if(GAME20K)
+  include(../game20k/game20k.cmake)
+endif()
 
 pico_sdk_init()
 
@@ -118,10 +121,13 @@ if(${BOARD} STREQUAL PICO)
    add_compile_definitions(${PROJECT} PRIVATE MISTLE_BOARD=0 ENABLE_WIFI ENABLE_BLUETOOTH)
    add_custom_command(TARGET ${PROJECT} POST_BUILD COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "Firmware has been built for Raspberry Pi Pico or Pico-W.")
 elseif(${BOARD} STREQUAL PICO2)
-   # game20k: no Bluetooth on the Pico 2 W, the cabinet's stick is USB. Its 22 KB of RAM go
-   # to the achievement sets: a large one with two leaderboards needs more than 140 KB.
-   add_compile_definitions(${PROJECT} PRIVATE MISTLE_BOARD=1 ENABLE_WIFI)
-   set(GAME20K_NO_BLUETOOTH ON)
+   if(GAME20K)
+     # game20k: no Bluetooth, the cabinet's stick is USB. Its 22 KB of RAM go to the
+     # achievement sets: a large one with two leaderboards needs more than 140 KB.
+     add_compile_definitions(${PROJECT} PRIVATE MISTLE_BOARD=1 ENABLE_WIFI)
+   else()
+     add_compile_definitions(${PROJECT} PRIVATE MISTLE_BOARD=1 ENABLE_WIFI ENABLE_BLUETOOTH)
+   endif()
    add_custom_command(TARGET ${PROJECT} POST_BUILD COMMAND ${CMAKE_COMMAND} -E cmake_echo_color --cyan "Firmware has been built for Raspberry Pi Pico2 or Pico2-W.")
 elseif(${BOARD} STREQUAL WS2040ZERO)
    add_compile_definitions(${PROJECT} PRIVATE MISTLE_BOARD=2)
@@ -172,14 +178,14 @@ target_link_libraries(${PROJECT} PRIVATE pico_stdlib pico_multicore)
 target_link_libraries(${PROJECT} PRIVATE FreeRTOS-Kernel FreeRTOS-Kernel-Heap4)
 target_link_libraries(${PROJECT} PRIVATE hardware_pio hardware_dma hardware_spi hardware_adc)
 target_link_libraries(${PROJECT} PRIVATE pico_cyw43_arch_lwip_sys_freertos)
-if(NOT GAME20K_NO_BLUETOOTH)
+if(NOT GAME20K)
   target_link_libraries(${PROJECT} PRIVATE pico_btstack_cyw43 pico_btstack_classic)
 endif()
 target_link_libraries(${PROJECT} PRIVATE tinyusb_host tinyusb_board u8g2)
 target_link_libraries(${PROJECT} PRIVATE pico_lwip_sntp)
-# game20k's own code
-include(../game20k/game20k.cmake)
-target_link_libraries(${PROJECT} PRIVATE game20k)
+if(GAME20K)
+  target_link_libraries(${PROJECT} PRIVATE game20k)
+endif()
 
 pico_add_extra_outputs(${PROJECT})
 pico_enable_stdio_usb(${PROJECT} 0)

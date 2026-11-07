@@ -68,6 +68,8 @@ void menu_draw_dialog_for(const char *title, const char *msg, TickType_t duratio
 void menu_pop(void);
 void menu_timer_enable(bool on);
 void menu_stop_repeat(void);
+
+#ifdef GAME20K
 bool menu_dips_as_expected(void);   // game20k: the DIP switches the game's set expects, see menu_pages.c
 
 // game20k: another core without a restart of the Pico, from com_task. menu_park()
@@ -77,5 +79,6 @@ bool menu_dips_as_expected(void);   // game20k: the DIP switches the game's set 
 bool menu_park(void);
 void menu_resume(void);
 void menu_rebuild(void);
+#endif
 
 #endif // MENU_H

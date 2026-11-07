@@ -18,8 +18,7 @@
 #include "config.h"
 #include "mcu_hw.h"
 #include "at_wifi.h"
-#include "game20k/ra.h"             // ra_task_core_value()
-#include "game20k/games.h"          // game20k: games_save_start()
+#include "game20k/game20k.h"
 
 // we are using "puff" to decompress a gzip'd FPGA config as this is a slow, yet
 // very small and memory efficient implementation of the deflate de-compression
@@ -96,9 +95,9 @@ void sys_set_val(char id, int8_t value) {
   mcu_hw_spi_tx_u08(value);           // value itself
   mcu_hw_spi_end();  
 
-  // the achievements follow the core: whether it is held in reset from here (the
-  // menu's reset, a DIP switch, a new ROM) and the mode 'H' of the core's menu. The
-  // game start itself comes from the core's reset count, see ra_task_game_start().
+  // game20k: the achievements follow the core: whether it is held in reset from here
+  // (the menu's reset, a DIP switch, a new ROM) and the mode 'H' of the core's menu.
+  // The game start itself comes from the core's reset count, see ra_task_game_start().
   ra_task_core_value(id, value);
 }
 

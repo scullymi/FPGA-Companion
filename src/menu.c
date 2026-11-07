@@ -33,9 +33,7 @@
 #include "menu.h"
 #include "sysctrl.h"
 #include "debug.h"
-#include "game20k/game.h"
-#include "game20k/games.h"
-#include "game20k/menu_pages.h"
+#include "game20k/game20k.h"
 #include "mcu_hw.h"
 
 #ifdef ENABLE_BLUETOOTH
@@ -719,7 +717,8 @@ void menu_draw_dialog(const char *title, const char *msg) {
   menu_draw_dialog_for(title, msg, pdMS_TO_TICKS(2000));
 }
 
-// The Network dialog: the address, or that there is none, and the WiFi name
+#ifdef GAME20K
+// game20k: the Network dialog: the address, or that there is none, and the WiFi name
 // under it, since a name is often longer than what fits beside the address.
 static void menu_net_status(void) {
   char t[80];
@@ -796,6 +795,7 @@ void menu_games_show(void) {
   dialog_opened_osd = false;
   menu_do(0);
 }
+#endif // GAME20K
 
 static void menu_draw(const config_menu_t *menu, int selected, int scroll) {
   u8g2_ClearBuffer(&u8g2);
@@ -1154,8 +1154,9 @@ static void menu_select(void) {
   } break;
 
   case CONFIG_MENU_ENTRY_BUTTON:
-    // buttons the companion answers itself, the action is told by its name.
-    // The rest goes to the core.
+#ifdef GAME20K
+    // game20k: buttons the companion answers itself, the action is told by its
+    // name. The rest goes to the core.
     if(entry->button->action && entry->button->action->name &&
        !strcmp(entry->button->action->name, "netinfo"))
       menu_net_status();
@@ -1176,7 +1177,9 @@ static void menu_select(void) {
     else if(entry->button->action && entry->button->action->name &&
             !strcmp(entry->button->action->name, "radips"))
       menu_dips_set();
-    else if(entry->button->action)
+    else
+#endif
+    if(entry->button->action)
       sys_run_action(entry->button->action);
     break;
 	
@@ -1266,6 +1269,7 @@ void menu_do(int event) {
   
   menu_debugf("do %d", event);
 
+#ifdef GAME20K
   // game20k: a card change the Games page has not shown yet, e.g. under a message or with
   // the OSD off, is read before a key acts on the list and before the OSD comes on, which
   // shows its last frame at once. A key whose line changed under it only shows the new list
@@ -1276,6 +1280,7 @@ void menu_do(int event) {
     bool moved = games_list_reread();
     if(acts && moved) event = MENU_EVENT_NONE;
   }
+#endif
   
   if(event)  {
     if(event == MENU_EVENT_TOGGLE) {
@@ -1317,6 +1322,7 @@ void menu_do(int event) {
 
   // if no dialog is open, then draw menu/fsel
   if(!menu_dialog_is_open()) {  
+#ifdef GAME20K
     // game20k: the Games page also comes back by BACK or when a message closes. The menu
     // task reads a change first. The dialog timer draws from the timer task and leaves
     // the read to the menu task, which draws the page once more
@@ -1324,6 +1330,7 @@ void menu_do(int event) {
       if(xTaskGetCurrentTaskHandle() == menu_handle) games_list_reread();
       else menu_notify(MENU_EVENT_GAMES_CHANGED);
     }
+#endif
     if(menu_state->type == MENU_TYPE_MENU)
       menu_draw(menu_state->menu, menu_state->selected, menu_state->scroll);
     else if(menu_state->type == MENU_TYPE_FILESELECTOR)
@@ -1372,6 +1379,7 @@ static void menu_handle_latin1(uint8_t code) {
   else          menu_debugf("menu_handle_latin1(%d)", code);
 }
 
+#ifdef GAME20K
 /* game20k: another core comes up without a restart of the Pico (game_switch.c). The menu
    task stops here, between two events: no drawing, no action, nothing of the old
    core's menu in use, until com_task lets it go on (menu_resume(), menu_rebuild()).
@@ -1441,6 +1449,7 @@ void menu_rebuild(void) {
   xQueueReset(menu_queue);
   menu_resume();
 }
+#endif // GAME20K
 
 static void menu_task(__attribute__((unused)) void *parms) {
   menu_debugf("task running");
@@ -1452,9 +1461,12 @@ static void menu_task(__attribute__((unused)) void *parms) {
     xQueueReceive(menu_queue, &cmd, 0xffffffffUL);
     menu_debugf("command %04lx", cmd);
 
+#ifdef GAME20K
     if(cmd == MENU_EVENT_PARK)
       menu_park_here();
-    else if(cmd == MENU_EVENT_SYSTEM) {
+    else
+#endif
+    if(cmd == MENU_EVENT_SYSTEM) {
       menu_debugf("system menu requested");
       menu_dialog_close();
       
@@ -1483,12 +1495,22 @@ static void menu_task(__attribute__((unused)) void *parms) {
     } else
 #endif
 
+#ifdef GAME20K
     if(menu_page_event(cmd)) {
       // game20k: told in game20k/menu_pages.c
     } else
     if(cmd == MENU_EVENT_NETWORK_GOT_IP || cmd == MENU_EVENT_NETWORK_DISCONNECTED) {
       // game20k: no popup. Address and WiFi name are under Status
     } else
+#else
+    if(cmd == MENU_EVENT_NETWORK_GOT_IP) {
+      char message[32];
+      snprintf(message, sizeof(message), "IP: %s", network_ipaddr);
+      menu_draw_dialog_for("Network", message, pdMS_TO_TICKS(5000));
+    } else if(cmd == MENU_EVENT_NETWORK_DISCONNECTED) {
+      menu_draw_dialog_for("Network", "disconnected", pdMS_TO_TICKS(3000));
+    } else
+#endif
   if(cmd == MENU_EVENT_USB_MOUNTED) {
       menu_debugf("USB mount event");
 
@@ -1552,6 +1574,7 @@ void menu_init(void) {
   // message queue from USB to OSD
   menu_queue = xQueueCreate(10, sizeof( long ) );
   
+#ifdef GAME20K
   // game20k: for menu_park()
   menu_parked = xSemaphoreCreateBinary();
   menu_go_on  = xSemaphoreCreateBinary();
@@ -1559,6 +1582,10 @@ void menu_init(void) {
   // start a thread for the on screen display. game20k: 6 KB of stack, about three times
   // what the menu used on the Pico with every page open
   xTaskCreate(menu_task, (char *)"menu_task", 1536, NULL, configMAX_PRIORITIES-3, &menu_handle);
+#else
+  // start a thread for the on screen display    
+  xTaskCreate(menu_task, (char *)"menu_task", 4096, NULL, configMAX_PRIORITIES-3, &menu_handle);
+#endif
 
   // At this point, the USB may already be ready. But since the
   // menu task wasn't ready by now, it never had a chance to be mounted properly
