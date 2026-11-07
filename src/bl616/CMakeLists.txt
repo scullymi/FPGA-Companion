@@ -66,6 +66,12 @@ target_sources(app PRIVATE
 file(GLOB COMPONENT_SRCS ../u8g2/csrc/*.c  ../u8g2/sys/bitmap/common/*.c)
 target_sources(app PRIVATE ${COMPONENT_SRCS})
 
+# game20k's own code: games, core switch, see ../game20k/game20k_bl616.cmake
+option(GAME20K "Build the firmware of game20k" OFF)
+if(GAME20K)
+  include(../game20k/game20k_bl616.cmake)
+endif()
+
 sdk_set_main_file(../main.c)
 
 project(fpga_companion)

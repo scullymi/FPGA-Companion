@@ -1402,9 +1402,33 @@ unsigned char mcu_hw_spi_tx_u08(unsigned char b) {
 }
 
 void mcu_hw_spi_end(void) {
+#ifdef GAME20K
+  // game20k: mcu_spi.v takes the last byte in the core clock, but reads the select without
+  // synchronising stages, so it stays low a little after the last SCK edge (SPI_CS_HOLD_NS
+  // in rp2040/mcu_hw.c, 200 ns, here the timer's 1 us)
+  bflb_mtimer_delay_us(1);
+#endif
   bflb_gpio_set(gpio, SPI_PIN_CSN);
   xSemaphoreGive(spi_sem);
 }
+
+#ifdef GAME20K
+/* game20k: block transfers for the RAM mirror, polled. A read sends zeros, as the Pico
+   does, in chunks of a zero buffer. */
+void mcu_hw_spi_rx_block(unsigned char *buf, unsigned int len) {
+  static const unsigned char zero[64];
+  while(len) {
+    unsigned int n = len < sizeof(zero) ? len : sizeof(zero);
+    bflb_spi_poll_exchange(spi_dev, zero, buf, n);
+    buf += n;
+    len -= n;
+  }
+}
+
+void mcu_hw_spi_txrx_block(const unsigned char *tx, unsigned char *rx, unsigned int len) {
+  bflb_spi_poll_exchange(spi_dev, tx, rx, len);
+}
+#endif
 
 void mcu_hw_irq_ack(void) {
   // re-enable the interrupt since it was now serviced outside the irq handeler
@@ -1432,7 +1456,13 @@ extern void bl_show_flashinfo(void);
 extern void bl_show_log(void);
 extern void bl_show_component_version(void);
 
+#ifdef GAME20K
+// game20k: as the Pico's console, read by the same debug probe (the BL616 board of the
+// cores passes it to the header)
+#define CONSOLE_BAUDRATE 921600
+#else
 #define CONSOLE_BAUDRATE 2000000
+#endif
 
 #ifdef CONFIG_CONSOLE_WO
 extern void bflb_wo_set_console(struct bflb_device_s *dev);
@@ -1654,10 +1684,17 @@ static void mn_board_init(void) {
 }
 
 
+#ifdef GAME20K
+static void marker_init(void);   // game20k, see mcu_hw_marker_get()
+#endif
+
 void mcu_hw_init(void) {
   mn_board_init();
 
   debugf("\r\n\r\n" LOGO "        FPGA Companion for BL616\r\n\r\n");
+#ifdef GAME20K
+  marker_init();
+#endif
 
   gpio = bflb_device_get_by_name("gpio");
 
@@ -1798,6 +1835,38 @@ void mcu_hw_reset(void) {
     /*empty dead loop*/
   }
 }
+
+#ifdef GAME20K
+/* game20k: the marker of a core switch in RAM the start does not clear (.noinit_data). The
+   reset recorder tells a restart by the watchdog (mcu_hw_reset) from power on, which leaves
+   random words there. The partner firmware runs first after every reset and leaves this RAM
+   and the recorder alone, marker_init() logs both. */
+static uint32_t marker_words[4] __attribute__((section(".noinit_data")));
+static bool restarted;
+
+uint32_t mcu_hw_marker_get(int i) { return marker_words[i]; }
+void mcu_hw_marker_set(int i, uint32_t v) { marker_words[i] = v; }
+bool mcu_hw_restarted(void) { return restarted; }
+
+static void marker_init(void) {
+  GLB_RESET_RECORD_Type r;
+  GLB_Get_Reset_Reason(&r);
+  restarted = r.reset_recorder_wdt_rst_n;
+  debugf("game20k: reset recorder ana %u ext %u pds %u wdt %u cpu %u sys %u req %u, marker %08lx %08lx %08lx %08lx",
+         r.reset_recorder_ana_powb, r.reset_recorder_ext_rst_n, r.reset_recorder_pds_reset,
+         r.reset_recorder_wdt_rst_n, r.reset_recorder_cpu_porst_n, r.reset_recorder_sys_reset_n,
+         r.reset_recorder_cpu_sys_rstreq_n, (unsigned long)marker_words[0], (unsigned long)marker_words[1],
+         (unsigned long)marker_words[2], (unsigned long)marker_words[3]);
+  if(!restarted) marker_words[0] = 0;
+  GLB_Clr_Reset_Reason();   // the next start sees only its own reset
+}
+
+/* game20k: FreeRTOS takes its memory from the SDK heap here, which has no statistics of
+   its own: the free parts of its OCRAM and WRAM heaps, for the log of a core switch */
+size_t xPortGetFreeHeapSize(void) {
+  return kfree_size(MM_HEAP_OCRAM_0) + kfree_size(MM_HEAP_WRAM_0);
+}
+#endif
 
 void mcu_hw_port_byte(unsigned char byte) {
   debugf("port byte %d", byte);
