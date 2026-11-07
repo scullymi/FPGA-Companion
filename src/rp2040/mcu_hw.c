@@ -774,6 +774,13 @@ void mcu_hw_spi_rx_block(unsigned char *buf, unsigned int len) {
 void mcu_hw_spi_txrx_block(const unsigned char *tx, unsigned char *rx, unsigned int len) {
   spi_write_read_blocking(SPI_BUS, tx, rx, len);
 }
+
+/* game20k: the marker lives in the watchdog's scratch registers 0 to 3, which the SDK
+   leaves to the program and a reboot keeps */
+#include "hardware/watchdog.h"
+uint32_t mcu_hw_marker_get(int i) { return watchdog_hw->scratch[i]; }
+void mcu_hw_marker_set(int i, uint32_t v) { watchdog_hw->scratch[i] = v; }
+bool mcu_hw_restarted(void) { return watchdog_caused_reboot(); }
 #endif // GAME20K
 
 /* ======================================================================= */

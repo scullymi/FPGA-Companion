@@ -22,9 +22,15 @@ void mcu_hw_spi_begin(void);
 unsigned char mcu_hw_spi_tx_u08(unsigned char b);
 void mcu_hw_spi_end(void);
 #ifdef GAME20K
-/* game20k: block transfers for the RAM mirror, implemented for rp2040 only */
+/* game20k: block transfers for the RAM mirror */
 void mcu_hw_spi_rx_block(unsigned char *buf, unsigned int len);
 void mcu_hw_spi_txrx_block(const unsigned char *tx, unsigned char *rx, unsigned int len);
+/* game20k: four words that carry a core switch across a restart of the MCU
+   (mcu_hw_reset). Word 0 = 0 is no marker, power on clears it. */
+uint32_t mcu_hw_marker_get(int i);
+void mcu_hw_marker_set(int i, uint32_t v);
+/* game20k: this start follows a restart of the firmware, not power on */
+bool mcu_hw_restarted(void);
 #endif
 
 bool mcu_hw_hid_present(void);
