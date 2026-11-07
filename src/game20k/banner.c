@@ -10,8 +10,8 @@
 #include "../inifile.h"
 #include "../menu.h"
 #include "banner.h"
-#include "ra_patch.h"
-#include "ra_task.h"
+#include "game.h"
+#include "ra.h"
 
 /* The banner at the bottom of the picture: 24 characters the FPGA shows for a
    while. It carries the title of an unlock, or a message that starts with who
@@ -90,34 +90,6 @@ banner_t *banner_show_kept(const char *text, bool gold, bool new) {
   return q;
 }
 
-/* game20k: true when a banner with this text shows, is on its way or waits */
-static bool banner_has(const char *text) {
-  banner_t b;
-  banner_fill(&b, text, false, false, 0);
-  if((banner_live || banner_pending) && !memcmp(banner.text, b.text, BANNER_LEN)) return true;
-  for(unsigned i = 0; i < banner_n; i++)
-    if(!memcmp(banner_q[i].text, b.text, BANNER_LEN)) return true;
-  return false;
-}
-
-/* game20k: takes the banners with this text that still wait out of the queue */
-static void banner_drop_text(const char *text) {
-  banner_t b;
-  unsigned n = 0;
-  banner_fill(&b, text, false, false, 0);
-  for(unsigned i = 0; i < banner_n; i++)
-    if(memcmp(banner_q[i].text, b.text, BANNER_LEN)) banner_q[n++] = banner_q[i];
-  banner_n = n;
-}
-
-/* game20k: takes the mode banners that still wait out of the queue, see banner_login() */
-static void banner_drop_mode(void) {
-  unsigned n = 0;
-  for(unsigned i = 0; i < banner_n; i++)
-    if(!banner_q[i].mode) banner_q[n++] = banner_q[i];
-  banner_n = n;
-}
-
 /* game20k: another game runs, see banner_follow_game(). The banners of the game before
    go, the one shown and those that wait. One about the device or the account stays. */
 static void banner_clear(void) {
@@ -183,6 +155,35 @@ void banner_step(unsigned char *hdr) {
       banner_start   = xTaskGetTickCount();
     }
   }
+}
+
+#if GAME20K_RA
+/* game20k: true when a banner with this text shows, is on its way or waits */
+static bool banner_has(const char *text) {
+  banner_t b;
+  banner_fill(&b, text, false, false, 0);
+  if((banner_live || banner_pending) && !memcmp(banner.text, b.text, BANNER_LEN)) return true;
+  for(unsigned i = 0; i < banner_n; i++)
+    if(!memcmp(banner_q[i].text, b.text, BANNER_LEN)) return true;
+  return false;
+}
+
+/* game20k: takes the banners with this text that still wait out of the queue */
+static void banner_drop_text(const char *text) {
+  banner_t b;
+  unsigned n = 0;
+  banner_fill(&b, text, false, false, 0);
+  for(unsigned i = 0; i < banner_n; i++)
+    if(memcmp(banner_q[i].text, b.text, BANNER_LEN)) banner_q[n++] = banner_q[i];
+  banner_n = n;
+}
+
+/* game20k: takes the mode banners that still wait out of the queue, see banner_login() */
+static void banner_drop_mode(void) {
+  unsigned n = 0;
+  for(unsigned i = 0; i < banner_n; i++)
+    if(!banner_q[i].mode) banner_q[n++] = banner_q[i];
+  banner_n = n;
 }
 
 /* A message when the RA task's state changes: the account is in, or the
@@ -303,6 +304,8 @@ void banner_lboard(void) {
   snprintf(text, sizeof(text), "RA: RANK %u OF %u", r.rank, r.entries);
   banner_show(text, true, r.best == r.score); // green mark when this entry is the new best
 }
+
+#endif /* GAME20K_RA */
 
 /* The mode is said again at the next chance, see banner_login(). */
 void banner_ask_mode(void) { banner_mode_due = true; }

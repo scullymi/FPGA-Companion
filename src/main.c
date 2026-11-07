@@ -18,9 +18,8 @@
 #include "../at_wifi.h"
 #include "../game20k/core_boot.h"
 #include "../game20k/game_switch.h"
-#include "../game20k/ra_mac.h"
-#include "../game20k/ra_patch.h"
-#include "../game20k/ra_task.h"
+#include "../game20k/game.h"
+#include "../game20k/ra.h"
 #include "../game20k/ram_mirror.h"
 
 /*-----------------------------------------------------------*/

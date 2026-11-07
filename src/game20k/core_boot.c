@@ -15,8 +15,8 @@
 #include "banner.h"
 #include "core_boot.h"
 #include "menus.h" /* the menus of game20k's cores */
-#include "ra_patch.h"
-#include "ra_task.h"
+#include "game.h"
+#include "ra.h"
 #include "ram_mirror.h"
 
 /* A menu of one's own in config.xml can set the DIP switches without a reset, and it is

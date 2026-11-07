@@ -25,11 +25,16 @@ void banner_follow_game(void);
 /** @brief One poll's worth of banner work, fills header bytes 6 and 7. */
 void banner_step(unsigned char *hdr);
 
+#if GAME20K_RA
 /** @brief A message when the RA task's state changes, then the mode. */
 void banner_login(void);
 
 /** @brief The server's answer to a leaderboard entry. */
 void banner_lboard(void);
+#else
+static inline void banner_login(void) {}
+static inline void banner_lboard(void) {}
+#endif
 
 /** @brief The mode is said again at the next chance. */
 void banner_ask_mode(void);

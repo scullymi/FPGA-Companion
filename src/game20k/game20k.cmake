@@ -30,24 +30,33 @@ message(STATUS "game20k: menu table ${GAME20K_MENU_TABLE}")
 set_source_files_properties(${GAME20K_GAMES_TABLE} ${GAME20K_MENU_TABLE}
   PROPERTIES INCLUDE_DIRECTORIES ${GAME20K_DIR})
 
+option(GAME20K_RA "RetroAchievements, without it no network client and no achievements" ON)
+
 set(GAME20K_SOURCES
   banner.c core_boot.c game.c game_switch.c games.c games_file.c menu_pages.c menus.c
-  ra_events.c ra_games.c ra_mac.c ra_net.c ra_patch.c ra_queue.c ra_slim.c ra_state.c
-  ra_task.c ra_text.c ram_mirror.c)
+  ra_games.c ram_mirror.c)
+if(GAME20K_RA)
+  list(APPEND GAME20K_SOURCES ra_events.c ra_mac.c ra_net.c ra_patch.c ra_queue.c ra_slim.c
+    ra_state.c ra_task.c ra_text.c)
+endif()
 list(TRANSFORM GAME20K_SOURCES PREPEND ${GAME20K_DIR}/)
 # a warning in our own code stops the build, also the one the target of the board lets pass
 set_source_files_properties(${GAME20K_SOURCES} PROPERTIES COMPILE_OPTIONS
   "-Werror;-Werror=incompatible-pointer-types")
 
 # rcheevos: the runtime that evaluates the conditions and the reader for the set (api), no
-# rc_client. rc_validate.c stays out, only the editor needs it.
-set(RCHEEVOS_SOURCES
-  runtime/rc_alloc.c runtime/rc_condition.c runtime/rc_condset.c runtime/rc_consoleinfo.c
-  runtime/rc_format.c runtime/rc_lboard.c runtime/rc_memref.c runtime/rc_operand.c
-  runtime/rc_richpresence.c runtime/rc_runtime.c runtime/rc_runtime_progress.c
-  runtime/rc_trigger.c runtime/rc_typed_value.c runtime/rc_value.c
-  api/rc_api_common.c api/rc_api_runtime.c api/rc_api_user.c
-  util/rc_util.c util/rc_compat.c util/rc_version.c util/md5.c)
+# rc_client. rc_validate.c stays out, only the editor needs it. The table of the games takes its
+# md5 in any case.
+set(RCHEEVOS_SOURCES util/md5.c)
+if(GAME20K_RA)
+  list(APPEND RCHEEVOS_SOURCES
+    runtime/rc_alloc.c runtime/rc_condition.c runtime/rc_condset.c runtime/rc_consoleinfo.c
+    runtime/rc_format.c runtime/rc_lboard.c runtime/rc_memref.c runtime/rc_operand.c
+    runtime/rc_richpresence.c runtime/rc_runtime.c runtime/rc_runtime_progress.c
+    runtime/rc_trigger.c runtime/rc_typed_value.c runtime/rc_value.c
+    api/rc_api_common.c api/rc_api_runtime.c api/rc_api_user.c
+    util/rc_util.c util/rc_compat.c util/rc_version.c)
+endif()
 list(TRANSFORM RCHEEVOS_SOURCES PREPEND ${RCHEEVOS_DIR}/src/)
 
 add_library(game20k INTERFACE)
@@ -62,5 +71,11 @@ target_include_directories(game20k INTERFACE ${RCHEEVOS_DIR}/include ${RCHEEVOS_
 target_compile_definitions(game20k INTERFACE
   RC_NO_THREADS=1 PICO_MALLOC_PANIC=0
   GAME20K_VERSION="${GAME20K_VERSION}" GAME20K_PLATFORM="${GAME20K_PLATFORM}")
-# HTTPS to RetroAchievements: the HTTP client, lwIP's TLS layer, mbedTLS
-target_link_libraries(game20k INTERFACE pico_lwip_http pico_lwip_mbedtls pico_mbedtls)
+# mbedTLS: the digest of a ROM. HTTPS to RetroAchievements: the HTTP client, lwIP's TLS layer
+target_link_libraries(game20k INTERFACE pico_mbedtls)
+if(GAME20K_RA)
+  target_compile_definitions(game20k INTERFACE GAME20K_RA=1)
+  target_link_libraries(game20k INTERFACE pico_lwip_http pico_lwip_mbedtls)
+else()
+  target_compile_definitions(game20k INTERFACE GAME20K_RA=0)
+endif()

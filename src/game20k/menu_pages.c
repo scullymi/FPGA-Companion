@@ -18,10 +18,11 @@
 #include "games.h"
 #include "menu_pages.h"
 #include "menus.h"
-#include "ra_patch.h"
-#include "ra_queue.h"
+#include "game.h"
+#include "ra.h"
+#if GAME20K_RA
 #include "ra_state.h"
-#include "ra_task.h"
+#endif
 
 // The Version dialog: what this firmware tells RetroAchievements, split over four
 // lines. The version is the git describe of the game20k repository, handed in by its
@@ -31,12 +32,28 @@ void menu_version_status(void) {
   char t[128];
   // a build with one of the fork's example tables knows no game or no menu, the platform
   // line says so
-  snprintf(t, sizeof(t), "game20k v%s\n%s%s\nrcheevos %s\nboard %u, %s", GAME20K_VERSION, GAME20K_PLATFORM,
-           strcmp(ra_games_origin, "generated") || strcmp(menus_origin, "generated") ? ", example" : "",
-           RCHEEVOS_VERSION_STRING, game_board(), game_rom_label());
+#if GAME20K_RA
+  const char *ra = "rcheevos " RCHEEVOS_VERSION_STRING;
+#else
+  const char *ra = "no RetroAchievements";
+#endif
+  snprintf(t, sizeof(t), "game20k v%s\n%s%s\n%s\nboard %u, %s", GAME20K_VERSION, GAME20K_PLATFORM,
+           strcmp(ra_games_origin, "generated") || strcmp(menus_origin, "generated") ? ", example" : "", ra,
+           game_board(), game_rom_label());
   menu_draw_dialog_for("Version", t, pdMS_TO_TICKS(8000));
 }
 
+/* Cuts s so that it plus "..." fits width in the current font, and adds "...".
+   s needs room for three more characters. */
+static void menu_ellipsize(char *s, int width) {
+  int dots = u8g2_GetStrWidth(&u8g2, "...");
+  if(u8g2_GetStrWidth(&u8g2, s) <= width) return;
+  while(s[0] && u8g2_GetStrWidth(&u8g2, s) > width - dots) s[strlen(s) - 1] = 0;
+  while(strlen(s) && s[strlen(s) - 1] == ' ') s[strlen(s) - 1] = 0;
+  strcat(s, "...");
+}
+
+#if GAME20K_RA
 /* ================ the achievement list ================
    One line per achievement of the active set, in the set's order: a mark, the
    title and, on the right, the progress while it runs, else the points. The
@@ -102,16 +119,6 @@ void ra_list_draw(void) {
   }
 }
 
-/* Cuts s so that it plus "..." fits width in the current font, and adds "...".
-   s needs room for three more characters. */
-static void ra_list_ellipsize(char *s, int width) {
-  int dots = u8g2_GetStrWidth(&u8g2, "...");
-  if(u8g2_GetStrWidth(&u8g2, s) <= width) return;
-  while(s[0] && u8g2_GetStrWidth(&u8g2, s) > width - dots) s[strlen(s) - 1] = 0;
-  while(strlen(s) && s[strlen(s) - 1] == ' ') s[strlen(s) - 1] = 0;
-  strcat(s, "...");
-}
-
 /* Breaks text into at most max lines of the display width at spaces, into out,
    the way menu_wrap_text() breaks a dialog. When text remains, the last line ends
    with "...". Returns the number of lines. */
@@ -137,7 +144,7 @@ static int ra_list_wrap(const char *text, char out[][80], int max) {
     text += take;
     n++;
     while(*text == ' ') text++;
-    if(n == max && *text) ra_list_ellipsize(line, width); // more text than lines
+    if(n == max && *text) menu_ellipsize(line, width); // more text than lines
   }
   return n;
 }
@@ -164,7 +171,7 @@ void ra_list_select(int line) {
   // the heading in the dialog's bold font, cut to the display
   u8g2_SetFont(&u8g2, u8g2_font_helvB08_tr);
   snprintf(head, sizeof(head), "%s", it.title);
-  ra_list_ellipsize(head, width);
+  menu_ellipsize(head, width);
 
   menu_page_font();
   snprintf(stat, sizeof(stat), "%u points, %s", it.points, state);
@@ -178,6 +185,8 @@ void ra_list_select(int line) {
   strcat(t, stat);
   menu_draw_dialog_for(head, t, pdMS_TO_TICKS(10000));
 }
+
+#endif /* GAME20K_RA */
 
 /* ================ the Games page ================
    One line per game on the card, by title (games.c). OK on a line starts it: a game
@@ -239,7 +248,7 @@ void games_list_draw(void) {
     if(!games_item((unsigned)i, &it)) break;
     int y = menu_page_y(row);
     snprintf(title, sizeof(title), "%s", it.title);
-    ra_list_ellipsize(title, width - 2);
+    menu_ellipsize(title, width - 2);
     u8g2_DrawStr(&u8g2, 1, y, title);
     if(menu_page_selected() == i + 1) u8g2_DrawButtonFrame(&u8g2, 0, y, U8G2_BTN_INV, width, 1, 1);
   }
@@ -331,6 +340,7 @@ void menu_dips_set(void) {
                                              : "Already as the set expects.");
 }
 
+#if GAME20K_RA
 // The Account dialog: the account and where it stands, the count, and the
 // most urgent note. Four lines fit the display.
 
@@ -413,6 +423,8 @@ void menu_ra_status(void) {
   // "Account" while no table game is known.
   menu_draw_dialog_for(game_title() ? game_title() : "Account", t, pdMS_TO_TICKS(8000));
 }
+
+#endif /* GAME20K_RA */
 
 /* Before a ROM file picked under "ROM set" goes to the core. True when it goes no further
    here: an old file without a footer, or the ROM file of a known game of another board,

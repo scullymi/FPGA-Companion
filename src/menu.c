@@ -729,12 +729,14 @@ static void menu_net_status(void) {
   menu_draw_dialog_for("Network", t, pdMS_TO_TICKS(8000));
 }
 
+#if GAME20K_RA
 static const config_custom_t ra_list = {
   .label  = "Achievements",
   .length = ra_list_length,
   .draw   = ra_list_draw,
   .select = ra_list_select
 };
+#endif
 
 static void menu_page_open(const config_custom_t *page, int selected, int scroll) {
   menu_push();
@@ -744,11 +746,13 @@ static void menu_page_open(const config_custom_t *page, int selected, int scroll
   menu_state->scroll   = scroll;
 }
 
+#if GAME20K_RA
 /* Opens the list with its first achievement selected. The draw starts the timer
    that keeps it current. */
 static void menu_ra_list_open(void) {
   menu_page_open(&ra_list, ra_list_first(), 0);
 }
+#endif
 
 static const config_custom_t games_list = {
   .label  = "Games",
@@ -1155,15 +1159,17 @@ static void menu_select(void) {
     if(entry->button->action && entry->button->action->name &&
        !strcmp(entry->button->action->name, "netinfo"))
       menu_net_status();
+#if GAME20K_RA
     else if(entry->button->action && entry->button->action->name &&
             !strcmp(entry->button->action->name, "rainfo"))
       menu_ra_status();
     else if(entry->button->action && entry->button->action->name &&
-            !strcmp(entry->button->action->name, "verinfo"))
-      menu_version_status();
-    else if(entry->button->action && entry->button->action->name &&
             !strcmp(entry->button->action->name, "ralist"))
       menu_ra_list_open();
+#endif
+    else if(entry->button->action && entry->button->action->name &&
+            !strcmp(entry->button->action->name, "verinfo"))
+      menu_version_status();
     else if(entry->button->action && entry->button->action->name &&
             !strcmp(entry->button->action->name, "games"))
       menu_games_open();
@@ -1241,6 +1247,7 @@ void menu_do(int event) {
     if(cfg) {
       if(menu_state->type == MENU_TYPE_FILESELECTOR)
 	menu_fs_scroll_entry();
+#if GAME20K_RA
       else if(menu_state->type == MENU_TYPE_CUSTOM && menu_state->custom == &ra_list) {
 	// the achievement list shows live progress: redraw it every 25 ticks, 1 s
 	static int ticks;
@@ -1248,7 +1255,9 @@ void menu_do(int event) {
 	  ticks = 0;
 	  menu_custom_draw((config_custom_t *)menu_state->custom, menu_state->selected, menu_state->scroll);
 	}
-      } else
+      }
+#endif
+      else
 	menu_timer_enable(false);   // nothing here animates, the timer rests
     }
       

@@ -19,10 +19,13 @@ bool games_page_shown(void);               /**< @brief True when the Games page 
 void menu_games_show(void);                /**< @brief Brings the Games page on screen without a key. */
 
 /* of menu_pages.c */
-int ra_list_length(void);         /**< @brief The achievement list: its lines. */
-int ra_list_first(void);          /**< @brief The achievement list: the line to open it on. */
-void ra_list_draw(void);          /**< @brief The achievement list: draws it. */
-void ra_list_select(int line);    /**< @brief The achievement list: the details of a line. */
+#if GAME20K_RA
+int ra_list_length(void);      /**< @brief The achievement list: its lines. */
+int ra_list_first(void);       /**< @brief The achievement list: the line to open it on. */
+void ra_list_draw(void);       /**< @brief The achievement list: draws it. */
+void ra_list_select(int line); /**< @brief The achievement list: the details of a line. */
+void menu_ra_status(void);     /**< @brief The Account dialog. */
+#endif
 int games_list_length(void);      /**< @brief The Games page: its lines. */
 void games_list_draw(void);       /**< @brief The Games page: draws it. */
 void games_list_select(int line); /**< @brief The Games page: starts the game of a line. */
@@ -30,7 +33,6 @@ int games_list_scroll(int sel);   /**< @brief The scroll that shows line sel. */
 int games_list_first(void);       /**< @brief Reads the card, the line to open the page on. */
 bool games_list_reread(void);     /**< @brief Reads the changed card, true when the selection moved. */
 void menu_version_status(void);   /**< @brief The Version dialog. */
-void menu_ra_status(void);        /**< @brief The Account dialog. */
 void menu_dips_set(void);         /**< @brief Sets the DIP switches as the game's set expects. */
 bool menu_rom_pick(int drive,
                    const char *name); /**< @brief True when a ROM file picked goes no further here. */

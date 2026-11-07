@@ -32,7 +32,7 @@
 #include "sdc.h"
 
 #include "ftpd.h"
-#include "game20k/ra_task.h"   /* ra_task_hardcore() */
+#include "game20k/ra.h"        /* ra_task_hardcore() */
 #include "game20k/games.h"     /* game20k: a ROM file changed, the Games page reads the card again */
 
 #define FTP_PORT             21

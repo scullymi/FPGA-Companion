@@ -18,7 +18,7 @@
 #include "config.h"
 #include "mcu_hw.h"
 #include "at_wifi.h"
-#include "game20k/ra_task.h"        // ra_task_core_value()
+#include "game20k/ra.h"             // ra_task_core_value()
 #include "game20k/games.h"          // game20k: games_save_start()
 
 // we are using "puff" to decompress a gzip'd FPGA config as this is a slow, yet

@@ -9,9 +9,8 @@
 #include "../spi.h" /* SPI_TARGET_RAM */
 #include "banner.h"
 #include "game_switch.h"
-#include "ra_events.h"
-#include "ra_patch.h"
-#include "ra_task.h"
+#include "game.h"
+#include "ra.h"
 #include "ram_mirror.h"
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new

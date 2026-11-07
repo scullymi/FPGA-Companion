@@ -16,9 +16,8 @@
 #include "game_switch.h"
 #include "games.h" /* the Games page's pick and the start game */
 #include "ra_games.h"
-#include "ra_patch.h"
-#include "ra_queue.h"
-#include "ra_task.h"
+#include "game.h"
+#include "ra.h"
 #include "ram_mirror.h"
 
 /* A game of another board, e.g. galaga.rom picked in the Pac-Man core
