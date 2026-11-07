@@ -29,7 +29,7 @@ QueueHandle_t ra_queue_init(void);
 /** @brief Hands an unlock over to the RA task. From com_task, never blocks.
  *
  *  hardcore is the mode the achievement was earned in. The game is the running
- *  one, ra_game_hash(): the only one whose set runs. The line keeps that hash when
+ *  one, game_hash(): the only one whose set runs. The line keeps that hash when
  *  another game runs by the time it is sent. Dropped
  *  with a log line while another game's ROM is in the core (ra_patch_foreign_rom())
  *  or without a game hash. */
@@ -42,7 +42,7 @@ unsigned ra_queue_in_transit(void);
 
 /** @brief Names the game the RA task works for, whose lists ra_state holds now. RA task only, with each ra_state_load().
  *
- *  hash and id as ra_game_now() gave them, id 0 for a fallback identity the server
+ *  hash and id as game_now() gave them, id 0 for a fallback identity the server
  *  has not resolved yet. */
 void ra_queue_game(const char *hash, unsigned id);
 

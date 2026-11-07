@@ -12,13 +12,6 @@
  *  once per session and writes it to the card when it changed, so it is there
  *  offline too.
  *
- *  Which game: decided by ra_patch_settle() from the board id of the core (RAM
- *  mirror header), the SHA-256 of the ROM image and the image's name, with the
- *  rules of ra_games_select(). At the start the card set is read right there, in
- *  com_task, before the RA task exists. A known ROM of another game of this board
- *  streamed later becomes the game in place (ra_patch_new_game()), its card set
- *  is read by the RA task.
- *
  *  Two tasks share the work: the RA task reads and parses, so the game loop
  *  never waits for the card, and hands the parsed set over a queue of one to
  *  com_task, which activates it and alone changes rcheevos and the table. */
@@ -35,7 +28,6 @@
 #include "../rcheevos/src/util/md5.h"
 #include "../rcheevos/src/api/rc_api_common.h" // rc_json_*: one field of the set text, decoded as rc_api does
 #include "rc_util.h"                           // rc_buffer_t for that one field
-#include "mbedtls/sha256.h"
 #include <ff.h>
 #include "../debug.h"
 #include "../sdc.h"
@@ -44,49 +36,15 @@
 #include "ra_text.h"
 #include "ra_task.h"
 #include "ra_mac.h"
+#include "game.h"
 
 uint32_t getFreeHeap(void); // mcu_hw.c: the SDK heap left
 
-/* The identity of the running game, written by com_task alone: ra_patch_settle() at
-   the start, ra_patch_new_game() for another game of this board. Every write runs
-   with interrupts off, a new game counts the generation in the same piece, so on
-   this single core ra_game_now() always copies one game's identity. The game table
-   (ra_games.c) names the games, this only says which one runs. */
-static const ra_game_t *volatile game;        // the table entry, NULL for a fallback identity or no game
-static unsigned game_id;                      // its id, 0 for a fallback identity, a wrong board or no game
-static char game_hash[RA_GAMES_HASH_LEN + 1]; // what the server is asked with, "" when there is no game
-static volatile unsigned resolved_id;         // fallback identity: the id the server gave, 0 until then
-static const char *volatile rom_label = "";   // what the ROM file is, for the Version dialog
-static volatile unsigned generation;          // the games of this start, see ra_patch_generation()
-static volatile unsigned char board;          // header byte 12, 0 until a valid header was read
-static bool settled;                          // ra_patch_settle() ran
-static bool new_core; // a core switch ran, the next settle makes the new core's game, see ra_patch_new_core()
 static bool table_wrong; // the server's id differs from the table's: RA_HC_BLOCK_GAME stays
-static bool foreign_rom; // the ROM in the core is another game's than the running one, see ra_patch_settle()
-static const ra_game_t *volatile switch_to; // the game a core switch starts, see ra_patch_switch_to()
-static volatile bool
-    switch_committed;             // switch_step() writes the marker now: picks no longer change the target
-static unsigned pick_seq;         // picks of a game of another board, counted
-static unsigned stream_seq;       // pick_seq when the ROM that streams now started
-static bool set_off;              // ra_patch_apply_pending() took the set out of rcheevos for that
+static bool foreign_rom; // the ROM in the core is another game's than the running one, see game_settle()
+static bool set_off;     // ra_patch_apply_pending() took the set out of rcheevos for that
 static volatile bool set_again;   // com_task asks the RA task to read the card set once more
 static volatile bool set_reading; // the card set is read or a set handed over, see ra_patch_set_pending()
-
-/* What the ROM stream leaves behind for settle. rom_start and rom_gone may run in
-   menu_task, rom_data and rom_end in com_task, settle in com_task. The stream orders
-   start, end and settle on the normal paths; the 15 s timeout settle of the main
-   loop is not ordered by it, so rom_start and rom_gone publish their stores with
-   interrupts off and settle takes its inputs the same way, whole or not at all. */
-static mbedtls_sha256_context rom_sha; // the ROM image while it streams
-static bool rom_hashing;
-static volatile bool
-    rom_pending; // rom_start ran, rom_end or rom_gone did not yet: the main loop holds its settle back
-static volatile TickType_t rom_started; // when the stream that runs now began, see ra_patch_rom_streaming()
-static unsigned char rom_sum[32];       // its SHA-256 once the stream ended
-static bool rom_sum_valid;
-static volatile bool rom_bad; // the ROM in the core is damaged, or none came for an old file: no game
-static char
-    rom_name_hash[RA_GAMES_HASH_LEN + 1]; // md5 of the image's name (arcade rule), "" when nothing streamed
 
 #define RA_PATCH_BODY_MAX                                                                                    \
   65536 /**< a whole set, e.g. Galaga has about 15.7 KB, the Perfect Pac subset of Pac-Man 53.6 KB */
@@ -216,42 +174,6 @@ static unsigned char handed_fp[16]; // fingerprint of body[] the set taken last 
 // the rich presence script that runs, by its md5. com_task only.
 static unsigned char rp_md5[16];
 static bool rp_on;
-
-void ra_game_now(ra_game_now_t *out) {
-  taskENTER_CRITICAL();
-  out->gen = generation;
-  out->id  = game_id ? game_id : resolved_id;
-  memcpy(out->hash, game_hash, sizeof(out->hash));
-  taskEXIT_CRITICAL();
-}
-unsigned ra_patch_generation(void) { return generation; }
-bool ra_patch_current(unsigned gen) { return gen == generation; }
-
-const char *ra_game_hash(void) { return game_hash; }
-unsigned ra_game_id(void) {
-  unsigned id;
-  taskENTER_CRITICAL(); // both of one game
-  id = game_id ? game_id : resolved_id;
-  taskEXIT_CRITICAL();
-  return id;
-}
-// the entry once: a new game may change it between two reads
-const char *ra_game_title(void) {
-  const ra_game_t *g = game;
-  return g ? g->title : NULL;
-}
-unsigned char ra_game_board(void) { return board; }
-const char *ra_game_rom_label(void) { return rom_label; }
-// the switches of the game that is played: a table entry on the wrong board is
-// not played, so its switches do not matter either
-const ra_dip_t *ra_game_dips(unsigned *n) {
-  const ra_game_t *g;
-  taskENTER_CRITICAL(); // entry and id of one game
-  g = game_id ? game : NULL;
-  taskEXIT_CRITICAL();
-  *n = g ? g->dip_n : 0;
-  return *n ? g->dips : NULL;
-}
 
 /* The set's three paths for game id. False when there is no id yet: a fallback
    identity has no folder until the server resolved it. */
@@ -501,7 +423,7 @@ static void note_warning(const rc_api_fetch_game_data_response_t *r, unsigned ge
     if(!*t) t = "Warning"; // one without a title still counts
   }
   taskENTER_CRITICAL();
-  changed = gen == generation && strncmp(warning, t, sizeof(warning) - 1) != 0;
+  changed = gen == game_generation() && strncmp(warning, t, sizeof(warning) - 1) != 0;
   if(changed) snprintf(warning, sizeof(warning), "%s", t);
   taskEXIT_CRITICAL();
   if(changed && w) debugf("RA: server warning '%s': %s", t, w->description ? w->description : "");
@@ -811,122 +733,7 @@ static int activate_set(rc_runtime_t *rt, const rc_api_fetch_game_data_response_
   return (int)n;
 }
 
-void ra_patch_rom_start(const char *name) {
-  char hex[RA_GAMES_HASH_LEN + 1];
-  rom_started = xTaskGetTickCount(); // before rom_pending: a reader never sees an old start
-  rom_pending = true;
-  ra_task_hardcore_block(RA_HC_BLOCK_ROM, true);
-  // the name's hash right away, not the name: a long name (up to 255 characters)
-  // would not fit a small buffer, and the hash is all the arcade rule needs. Made
-  // in a local and published whole: the 15 s timeout settle in com_task can read
-  // rom_name_hash while menu_task is in here
-  if(name) ra_games_name_hash(name, hex);
-  else hex[0] = 0;
-  taskENTER_CRITICAL();
-  memcpy(rom_name_hash, hex, sizeof(rom_name_hash));
-  rom_sum_valid = false;
-  rom_bad       = false;
-  stream_seq    = pick_seq;
-  taskEXIT_CRITICAL();
-  mbedtls_sha256_init(&rom_sha);
-  rom_hashing = mbedtls_sha256_starts(&rom_sha, 0) == 0;
-}
-
-void ra_patch_rom_data(const void *data, unsigned len) {
-  if(rom_hashing && mbedtls_sha256_update(&rom_sha, data, len) != 0) rom_hashing = false;
-}
-
-bool ra_patch_rom_end(const unsigned char want[32]) {
-  rom_sum_valid = rom_hashing && mbedtls_sha256_finish(&rom_sha, rom_sum) == 0;
-  mbedtls_sha256_free(&rom_sha);
-  rom_hashing = false;
-  rom_pending = false;
-  // a content that is not what the footer names is no game at all: the core stays
-  // in reset, and a guess by the file's name would start a session for nothing
-  rom_bad = rom_sum_valid && want && memcmp(rom_sum, want, 32) != 0;
-  if(rom_sum_valid)
-    debugf("RA: ROM image SHA-256 %02x%02x%02x%02x...%s", rom_sum[0], rom_sum[1], rom_sum[2], rom_sum[3],
-           rom_bad ? ", not the footer's: damaged, no game" : "");
-  else debugf("RA: hashing the ROM image failed, it counts as unknown");
-  // the core still waits in reset here: the bits settle applies hold from the first frame
-  ra_patch_settle();
-  return rom_bad;
-}
-
-void ra_patch_rom_rejected(void) {
-  // only while no game is decided: later the core keeps the ROM it runs
-  if(!settled) rom_bad = true;
-}
-
-void ra_patch_rom_gone(void) {
-  // no FatFs and no settle here: this runs in menu_task (a file ejected in the
-  // OSD, sdc_image_open). Only the ROM block bit moves, and without a name the
-  // next settle applies its "no ROM" rule. A file that replaces the ROM, or fails
-  // to, does not come here: the core keeps the ROM it has until a new stream
-  // starts, and rom_start takes over then.
-  if(rom_hashing) mbedtls_sha256_free(&rom_sha);
-  rom_hashing = false;
-  // published whole, as rom_start does: the 15 s timeout settle in com_task may
-  // read these while menu_task is in here
-  taskENTER_CRITICAL();
-  rom_pending      = false;
-  rom_sum_valid    = false;
-  rom_name_hash[0] = 0;
-  taskEXIT_CRITICAL();
-  ra_task_hardcore_block(RA_HC_BLOCK_ROM, true);
-}
-
-bool ra_patch_rom_pending(void) { return rom_pending; }
-bool ra_patch_rom_streaming(unsigned limit_ms) {
-  return rom_pending && (TickType_t)(xTaskGetTickCount() - rom_started) < pdMS_TO_TICKS(limit_ms);
-}
 bool ra_patch_foreign_rom(void) { return foreign_rom; }
-const ra_game_t *ra_patch_switch_to(void) { return switch_to; }
-
-void ra_patch_switch_cancel(void) {
-  taskENTER_CRITICAL();
-  switch_to        = NULL;
-  switch_committed = false;
-  stream_seq       = pick_seq; // the dropped pick holds no later settle back
-  taskEXIT_CRITICAL();
-}
-
-bool ra_patch_switch_commit(const ra_game_t *g) {
-  bool fixed;
-  taskENTER_CRITICAL(); // a pick in the menu task must not slip in between
-  fixed = g && switch_to == g;
-  if(fixed) switch_committed = true;
-  taskEXIT_CRITICAL();
-  return fixed;
-}
-
-bool ra_patch_pick_other_board(const char *name) {
-  const ra_game_t *g = ra_games_by_file(name);
-  bool taken         = false;
-  taskENTER_CRITICAL(); // the settle may change the target meanwhile, see ra_patch_settle()
-  if(switch_committed)
-    // the switch is under way: a game of another board comes too late and is
-    // dropped. Any other file goes on to sdc_image_open(). A switch without a
-    // restart parks the menu task first, so no pick comes then. In the restart
-    // that is its fallback the file waits for the card lock, and the Pico goes first
-    taken = g && board && g->board != board;
-  else if(g && board && g->board != board) {
-    switch_to = g; // the newest pick wins
-    pick_seq++;    // also over a stream that started before it, see the settle
-    taken = true;
-  }
-  taskEXIT_CRITICAL();
-  return taken;
-}
-
-void ra_patch_board(unsigned char b) { board = b; }
-bool ra_patch_settled(void) { return settled; }
-
-bool ra_patch_init(void) {
-  if(!handover) handover = xQueueCreate(1, sizeof(handed_t));
-  return handover != NULL;
-}
-
 static void discard(rc_api_fetch_game_data_response_t *r) {
   rc_api_destroy_fetch_game_data_response(r);
   free(r);
@@ -976,21 +783,21 @@ static void hand_over(rc_api_fetch_game_data_response_t *r, const unsigned char 
    the set. */
 static bool read_card(void) {
   rc_api_fetch_game_data_response_t *r;
-  ra_game_now_t g;
+  game_now_t g;
   unsigned n;
   bool now;
 
   unsigned char fp[16];
 
-  ra_game_now(&g);
+  game_now(&g);
   taskENTER_CRITICAL();
-  if(g.gen == generation) card_fp_valid = card_fp_runs = false;
+  if(g.gen == game_generation()) card_fp_valid = card_fp_runs = false;
   taskEXIT_CRITICAL();
   if(!handover || !card_read(g.id)) return false;
   fingerprint(body, body_len, fp); // over the file as it lies on the card, before the parse
   if(!(r = parse_new(g.id, &n))) return false;
   taskENTER_CRITICAL();
-  now = g.gen == generation;
+  now = g.gen == game_generation();
   if(now) {
     memcpy(card_fp, fp, sizeof(card_fp));
     card_fp_runs  = true;
@@ -1097,120 +904,47 @@ static void migrate_card(void) {
   sdc_unlock();
 }
 
-/* Writes the identity whole, see ra_game_now(). next counts a new game. com_task only. */
-static void identity(const ra_ident_t *ident, bool next) {
-  taskENTER_CRITICAL();
-  if(next) generation++;
-  game        = ident->game;
-  game_id     = ident->id;
-  resolved_id = 0;
-  rom_label   = ident->rom_label;
-  memcpy(game_hash, ident->hash, sizeof(game_hash));
-  taskEXIT_CRITICAL();
+/* What game.c tells: the set follows the game. */
+static void on_rom_unsure(void) { ra_task_hardcore_block(RA_HC_BLOCK_ROM, true); }
+
+/* A later settle, the game stays. same says the ROM in the core is the game's. */
+static void on_rom_checked(bool same, const ra_ident_t *ident_ptr) {
+  const ra_ident_t ident = *ident_ptr;
+  ra_task_hardcore_block(RA_HC_BLOCK_ROM, !(same && ident.rom_ok));
+  ra_task_hardcore_block(RA_HC_BLOCK_GAME, !ident.board_ok || !same || table_wrong);
+  const char *what = ident.game ? ident.game->set : ident.hash[0] ? "a file the table does not know" : "gone";
+  if(!same && !foreign_rom && !game_hash()[0])
+    // no game runs (board unknown, or a table game on the wrong board), and the
+    // table does not know this file either
+    debugf("RA: the ROM is now %s, but no game runs: reboot with this ROM to play it", what);
+  else if(!same && !foreign_rom)
+    debugf("RA: the ROM is now %s, not the game's: achievements off until it is back", what);
+  else if(same && foreign_rom && game_hash()[0]) debugf("RA: the game's ROM is back, its set is read again");
+  foreign_rom = !same;
 }
 
-void ra_patch_settle(void) {
-  ra_ident_t ident;
-  unsigned char sum[32];
-  char name_hash[RA_GAMES_HASH_LEN + 1];
-  bool sum_valid, streaming, bad;
-  // the inputs whole: rom_start in menu_task may be writing them when the 15 s
-  // timeout of the main loop brings com_task here
-  taskENTER_CRITICAL();
-  memcpy(sum, rom_sum, sizeof(sum));
-  memcpy(name_hash, rom_name_hash, sizeof(name_hash));
-  sum_valid = rom_sum_valid;
-  streaming = rom_pending;
-  bad       = rom_bad;
-  taskEXIT_CRITICAL();
-  ra_games_select(board, sum_valid ? sum : NULL, name_hash[0] ? name_hash : NULL, streaming, &ident);
-  if(bad) {
-    // a damaged ROM, or none for an old file: no game, neither by the name nor by
-    // the board, so the RA task asks the server nothing ("RA: NO GAME")
-    memset(&ident, 0, sizeof(ident));
-    ident.rom_label = "ROM damaged or old";
-  }
-
-  if(settled) {
-    // a ROM picked in the OSD or on the Games page after the start. A known ROM of
-    // another game of this board, proven by its digest, becomes the game in place,
-    // e.g. puckman.rom in the Pac-Man core. Any other file leaves identity, session
-    // and card files: the two block bits and the label of the Version dialog follow
-    // it, and a file of another game switches the set off, ra_patch_apply_pending()
-    // takes it out of rcheevos, until the game's ROM is back in the core.
-    // After a core switch the new core's ROM makes the game whatever it is, as the
-    // first settle does: the running "no game" is the old core's end, not a game
-    // whose ROM may come back.
-    bool same  = ident.game == game && !strcmp(ident.hash, game_hash);
-    bool other = !same && (new_core || (ident.game && ident.rom_ok && ident.board_ok));
-    new_core   = false;
-    // the newest pick wins: a ROM that streamed to this core takes a pending core
-    // switch back, unless a game of another board was picked after this stream
-    // began or the switch is under way (switch_step() in game_switch.c)
-    const ra_game_t *was;
-    bool later;
-    taskENTER_CRITICAL(); // the menu may pick a game of another board meanwhile
-    was   = switch_to;
-    later = stream_seq != pick_seq; // a game of another board was picked after this stream began
-    if(!switch_committed && !later) switch_to = NULL;
-    taskEXIT_CRITICAL();
-    if(later)
-      debugf("RA: %s was picked after this ROM, it stays the target",
-             was ? was->set : "a game of another board");
-    else if(was) debugf("RA: no core switch for %s, the ROM picked last plays here", was->set);
-    if(other) {
-      ra_patch_new_game(&ident);
-      return;
-    }
-    rom_label = ident.rom_label;
-    ra_task_hardcore_block(RA_HC_BLOCK_ROM, !(same && ident.rom_ok));
-    ra_task_hardcore_block(RA_HC_BLOCK_GAME, !ident.board_ok || !same || table_wrong);
-    const char *what = ident.game      ? ident.game->set
-                       : ident.hash[0] ? "a file the table does not know"
-                                       : "gone";
-    if(!same && !foreign_rom && !game_hash[0])
-      // no game runs (board unknown, or a table game on the wrong board), and the
-      // table does not know this file either
-      debugf("RA: the ROM is now %s, but no game runs: reboot with this ROM to play it", what);
-    else if(!same && !foreign_rom)
-      debugf("RA: the ROM is now %s, not the game's: achievements off until it is back", what);
-    else if(same && foreign_rom && game_hash[0]) debugf("RA: the game's ROM is back, its set is read again");
-    foreign_rom = !same;
-    return;
-  }
-  settled = true;
-  identity(&ident, false);
-  debugf("RA: board %u, ROM %s: game %s, id %u, hash %s", board, rom_label,
-         game            ? game->set
-         : ident.hash[0] ? "unknown to the table"
-                         : "none",
-         game_id, game_hash[0] ? game_hash : "none");
-  if(game && !ident.board_ok)
-    debugf("RA: %s runs on board %u, not on this one: not played", game->title, game->board);
+/* The first settle: the game's set from the card. */
+static void on_first(const ra_ident_t *ident_ptr) {
+  const ra_ident_t ident = *ident_ptr;
   ra_task_hardcore_block(RA_HC_BLOCK_ROM, !ident.rom_ok);
   ra_task_hardcore_block(RA_HC_BLOCK_GAME, !ident.board_ok);
   migrate_card();
   // the card set, only with an id: a fallback identity has no folder until the
   // server resolved the hash, and it is softcore anyway, the server's set comes
   // after the login
-  if(game_id) {
+  if(ident.id) {
     sdc_lock();
-    FRESULT r = ra_games_mkdir(game_id);
+    FRESULT r = ra_games_mkdir(ident.id);
     sdc_unlock();
-    if(r != FR_OK) debugf("RA: folder for game %u not made (error %d)", game_id, (int)r);
+    if(r != FR_OK) debugf("RA: folder for game %u not made (error %d)", ident.id, (int)r);
     read_card();
   }
 }
 
-void ra_patch_new_game(const ra_ident_t *ident) {
-  char was[RA_GAMES_HASH_LEN + 1]; // the old game for the log, its set name or its hash
+/* Another game runs in place, what belonged to the old one goes. */
+static void on_replaced(const ra_ident_t *ident) {
   handed_t h;
   char *old_pool;
-  snprintf(was, sizeof(was), "%s", game ? game->set : game_hash[0] ? game_hash : "none");
-  // the identity whole, and with it what the RA task may still write for the old
-  // game: whatever it hands in later checks the generation in a critical section of
-  // its own (card fingerprint, warning, resolved id, the set's hardcore block)
-  identity(ident, true);
   taskENTER_CRITICAL();
   table_wrong   = false;
   card_fp_valid = card_fp_runs = false;
@@ -1236,18 +970,13 @@ void ra_patch_new_game(const ra_ident_t *ident) {
   // go as the first settle lifts them, SET with the set; SIZE is the new set's to say
   ra_task_hardcore_block(RA_HC_BLOCK_ROM | RA_HC_BLOCK_SET | RA_HC_BLOCK_GAME, true);
   ra_task_hardcore_block(RA_HC_BLOCK_SIZE, false);
-  debugf("RA: board %u, ROM %s: game %s in place of %s, id %u, hash %s", board, rom_label,
-         ident->game      ? ident->game->set
-         : ident->hash[0] ? "unknown to the table"
-                          : "none",
-         was, game_id, game_hash[0] ? game_hash : "none");
   ra_task_hardcore_block(RA_HC_BLOCK_ROM, !ident->rom_ok);
   ra_task_hardcore_block(RA_HC_BLOCK_GAME, !ident->board_ok);
-  if(game_id) {
+  if(ident->id) {
     sdc_lock();
-    FRESULT r = ra_games_mkdir(game_id);
+    FRESULT r = ra_games_mkdir(ident->id);
     sdc_unlock();
-    if(r != FR_OK) debugf("RA: folder for game %u not made (error %d)", game_id, (int)r);
+    if(r != FR_OK) debugf("RA: folder for game %u not made (error %d)", ident->id, (int)r);
   }
   // the card set: the RA task owns body[] now and reads it, then it starts a round
   // for the new game (session, lists, the server's set)
@@ -1255,23 +984,12 @@ void ra_patch_new_game(const ra_ident_t *ident) {
   ra_task_wake();
 }
 
-bool ra_patch_new_core_pending(void) { return new_core; }
+static const game_events_t game_events = {on_rom_unsure, on_rom_checked, on_first, on_replaced};
 
-void ra_patch_new_core(void) {
-  ra_ident_t none;
-  // a stream the switch cut never ends: its digest goes, as at an eject
-  if(rom_hashing) mbedtls_sha256_free(&rom_sha);
-  rom_hashing = false;
-  taskENTER_CRITICAL();
-  rom_pending      = false;
-  rom_sum_valid    = false;
-  rom_bad          = false;
-  rom_name_hash[0] = 0;
-  taskEXIT_CRITICAL();
-  memset(&none, 0, sizeof(none));
-  none.rom_label = "no ROM";
-  ra_patch_new_game(&none);
-  new_core = true;
+bool ra_patch_init(void) {
+  game_events_set(&game_events);
+  if(!handover) handover = xQueueCreate(1, sizeof(handed_t));
+  return handover != NULL;
 }
 
 void ra_patch_resolved(unsigned gen, unsigned server_id) {
@@ -1280,10 +998,7 @@ void ra_patch_resolved(unsigned gen, unsigned server_id) {
   unsigned table_id;
   bool now;
   // the answer for a game that no longer runs says nothing about this one
-  taskENTER_CRITICAL();
-  now      = gen == generation;
-  table_id = game_id;
-  taskEXIT_CRITICAL();
+  now = game_table_id(gen, &table_id);
   if(!now) return;
   if(table_id) {
     // a table entry: the table is wrong, softcore until a developer fixes it, its
@@ -1291,7 +1006,7 @@ void ra_patch_resolved(unsigned gen, unsigned server_id) {
     if(server_id != table_id) {
       debugf("RA: table says %u, server says %u, softcore until the table is fixed", table_id, server_id);
       taskENTER_CRITICAL();
-      if(gen == generation) table_wrong = true;
+      if(gen == game_generation()) table_wrong = true;
       taskEXIT_CRITICAL();
       ra_task_hardcore_block_for(gen, RA_HC_BLOCK_GAME, true);
     }
@@ -1310,7 +1025,7 @@ void ra_patch_resolved(unsigned gen, unsigned server_id) {
   // read: board 0 is no board, a set adopted then would run against whatever
   // core answers later. What is stored gets its folder made, so card_write and
   // ra_state_save find it.
-  unsigned char b = board; // read once, the poll may adopt a header meanwhile
+  unsigned char b = game_board(); // read once, the poll may adopt a header meanwhile
   g               = ra_games_by_id(server_id);
   if(!b) {
     debugf("RA: the server says game %u, but the board is unknown (no RAM mirror header yet): not played",
@@ -1327,11 +1042,7 @@ void ra_patch_resolved(unsigned gen, unsigned server_id) {
            b);
     return;
   }
-  taskENTER_CRITICAL();
-  now = gen == generation;
-  if(now) resolved_id = server_id;
-  taskEXIT_CRITICAL();
-  if(!now) return;
+  if(!game_resolve(gen, server_id)) return;
   sdc_lock();
   r = ra_games_mkdir(server_id);
   sdc_unlock();
@@ -1346,7 +1057,7 @@ char *ra_patch_body(unsigned *cap) {
 
 int ra_patch_from_server(unsigned len, unsigned gen) {
   rc_api_fetch_game_data_response_t *r;
-  ra_game_now_t g;
+  game_now_t g;
   unsigned char sum[16];
   unsigned n;
   bool same, valid, now;
@@ -1359,7 +1070,7 @@ int ra_patch_from_server(unsigned len, unsigned gen) {
   }
   // asked for a game that no longer runs: its set is not the running game's. From
   // here on the copy names the game it was asked for, its id the folder and the tag
-  ra_game_now(&g);
+  game_now(&g);
   if(g.gen != gen) {
     debugf("RA: set from the server dropped, it was asked for the game before");
     return 0;
@@ -1384,7 +1095,7 @@ int ra_patch_from_server(unsigned len, unsigned gen) {
   if(same) {
     bool kept = card_write(g.id);
     taskENTER_CRITICAL();
-    if(kept && gen == generation) card_fp_valid = true;
+    if(kept && gen == game_generation()) card_fp_valid = true;
     taskEXIT_CRITICAL();
     if(kept) debugf("RA: the set on the card is the server's, now with this Pico's tag");
     else debugf("RA: the set on the card is the server's, its tag could not be written");
@@ -1396,7 +1107,7 @@ int ra_patch_from_server(unsigned len, unsigned gen) {
   // the card first, so a power cut after this leaves the new set there too
   bool kept = card_write(g.id);
   taskENTER_CRITICAL();
-  now = gen == generation;
+  now = gen == game_generation();
   if(now && kept) {
     memcpy(card_fp, sum, sizeof(card_fp));
     card_fp_valid = card_fp_runs = true;
@@ -1617,7 +1328,7 @@ unsigned ra_patch_apply_pending(rc_runtime_t *rt) {
     }
   }
   if(!set_off && handover && xQueueReceive(handover, &h, 0) == pdTRUE) {
-    if(h.gen != generation) {
+    if(h.gen != game_generation()) {
       discard(h.r); // read or asked for a game that no longer runs
       debugf("RA: a set of the game before dropped");
       return what;

@@ -12,9 +12,9 @@
  *  the rich presence text, as rc_client does, so the server shows what is being
  *  played and keeps the session.
  *
- *  It works for one game at a time, from a copy of its identity (ra_game_now()),
+ *  It works for one game at a time, from a copy of its identity (game_now()),
  *  and begins a new round when com_task makes another game of this board the
- *  running one (ra_patch_new_game()): a new session, the lists, the queue count
+ *  running one (game_new()): a new session, the lists, the queue count
  *  and the set. What a request brings back for the game before is dropped. */
 #include <stdio.h>
 #include <string.h>
@@ -82,7 +82,7 @@ static volatile bool hardcore_due; // hardcore asked for, it applies when the re
 static volatile bool core_running; // the core is out of reset, a game may be running
 static volatile bool hc_wanted;    // the menu's 'H'
 // RA_HC_BLOCK_* reasons that keep hardcore off. ROM, SET and GAME hold from the
-// start until ra_patch_settle() has checked ROM image and board and the
+// start until game_settle() has checked ROM image and board and the
 // achievement set has been checked: nothing is granted before the game is known.
 static volatile unsigned hc_block = RA_HC_BLOCK_ROM | RA_HC_BLOCK_SET | RA_HC_BLOCK_GAME;
 static volatile unsigned char core_flags; // header byte 9 of the RAM mirror, 0 = release build
@@ -92,7 +92,7 @@ static char path_buf[RA_PATH_MAX];        // path of session and ping requests, 
 static bool live;                         // logged in, once per start
 static bool playing;         // logged in and this round's game known to the server: session and pings are due
 static TickType_t next_ping; // when the next ping, or the next try of the session, is due
-static ra_game_now_t game;   // the game this round of ra_task_main() works for, a copy
+static game_now_t game;      // the game this round of ra_task_main() works for, a copy
 static bool session;         // the server took the session of that game
 static unsigned frames_seen; // frames at the last ping
 
@@ -170,7 +170,7 @@ static void hc_block_set(unsigned reason, bool on, bool any, unsigned gen) {
   unsigned before, after;
   taskENTER_CRITICAL();
   before = after = hc_block;
-  if(any || ra_patch_current(gen)) after = hc_block = on ? (before | reason) : (before & ~reason);
+  if(any || game_current(gen)) after = hc_block = on ? (before | reason) : (before & ~reason);
   taskEXIT_CRITICAL();
   if(after != before) hc_update();
 }
@@ -240,7 +240,7 @@ void ra_task_clock_set(void) {
 void ra_task_lboard(unsigned id, int32_t score) {
   lb_entry_t e = {id, score, xTaskGetTickCount(), ""};
   // com_task changes the identity itself, the hash here is whole
-  snprintf(e.hash, sizeof(e.hash), "%s", ra_game_hash());
+  snprintf(e.hash, sizeof(e.hash), "%s", game_hash());
   if(!lb_queue || xQueueSend(lb_queue, &e, 0) != pdTRUE)
     debugf("RA: leaderboard %u result lost, the RA task does not take it", id);
 }
@@ -304,7 +304,7 @@ static bool wait_event(TickType_t ticks) {
 static void keep_alive(void);
 
 /* True once com_task made another game the running one: the round ends. */
-static bool game_moved(void) { return !ra_patch_current(game.gen); }
+static bool game_moved(void) { return !game_current(game.gen); }
 
 /* Waits until another game runs, handling every event meanwhile. */
 static void wait_game(void) {
@@ -831,7 +831,7 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     ra_task_hardcore_block(RA_HC_BLOCK_KEY, true);
   }
 
-  // 1. the set from the card: com_task has read it in ra_patch_settle() before
+  // 1. the set from the card: com_task has read it in game_settle() before
   //    this task was started, see main.c. The achievements run without an account
   //    too, only nothing goes to the server then.
 
@@ -849,10 +849,10 @@ static void ra_task_main(__attribute__((unused)) void *p) {
   }
 
   // 3. one round per game: the one settled at the start, and each one com_task
-  //    makes the running one in place (ra_patch_new_game()). Login and clock
+  //    makes the running one in place (game_new()). Login and clock
   //    hold for the whole start, session, lists and queue count are the game's
   for(;;) {
-    ra_game_now(&game);
+    game_now(&game);
     playing = session = false;
     backoff           = RA_BACKOFF_MIN;
     // the card set of a new game, when no event read it yet. A failed read needs
@@ -912,8 +912,8 @@ static void ra_task_main(__attribute__((unused)) void *p) {
     // read, and the queue is scanned once more because ra_state_load replaces the
     // lists and would drop what the first scan counted as unlocked.
     if(fallback) {
-      ra_game_now_t now;
-      ra_game_now(&now);
+      game_now_t now;
+      game_now(&now);
       if(now.gen != game.gen) continue;
       game = now;
       if(!game.id) {

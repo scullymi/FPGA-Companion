@@ -109,7 +109,7 @@ static void com_task(__attribute__((unused)) void *p ) {
     // game20k: the board id and the interface tag of the core from the RAM mirror
     // header, before the menu: they pick the menu built into this firmware. The
     // board also decides with the ROM which game this is. After the menu comes the
-    // handover of the achievement set. The set itself is read in ra_patch_settle()
+    // handover of the achievement set. The set itself is read in game_settle()
     // once board and ROM are known, so a set with a valid tag lets the game start in
     // hardcore. rcheevos takes it with the first snapshot.
     unsigned char probe = ram_mirror_probe();
@@ -155,11 +155,11 @@ static void com_task(__attribute__((unused)) void *p ) {
       /* wake at least every 20 ms to poll the RAM mirror, not only on an interrupt */
       if(ulTaskNotifyTake( pdTRUE, pdMS_TO_TICKS(20) ))
         sys_handle_interrupts(sys_irq_ctrl(0xff), false);
-      if(!ra_patch_settled() &&
-         ((!sdc_image_upload_in_progress() && !ra_patch_rom_pending()) ||
+      if(!game_settled() &&
+         ((!sdc_image_upload_in_progress() && !game_rom_pending()) ||
           (xTaskGetTickCount() - loop_start) >= pdMS_TO_TICKS(15000)))
-        ra_patch_settle();
-      if(!ra_started && ra_patch_settled()) {
+        game_settle();
+      if(!ra_started && game_settled()) {
         // RetroAchievements talks to the server in a task of its own,
         // so this loop never waits for it
         ra_task_start();

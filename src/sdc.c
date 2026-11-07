@@ -18,7 +18,7 @@
 #include <task.h>
 #endif
 #include "sdc.h"
-#include "game20k/ra_patch.h"   // the ROM set is checked against the known files
+#include "game20k/game.h"   // the ROM set is checked against the known files
 #include "game20k/games.h"      // game20k: the footer of a ROM file
 #include "menu.h"
 #include "sysctrl.h"
@@ -582,7 +582,7 @@ static void image_send_chunk(int image, uint32_t len) {
   f_read(&fil[MAX_DRIVES+image], buffer, len, &bytesread);
   image_bytes2send[image] -= len;
   // the ROM set goes into its checksum exactly as it goes to the core
-  if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_data(buffer, len);
+  if(image == GAME_ROM_IMAGE) game_rom_data(buffer, len);
   
   // send image payload
   sdc_spi_begin();
@@ -614,7 +614,7 @@ static void image_send_chunk(int image, uint32_t len) {
     // game20k: a content whose SHA-256 is not the footer's is damaged, rom_end
     // then settles no game. The name goes, so the settings cannot keep the file,
     // and the Games page leaves it out
-    bool damaged = image == RA_PATCH_ROM_IMAGE && ra_patch_rom_end(rom_sha);
+    bool damaged = image == GAME_ROM_IMAGE && game_rom_end(rom_sha);
     if(damaged) {
       sdc_debugf("IMG %d: %s is damaged, its content is not what its footer says, the core stays in reset",
                  image, image_name[MAX_DRIVES+image] ? image_name[MAX_DRIVES+image] : "?");
@@ -862,7 +862,7 @@ static bool sdc_image_start_transfer(int image) {
   // the ROM set starts to stream: its checksum starts with it. game20k: the name
   // goes along for RetroAchievements' arcade rule, it was set when the file was
   // opened, under the same lock
-  if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_start(image_name[MAX_DRIVES+image]);
+  if(image == GAME_ROM_IMAGE) game_rom_start(image_name[MAX_DRIVES+image]);
   return true;
 }
 
@@ -895,9 +895,9 @@ int sdc_image_open(int drive, char *name) {
     // core keeps the ROM it has until the loader accepts the new stream, and
     // rom_start takes over then. A file the loader rejects leaves the old ROM
     // running, in the mode it earned.
-    if(drive == MAX_DRIVES + RA_PATCH_ROM_IMAGE) {
-      if(!name) ra_patch_rom_gone();
-      image_bytes2send[RA_PATCH_ROM_IMAGE] = 0;
+    if(drive == MAX_DRIVES + GAME_ROM_IMAGE) {
+      if(!name) game_rom_gone();
+      image_bytes2send[GAME_ROM_IMAGE] = 0;
     }
     f_close(&fil[drive]);
     memset(&fil[drive], 0, sizeof(FIL));
@@ -1021,7 +1021,7 @@ int sdc_image_open(int drive, char *name) {
     games_footer_t ft;
     if(!games_footer_read(&fil[drive], &ft)) {
       sdc_debugf("IMG %d: %s has no valid footer, an old ROM file, not sent", image, fname);
-      if(image == RA_PATCH_ROM_IMAGE) ra_patch_rom_rejected();
+      if(image == GAME_ROM_IMAGE) game_rom_rejected();
       f_close(&fil[drive]);
       memset(&fil[drive], 0, sizeof(FIL));
       sdc_unlock();
@@ -1029,7 +1029,7 @@ int sdc_image_open(int drive, char *name) {
       return SDC_IMAGE_OLD;
     }
     image_content[(int)image] = ft.content;
-    if(image == RA_PATCH_ROM_IMAGE) memcpy(rom_sha, ft.sha, 32);
+    if(image == GAME_ROM_IMAGE) memcpy(rom_sha, ft.sha, 32);
 
     // remember current image name
     image_name[drive] = StrDup(name);
@@ -1270,7 +1270,7 @@ void sdc_set_cwd(int drive, char *path) {
    image of the old core is closed and its name and folder forgotten, as at the
    start, and the core is told nothing: the new one knows none of them, the init
    action of its menu names its own. A ROM stream cut here ends without a settle,
-   ra_patch_new_core() drops it. Caller holds sdc_lock. */
+   game_new_core() drops it. Caller holds sdc_lock. */
 void sdc_forget_images(void) {
   for(int d = 0; d < MAX_DRIVES + MAX_IMAGES; d++) {
     if(fil[d].flag) f_close(&fil[d]);

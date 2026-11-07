@@ -137,8 +137,8 @@ static void banner_clear(void) {
    polls, so at the start of a poll what waits was queued for the game before. */
 void banner_follow_game(void) {
   static unsigned gen; /* the game generation the banners are for */
-  if(gen == ra_patch_generation()) return;
-  gen = ra_patch_generation();
+  if(gen == game_generation()) return;
+  gen = game_generation();
   banner_clear();
 }
 
@@ -197,7 +197,7 @@ void banner_login(void) {
   // game20k: the "no game" between a core switch and the settle of the new core's
   // ROM is no news, nor is the one the RA task still reports once a game with an
   // id runs. Left out, shown stays, and the login after it is not told twice
-  bool passing = now == RA_TASK_NO_GAME && (ra_patch_new_core_pending() || ra_game_id());
+  bool passing = now == RA_TASK_NO_GAME && (game_new_core_pending() || game_id());
   if(now != shown && !passing) {
     shown = now;
     // messages are white, the mark is green when all is well and grey when not
@@ -230,7 +230,7 @@ void banner_login(void) {
   // spend the banner. So does the new game's set while the RA task still reads it
   // from the card: its block holds until then, the banner would say softcore.
   if(banner_mode_due && now != RA_TASK_STARTING && !passing && !ra_task_hardcore_due() &&
-     !ra_patch_rom_pending() && !ra_patch_set_pending()) {
+     !game_rom_pending() && !ra_patch_set_pending()) {
     unsigned why = ra_task_hardcore_blocked();
     const char *text =
         mode                         ? "RA: HARDCORE"
@@ -295,7 +295,7 @@ void banner_lboard(void) {
   char text[BANNER_LEN + 1];
   if(!ra_task_lboard_result(&seen, &r)) return;
   // game20k: a result reached in another game is not the running game's news
-  if(strcmp(r.hash, ra_game_hash())) return;
+  if(strcmp(r.hash, game_hash())) return;
   if(!r.rank || ra_patch_warning(NULL, 0) || (r.best == 0 && r.score != 0)) {
     banner_show("RA: LB NOT RECORDED", false, false);
     return;

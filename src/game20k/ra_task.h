@@ -29,7 +29,7 @@ ra_task_state_t ra_task_state(void);
 
 /** @brief Starts the task. Once, from com_task after the card and config.ini are ready.
  *
- *  It works for one game at a time and begins anew when ra_patch_new_game() makes
+ *  It works for one game at a time and begins anew when game_new() makes
  *  another game of this board the running one: session, lists, queue count and the
  *  server's set. Login, the clock and a rejected account hold for the whole start. */
 void ra_task_start(void);
@@ -84,7 +84,7 @@ void ra_task_hardcore_block(unsigned reason, bool on);
  *
  *  For what a task found out for one game, e.g. a set with a valid tag: the check
  *  and the change are one piece, so a new game that set its own blocks meanwhile
- *  (ra_patch_new_game()) keeps them. */
+ *  (game_new()) keeps them. */
 void ra_task_hardcore_block_for(unsigned gen, unsigned reason, bool on);
 
 /** @brief Header byte 9 of the RAM mirror: the core's diagnostic parameters. com_task, each snapshot.
@@ -121,7 +121,7 @@ typedef struct {
   unsigned
       rank; /**< the rank of that best value, also for an entry the server did not keep, see banner_lboard() in banner.c */
   unsigned entries;                 /**< entries on the leaderboard */
-  char hash[RA_GAMES_HASH_LEN + 1]; /**< the game it was reached in, as ra_game_hash() */
+  char hash[RA_GAMES_HASH_LEN + 1]; /**< the game it was reached in, as game_hash() */
 } ra_lboard_result_t;
 
 /** @brief Hands a leaderboard result to the RA task, which submits it. com_task only, never blocks.

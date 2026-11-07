@@ -25,7 +25,7 @@ uint32_t getTotalHeap(void); /* mcu_hw.c: the SDK heap, all of it */
    wram1..3 of 1024 each), so an address is the offset in the snapshot. */
 static rc_runtime_t ra_rt;
 static bool ra_ready;
-static unsigned ra_gen;             /* the game generation ra_rt is made for, ra_patch_generation() */
+static unsigned ra_gen;             /* the game generation ra_rt is made for, game_generation() */
 static unsigned char ra_triggered;  /* achievements triggered, saturating */
 static unsigned char ra_last;       /* last one, 1-based position in the set */
 static unsigned short ra_us;        /* evaluation time of the last snapshot */
@@ -187,12 +187,12 @@ void ra_events_header(unsigned char *hdr_tx) {
 void ra_events_prepare(void) {
   /* rcheevos only sees a snapshot that passed every check. The set comes from
      the RA task, which reads it from the card, and is activated here once it
-     is there. game20k: another game of this board (ra_patch_new_game()) gets a
+     is there. game20k: another game of this board (game_new()) gets a
      new rcheevos before its first frame: memrefs are freed only with the runtime,
      and nothing of the old game's achievements, leaderboards, challenges or rich
      presence carries over. */
-  if(ra_gen != ra_patch_generation()) {
-    ra_gen = ra_patch_generation();
+  if(ra_gen != game_generation()) {
+    ra_gen = game_generation();
     if(ra_ready) rc_runtime_destroy(&ra_rt);
     ra_ready     = false;
     ra_triggered = 0;

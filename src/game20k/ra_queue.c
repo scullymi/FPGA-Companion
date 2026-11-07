@@ -38,7 +38,7 @@
 #include "../debug.h"
 #include "../sdc.h"
 #include "ra_task.h"
-#include "ra_patch.h" // ra_game_hash(): the running game, stamped into every new unlock in com_task
+#include "ra_patch.h" // game_hash(): the running game, stamped into every new unlock in com_task
 #include "ra_state.h"
 #include "ra_queue.h"
 #include "ra_mac.h"
@@ -104,7 +104,7 @@ void ra_queue_add(unsigned id, bool hardcore) {
     debugf("RA: unlock %u dropped, the ROM in the core is not the game's", id);
     return;
   }
-  snprintf(u.hash, sizeof(u.hash), "%s", ra_game_hash());
+  snprintf(u.hash, sizeof(u.hash), "%s", game_hash());
   // a set is active only with an identity, so the hash is there by construction.
   // A line without one would read back as malformed
   if(!u.hash[0]) {

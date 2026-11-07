@@ -55,8 +55,8 @@ char *core_menu(unsigned char probe, bool *mismatch) {
    before the ready action, from the board alone. With a stream running, its last chunk
    settles. */
 void core_images_open(void) {
-  if(!sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE)) menu_notify(MENU_EVENT_GAMES);
-  if(!sdc_image_upload_in_progress()) ra_patch_settle();
+  if(!sdc_get_image_name(MAX_DRIVES + GAME_ROM_IMAGE)) menu_notify(MENU_EVENT_GAMES);
+  if(!sdc_image_upload_in_progress()) game_settle();
 }
 
 /* game20k: a new core is up, set it up as the start sets one up: the old core's
@@ -68,7 +68,7 @@ void core_setup(unsigned char probe, TickType_t t0) {
   sdc_lock();
   sdc_forget_images();
   sdc_unlock();
-  ra_patch_new_core();
+  game_new_core();
   banner_restart();
   // the old menu goes, the log says what the new one takes
   size_t before = xPortGetFreeHeapSize();

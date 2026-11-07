@@ -33,7 +33,7 @@ void menu_version_status(void) {
   // line says so
   snprintf(t, sizeof(t), "game20k v%s\n%s%s\nrcheevos %s\nboard %u, %s", GAME20K_VERSION, GAME20K_PLATFORM,
            strcmp(ra_games_origin, "generated") || strcmp(menus_origin, "generated") ? ", example" : "",
-           RCHEEVOS_VERSION_STRING, ra_game_board(), ra_game_rom_label());
+           RCHEEVOS_VERSION_STRING, game_board(), game_rom_label());
   menu_draw_dialog_for("Version", t, pdMS_TO_TICKS(8000));
 }
 
@@ -52,6 +52,9 @@ static bool ra_list_done(unsigned id) {
 }
 
 int ra_list_length(void) { return (int)ra_patch_count(); }
+
+/* The line to open the list on: the first achievement, none without a set. */
+int ra_list_first(void) { return ra_patch_count() ? 1 : 0; }
 
 void ra_list_draw(void) {
   const int width = u8g2_GetDisplayWidth(&u8g2);
@@ -245,11 +248,11 @@ void games_list_draw(void) {
 void games_list_select(int line) {
   games_item_t it;
   games_pick_t pk;
-  const char *cwd = sdc_get_cwd(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
-  const char *img = sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
+  const char *cwd = sdc_get_cwd(MAX_DRIVES + GAME_ROM_IMAGE);
+  const char *img = sdc_get_image_name(MAX_DRIVES + GAME_ROM_IMAGE);
   if(!games_item((unsigned)line, &it)) return;
   // the file that runs already, with no restart pending: nothing to start, the menu closes
-  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT) && games_name_crc(img) == it.crc && !ra_patch_switch_to() &&
+  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT) && games_name_crc(img) == it.crc && !game_switch_to() &&
      !games_picked(&pk)) {
     osd_enable(OSD_INVISIBLE);
     return;
@@ -257,7 +260,7 @@ void games_list_select(int line) {
   // game_switch.c takes it from here. A game of this board streams at once and the menu
   // closes onto it, a core switch says so, see MENU_EVENT_CORE_SWITCH
   games_pick(&it);
-  if(it.board == ra_game_board()) {
+  if(it.board == game_board()) {
     osd_enable(OSD_INVISIBLE);
     return;
   }
@@ -266,8 +269,8 @@ void games_list_select(int line) {
 
 /* Reads the card, the line to open the page on: the game that runs, else the first one. */
 int games_list_first(void) {
-  const char *cwd = sdc_get_cwd(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
-  const char *img = sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
+  const char *cwd = sdc_get_cwd(MAX_DRIVES + GAME_ROM_IMAGE);
+  const char *img = sdc_get_image_name(MAX_DRIVES + GAME_ROM_IMAGE);
   int sel         = 0;
   games_read();
   // the running file's line, as games_list_select() tells it; lines count from 1
@@ -293,7 +296,7 @@ static const config_list_t *menu_find_list(const config_menu_t *menu, char id) {
    be wrong. */
 static bool menu_dip_wanted(char *buf, size_t size) {
   unsigned n, i;
-  const ra_dip_t *dip = ra_game_dips(&n);
+  const ra_dip_t *dip = game_dips(&n);
   for(i = 0; dip && i < n; i++) {
     if(!menu_variable_exists(dip[i].id) || menu_variable_get(dip[i].id) == dip[i].value) continue;
     const config_list_t *l       = cfg ? menu_find_list(cfg->menu, dip[i].id) : NULL;
@@ -313,7 +316,7 @@ bool menu_dips_as_expected(void) { return !menu_dip_wanted(NULL, 0); }
    does. Save settings keeps them. */
 void menu_dips_set(void) {
   unsigned n, i, changed = 0;
-  const ra_dip_t *dip = ra_game_dips(&n);
+  const ra_dip_t *dip = game_dips(&n);
   for(i = 0; dip && i < n; i++)
     if(menu_variable_exists(dip[i].id) && menu_variable_get(dip[i].id) != dip[i].value) {
       menu_variable_set(dip[i].id, dip[i].value);
@@ -408,7 +411,7 @@ void menu_ra_status(void) {
   snprintf(t, sizeof(t), "%s\n%s\n%s\n%s", who, line, count, note);
   // the game's title as the heading, the four lines are taken (game20k).
   // "Account" while no table game is known.
-  menu_draw_dialog_for(ra_game_title() ? ra_game_title() : "Account", t, pdMS_TO_TICKS(8000));
+  menu_draw_dialog_for(game_title() ? game_title() : "Account", t, pdMS_TO_TICKS(8000));
 }
 
 /* Before a ROM file picked under "ROM set" goes to the core. True when it goes no further
@@ -416,7 +419,7 @@ void menu_ra_status(void) {
    e.g. galaga.rom in the Pac-Man core, which needs that board's core: game_switch.c
    switches the core and starts the game there, see switch_step(). */
 bool menu_rom_pick(int drive, const char *name) {
-  if(drive != MAX_DRIVES + RA_PATCH_ROM_IMAGE) return false;
+  if(drive != MAX_DRIVES + GAME_ROM_IMAGE) return false;
   // a file without a footer is an old one, it neither switches nor streams
   games_footer_t ft;
   char path[strlen(sdc_get_cwd(drive)) + strlen(name) + 2];
@@ -426,7 +429,7 @@ bool menu_rom_pick(int drive, const char *name) {
     menu_notify(MENU_EVENT_ROM_OLD);
     return true;
   }
-  return ra_patch_pick_other_board(name);
+  return game_pick_other_board(name);
 }
 
 /* The events of the pages, true when cmd is one of them. Menu task. */
@@ -435,7 +438,7 @@ bool menu_page_event(long cmd) {
     // game20k: the game picked runs on another board, game_switch.c loads its core in
     // a few seconds. A game picked on the Games page goes first. A game of this
     // board needs no core switch, it streams in place
-    const ra_game_t *g = ra_patch_switch_to();
+    const ra_game_t *g = game_switch_to();
     games_pick_t pk;
     char message[80];
     if(games_picked(&pk)) {

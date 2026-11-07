@@ -33,7 +33,7 @@
 #include "menu.h"
 #include "sysctrl.h"
 #include "debug.h"
-#include "game20k/ra_patch.h"
+#include "game20k/game.h"
 #include "game20k/games.h"
 #include "game20k/menu_pages.h"
 #include "mcu_hw.h"
@@ -747,7 +747,7 @@ static void menu_page_open(const config_custom_t *page, int selected, int scroll
 /* Opens the list with its first achievement selected. The draw starts the timer
    that keeps it current. */
 static void menu_ra_list_open(void) {
-  menu_page_open(&ra_list, ra_patch_count() ? 1 : 0, 0);
+  menu_page_open(&ra_list, ra_list_first(), 0);
 }
 
 static const config_custom_t games_list = {
@@ -803,7 +803,7 @@ static void menu_draw(const config_menu_t *menu, int selected, int scroll) {
   // names the board's first game; the game the ROM was found to be names it
   // instead, e.g. Puck Man on the Pac-Man board
   const char *title = menu->label;
-  if(menu_is_root(menu) && ra_game_title()) title = ra_game_title();
+  if(menu_is_root(menu) && game_title()) title = game_title();
   menu_draw_title(title, !menu_is_root(menu), selected == 0);
 
   config_menu_entry_t *entry = menu->entries;

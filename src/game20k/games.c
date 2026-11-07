@@ -26,7 +26,7 @@
 #include "../debug.h"
 #include "../sdc.h"
 #include "menus.h"    // the boards this firmware has a core menu for
-#include "ra_patch.h" // RA_PATCH_ROM_IMAGE
+#include "ra_patch.h" // GAME_ROM_IMAGE
 #include "../menu.h"  // menu_notify()
 #include "games.h"
 
@@ -236,8 +236,8 @@ bool games_footer_of(const char *path, games_footer_t *out) {
 }
 
 void games_save_start(void) {
-  const char *cwd = sdc_get_cwd(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
-  const char *img = sdc_get_image_name(MAX_DRIVES + RA_PATCH_ROM_IMAGE);
+  const char *cwd = sdc_get_cwd(MAX_DRIVES + GAME_ROM_IMAGE);
+  const char *img = sdc_get_image_name(MAX_DRIVES + GAME_ROM_IMAGE);
   FIL f;
   FRESULT r;
   sdc_lock();

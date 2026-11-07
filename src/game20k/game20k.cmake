@@ -31,7 +31,7 @@ set_source_files_properties(${GAME20K_GAMES_TABLE} ${GAME20K_MENU_TABLE}
   PROPERTIES INCLUDE_DIRECTORIES ${GAME20K_DIR})
 
 set(GAME20K_SOURCES
-  banner.c core_boot.c game_switch.c games.c games_file.c menu_pages.c menus.c
+  banner.c core_boot.c game.c game_switch.c games.c games_file.c menu_pages.c menus.c
   ra_events.c ra_games.c ra_mac.c ra_net.c ra_patch.c ra_queue.c ra_slim.c ra_state.c
   ra_task.c ra_text.c ram_mirror.c)
 list(TRANSFORM GAME20K_SOURCES PREPEND ${GAME20K_DIR}/)

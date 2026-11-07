@@ -20,6 +20,7 @@ void menu_games_show(void);                /**< @brief Brings the Games page on 
 
 /* of menu_pages.c */
 int ra_list_length(void);         /**< @brief The achievement list: its lines. */
+int ra_list_first(void);          /**< @brief The achievement list: the line to open it on. */
 void ra_list_draw(void);          /**< @brief The achievement list: draws it. */
 void ra_list_select(int line);    /**< @brief The achievement list: the details of a line. */
 int games_list_length(void);      /**< @brief The Games page: its lines. */

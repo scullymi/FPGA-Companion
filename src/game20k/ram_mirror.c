@@ -91,7 +91,7 @@ static unsigned char ram_mirror_header(const unsigned char *hdr_tx) {
     ram_mirror_data  = data;
     ram_mirror_board = board;
     ram_mirror_tag   = tag;
-    ra_patch_board(board); /* whichever of probe or poll sees it first feeds the identity */
+    game_set_board(board); /* whichever of probe or poll sees it first feeds the identity */
     debugf("RAM mirror: layout %u, board %u, %u data bytes, interface tag %04x", RAM_MIRROR_LAYOUT, board,
            data, tag);
   } else if(!valid || data != ram_mirror_data || board != ram_mirror_board || tag != ram_mirror_tag) {
@@ -149,7 +149,7 @@ void ram_mirror_forget(void) {
   ram_mirror_resets  = -1;
   ram_mirror_frame   = -1;
   ram_mirror_verdict = 0xA5;
-  ra_patch_board(0);
+  game_set_board(0);
 }
 
 /* Read the header first. Byte 7 set means a harvest was running when the transfer

@@ -22,7 +22,7 @@
 #include "ram_mirror.h"
 
 /* A game of another board, e.g. galaga.rom picked in the Pac-Man core
-   (ra_patch_pick_other_board()), needs its core. The menu says so for a few
+   (game_pick_other_board()), needs its core. The menu says so for a few
    seconds, and a ROM picked meanwhile ends its stream (each within 10 s of its
    start). Unlocks, leaderboard results and FTP uploads go on across the switch.
    The game's id goes into the watchdog's scratch registers 0 to 3, which the SDK
@@ -33,7 +33,7 @@
    the RetroAchievements login, FTP and telnet stay. switch_rom() loads that
    game's ROM instead of image0 of the ini, once: power off brings back the saved
    game, "Save settings" keeps the new one, as before. The newest pick wins until
-   the marker is written, see ra_patch_switch_to(). Power on loads the first core
+   the marker is written, see game_switch_to(). Power on loads the first core
    of the ring again.
    The Pico restarts instead when the menu task does not stop in time, and when a
    core of the way does not come up: then it waits for the core at the start as
@@ -45,7 +45,7 @@
    A game of the running core's board needs no core switch, see play_here(). A known
    ROM of another game of this board picked under "ROM set", e.g. puckman.rom in
    the Pac-Man core, never comes here: its stream is all it takes, and the settle
-   at its end makes it the game (ra_patch_new_game()). */
+   at its end makes it the game (game_new()). */
 #define SWITCH_MAGIC   0x67323072u /* "g20r" */
 #define SWITCH_FILE    0x67323066u /* "g20f" */
 #define SWITCH_SHOW_MS 3000        /* the menu's message first */
@@ -102,13 +102,13 @@ static bool core_switch(void) {
 /* game20k: a game of the running core's board, picked on the Games page, streams in
    place: its ROM goes to the core as a pick under "ROM set" does, the core waits in
    reset until it is whole, and the settle at its end makes it the game, a known ROM
-   of another game with its own set, session and card folder (ra_patch_new_game()).
+   of another game with its own set, session and card folder (game_new()).
    The pick is fixed before its file is looked up, so a newer one waits for the next
    pass, and dropped once the stream runs: from then on the stream is the newest pick. */
 static void play_here(bool file, const games_pick_t *pk, const ra_game_t *g) {
-  const int drive = MAX_DRIVES + RA_PATCH_ROM_IMAGE;
+  const int drive = MAX_DRIVES + GAME_ROM_IMAGE;
   char path[FF_LFN_BUF + 6], name[FF_LFN_BUF + 1]; /* "/sd/" plus a file name, and the name */
-  if(!(file ? games_pick_commit(pk->seq) : ra_patch_switch_commit(g))) return;
+  if(!(file ? games_pick_commit(pk->seq) : game_switch_commit(g))) return;
   bool found = file ? games_find(pk->crc, path, sizeof(path))
                     : snprintf(path, sizeof(path), "%s/%s.rom", CARD_MOUNTPOINT, g->set) < (int)sizeof(path);
   int r      = 1;
@@ -120,7 +120,7 @@ static void play_here(bool file, const games_pick_t *pk, const ra_game_t *g) {
     r = name[0] ? sdc_image_open(drive, name) : 1;
   }
   if(file) games_pick_cancel();
-  else ra_patch_switch_cancel();
+  else game_switch_cancel();
   if(r)
     debugf("%s: %s not streamed (%d), the game goes on", file ? "Games" : "RA", found ? path : "the file", r);
   else debugf("%s: %s streams to the core, no restart", file ? "Games" : "RA", path);
@@ -136,7 +136,7 @@ bool switch_step(void) {
   // a pick on the Games page goes first, else the game a ROM picked under "ROM set" asks for
   games_pick_t pk;
   bool file          = games_picked(&pk);
-  const ra_game_t *g = file ? NULL : ra_patch_switch_to();
+  const ra_game_t *g = file ? NULL : game_switch_to();
   if(!file && !g) { /* none, or the ROM picked last took it back */
     start = 0;
     shown = 0;
@@ -163,7 +163,7 @@ bool switch_step(void) {
   if(now - start < pdMS_TO_TICKS(SWITCH_SHOW_MS)) return false;
   // a ROM picked last streams until its settle decides the target. Unlocks,
   // leaderboard results and FTP uploads go on across the switch
-  if(ra_patch_rom_streaming(SWITCH_WAIT_MS)) /* its own limit: also a pick made late wins */
+  if(game_rom_streaming(SWITCH_WAIT_MS)) /* its own limit: also a pick made late wins */
     return false;
   if(buttons_held()) return false; /* read again under the lock, this spares the menu a stop */
   // game20k: the menu task stops before the card lock, it may need the card to end
@@ -176,8 +176,8 @@ bool switch_step(void) {
   // fixed last, a pick can change it until then
   sdc_lock();
   bool held = board != ram_mirror_board && buttons_held();
-  if(held || ra_patch_rom_streaming(SWITCH_WAIT_MS) ||
-     !(file ? games_pick_commit(pk.seq) : ra_patch_switch_commit(g))) {
+  if(held || game_rom_streaming(SWITCH_WAIT_MS) ||
+     !(file ? games_pick_commit(pk.seq) : game_switch_commit(g))) {
     sdc_unlock();
     if(parked) menu_resume();
     return false;
@@ -193,7 +193,7 @@ bool switch_step(void) {
     debugf("Core switch for %s, board %u, without a restart", title, board);
     if(core_up()) {
       if(file) games_pick_cancel();
-      else ra_patch_switch_cancel();
+      else game_switch_cancel();
       return true;
     }
   } else {
@@ -211,12 +211,12 @@ bool switch_step(void) {
   debugf("Core switch: the core did not reload, its bitstream does not know Z");
   if(parked) menu_resume();
   if(file) games_pick_cancel();
-  else ra_patch_switch_cancel();
+  else game_switch_cancel();
   menu_notify(MENU_EVENT_CORE_SWITCH_FAILED);
   // the ROM now in the core decides again: a known ROM of another game of this
   // board, streamed while the switch was the target, becomes the game. A stream
   // that still runs settles by itself when it ends
-  if(!ra_patch_rom_pending()) ra_patch_settle();
+  if(!game_rom_pending()) game_settle();
   return false;
 }
 
@@ -305,7 +305,7 @@ void switch_rom(void) {
     debugf("Games: the file picked is gone from the card, the ini's ROM");
     return;
   } else debugf("Games: started with %s instead of the ini's ROM", path);
-  sdc_set_default(MAX_DRIVES + RA_PATCH_ROM_IMAGE, path);
+  sdc_set_default(MAX_DRIVES + GAME_ROM_IMAGE, path);
 }
 
 /* game20k: a switch to a core of another board hops the ring here, right after the
@@ -436,7 +436,7 @@ bool sys_core_changed(void) {
   }
   sdc_unlock();
   games_pick_cancel();
-  ra_patch_switch_cancel();
+  game_switch_cancel();
   marker[0] = 0; /* no game picked: switch_rom() leaves the ini's ROM */
   ram_mirror_forget();
   core_setup(ram_mirror_probe(), t0);
