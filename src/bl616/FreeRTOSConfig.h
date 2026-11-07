@@ -39,6 +39,8 @@
  *
  * See http://www.freertos.org/a00110.html.
  *----------------------------------------------------------*/
+// newer Bouffalo SDKs set both on the command line (components/os/freertos), with the same values
+#ifndef configMTIME_BASE_ADDRESS
 #if defined(BL602) || defined(BL702) || defined(BL702L)
 #define configMTIME_BASE_ADDRESS    (0x02000000UL + 0xBFF8UL)
 #define configMTIMECMP_BASE_ADDRESS (0x02000000UL + 0x4000UL)
@@ -49,6 +51,7 @@
 #else
 #define configMTIME_BASE_ADDRESS    ((0xE0000000UL) + 0xBFF8UL)
 #define configMTIMECMP_BASE_ADDRESS ((0xE0000000UL) + 0x4000UL)
+#endif
 #endif
 #endif
 #define configSUPPORT_STATIC_ALLOCATION         1
