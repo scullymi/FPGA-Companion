@@ -1402,12 +1402,6 @@ unsigned char mcu_hw_spi_tx_u08(unsigned char b) {
 }
 
 void mcu_hw_spi_end(void) {
-#ifdef GAME20K
-  // game20k: mcu_spi.v takes the last byte in the core clock, but reads the select without
-  // synchronising stages, so it stays low a little after the last SCK edge (SPI_CS_HOLD_NS
-  // in rp2040/mcu_hw.c, 200 ns, here the timer's 1 us)
-  bflb_mtimer_delay_us(1);
-#endif
   bflb_gpio_set(gpio, SPI_PIN_CSN);
   xSemaphoreGive(spi_sem);
 }
