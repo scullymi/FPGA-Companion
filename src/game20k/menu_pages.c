@@ -464,7 +464,7 @@ bool menu_page_event(long cmd) {
   }
   if(cmd == MENU_EVENT_ROM_OLD) {
     // game20k: a ROM file from before the footer, nothing went to the core
-    menu_draw_dialog_for("Old ROM file", "Rebuild the card\nwith make_sdcard.sh", pdMS_TO_TICKS(6000));
+    menu_draw_dialog_for("Old ROM file", "Rebuild the card\nwith g20k.py sdcard", pdMS_TO_TICKS(6000));
     return true;
   }
   if(cmd == MENU_EVENT_ROM_DAMAGED) {

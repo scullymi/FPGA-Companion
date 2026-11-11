@@ -1076,7 +1076,7 @@ int sdc_image_open(int drive, char *name) {
 #ifdef GAME20K
     // game20k: a ROM file ends with a footer that names its content (games_file.c).
     // A file without one is from before it, the core never gets it: the card is
-    // rebuilt with make_sdcard.sh
+    // rebuilt with g20k.py sdcard
     games_footer_t ft;
     if(!games_footer_read(&fil[drive], &ft)) {
       sdc_debugf("IMG %d: %s has no valid footer, an old ROM file, not sent", image, fname);
