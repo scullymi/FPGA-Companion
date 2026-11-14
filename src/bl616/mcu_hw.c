@@ -765,11 +765,15 @@ static void usbh_hid_client_thread(void *argument) {
     if (!hid->class->hport || !hid->class->hport->connected)
       break;
 
+    // No timeout: the URB stays queued until the device sends a report, and
+    // usbh_hid_callback wakes the task through hid->sem. A timeout equal to the
+    // poll interval expires just as reports arrive, and the kill of the URB
+    // on timeout races with its completion in the EHCI driver.
     usbh_int_urb_fill(&hid->class->intin_urb,
                       hid->class->hport,
                       hid->class->intin,
                       hid->buffer, len,
-                      hid_interval_ms,
+                      0,
                       usbh_hid_callback, hid);
 
     int ret = usbh_submit_urb(&hid->class->intin_urb);
@@ -1006,11 +1010,12 @@ static void usbh_xbox_client_thread(void *argument) {
     if (!xbox->class->hport || !xbox->class->hport->connected)
       break;
 
-    usbh_int_urb_fill(&xbox->class->intin_urb, 
-                    xbox->class->hport, 
-                    xbox->class->intin, 
+    // no timeout, as in usbh_hid_client_thread
+    usbh_int_urb_fill(&xbox->class->intin_urb,
+                    xbox->class->hport,
+                    xbox->class->intin,
                     xbox->buffer, XBOX_REPORT_SIZE,
-                    hid_interval_ms,
+                    0,
                     usbh_xbox_callback, xbox);
 
     int ret = usbh_submit_urb(&xbox->class->intin_urb);
