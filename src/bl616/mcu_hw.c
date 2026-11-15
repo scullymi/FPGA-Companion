@@ -72,6 +72,7 @@
 #include "timers.h"
 #include "bflb_irq.h"
 #include "../at_wifi.h"
+#include <time.h>
 
 //#define DEBUG_JTAG
 //#define DEBUG_TAP
@@ -735,7 +736,7 @@ static void usbh_hid_client_thread(void *argument) {
                     hid->class->hport,
                     hid->class->intin,
                     hid->buffer, len,
-                    hid_interval_ms,
+                    0,
                     usbh_hid_callback, hid);
 
   if (hid->class->hport->device_desc.idVendor == 0x2dc8 && hid->class->hport->device_desc.idProduct == 0x3105) {

@@ -1259,7 +1259,8 @@ static void menu_newcfg_key(uint8_t code) {
     menu_newcfg_create();
     menu_swallow_select();
     return;
-  } else if(code >= 32 && code < 127 && len < NEWCFG_MAX && !strchr("\\/:*?\"<>|", code)) {
+  } else if(code >= 32 && code < 127 && len < NEWCFG_MAX && !strchr("\\/:*?\"<>|;", code)) {
+    // ';' starts a comment in the ini, it would cut the name stored as selection
     newcfg.name[len] = code;
     newcfg.name[len+1] = '\0';
   } else
@@ -1400,7 +1401,14 @@ static bool menu_cfgsel_apply(const config_cfgsel_t *sel, const char *name, bool
   // 1. Hold the core in reset. It won't ask for any more sectors then. Wait
   //    until the sd card is done with whatever it was doing for the core.
   sys_set_val('R', 1);
-  sdc_wait_idle();
+  if(!sdc_wait_idle()) {
+    // still busy: swapping the images now could pull them away from a running transfer
+    menu_debugf("Config: sd card busy, not switching");
+    menu_switching = false;
+    menu_draw_dialog("Config", "SD card busy");
+    menu_core_release();
+    return false;
+  }
 
   // The config to switch to has to be there. Nothing is changed otherwise.
   if(!fresh && !inifile_exists(name)) {
@@ -2405,10 +2413,37 @@ static int about_length(void) {
   return 0;
 }
 
+#if __has_include("version.h")
+#include "version.h"
+#endif
+#ifndef FW_VERSION
+#define FW_VERSION "<no version>"
+#endif
+
 static void about_draw(void) {
   u8g2_DrawStr(&u8g2, 20, MENU_LINE_Y + 1*MENU_ENTRY_H, "FPGA Companion");
-  u8g2_DrawStr(&u8g2, 5, MENU_LINE_Y + 2*MENU_ENTRY_H, "(c) 2026 the MiSTle Team");
-  u8g2_DrawStr(&u8g2, 0, MENU_LINE_Y + 3*MENU_ENTRY_H, "http://github.com/mistle-dev");
+
+  // auto-center version string
+  int version_len = u8g2_GetStrWidth(&u8g2, FW_VERSION);
+  if(version_len <= 128)
+    u8g2_DrawStr(&u8g2, 64-version_len/2, MENU_LINE_Y + 2*MENU_ENTRY_H, FW_VERSION);
+  else {
+    // ellipsize version string
+    char str[version_len+1];
+    int ellipse_len =  u8g2_GetStrWidth(&u8g2, "...");
+    
+    strcpy(str, FW_VERSION);    
+    while(u8g2_GetStrWidth(&u8g2, str) > 128-ellipse_len)
+      str[strlen(str)-1] = '\0';
+
+    strcat(str, "...");    
+
+    version_len = u8g2_GetStrWidth(&u8g2, str);
+    u8g2_DrawStr(&u8g2, 64-version_len/2, MENU_LINE_Y + 2*MENU_ENTRY_H, str);
+  }
+
+  u8g2_DrawStr(&u8g2, 5, MENU_LINE_Y + 3*MENU_ENTRY_H, "(c) 2026 the MiSTle Team");
+  u8g2_DrawStr(&u8g2, 0, MENU_LINE_Y + 4*MENU_ENTRY_H, "http://github.com/mistle-dev");
 }
 
 const static config_custom_t about = {
