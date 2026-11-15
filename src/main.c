@@ -152,6 +152,14 @@ static void com_task(__attribute__((unused)) void *p ) {
     bool ra_started = false;
     TickType_t loop_start = xTaskGetTickCount();
     for(;;) {
+#ifdef ENABLE_JTAG
+      // while a core loads over JTAG the FPGA holds no core: an interrupt enabled here would
+      // read as a cold boot, whose handling deletes the menu task that runs the load
+      if(mcu_hw_jtag_is_active()) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
+#endif
       mcu_hw_irq_ack();  // (re-)enable interrupt
       /* wake at least every 20 ms to poll the RAM mirror, not only on an interrupt */
       if(ulTaskNotifyTake( pdTRUE, pdMS_TO_TICKS(20) ))
