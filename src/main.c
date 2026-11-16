@@ -97,8 +97,21 @@ static void com_task(__attribute__((unused)) void *p ) {
   marker_take();             /* game20k: the marker of a restart, first of all */
   
   // startup FPGA, this will also put the core into reset
-  if(sys_wait4fpga()) {
+  bool fpga_ready = sys_wait4fpga();
+#if defined(GAME20K) && defined(ENABLE_JTAG)
+  // game20k: an FPGA without a core, e.g. after a JTAG load cut short: RECONFIG over JTAG
+  // loads the first core of the flash again, the console comes back with it
+  if(!fpga_ready) {
+    debugf("No core in the FPGA, RECONFIG over JTAG");
+    mcu_hw_fpga_reconfig(true);
+    fpga_ready = sys_wait4fpga();
+  }
+#endif
+  if(fpga_ready) {
     // FPGA is ready and can be talked to
+#ifdef GAME20K_LOG_TAIL
+    log_tail_dump();          /* game20k: what a JTAG load that hung logged, see log_tail.c */
+#endif
 
     // initialitze SD card
     sdc_init();

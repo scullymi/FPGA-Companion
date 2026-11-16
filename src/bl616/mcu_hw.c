@@ -1816,6 +1816,20 @@ static void resume_hid(void) {
   }
 }
 
+/* game20k: a watchdog that resets the MCU after ms, 0 stops it. Guards a JTAG load, see
+   jtag_load() in game_switch.c: a load that hangs ends in a restart instead of a dead box. */
+void mcu_hw_watchdog(unsigned ms) {
+  struct bflb_device_s *wdg = bflb_device_get_by_name("watchdog0");
+  struct bflb_wdg_config_s wdg_cfg;
+  bflb_wdg_stop(wdg);
+  if (!ms) return;
+  wdg_cfg.clock_source = WDG_CLKSRC_32K;
+  wdg_cfg.clock_div = 31;  /* 1 kHz */
+  wdg_cfg.comp_val = ms > 65535 ? 65535 : ms;
+  wdg_cfg.mode = WDG_MODE_RESET;
+  bflb_wdg_init(wdg, &wdg_cfg);
+  bflb_wdg_start(wdg);
+}
 #endif
 
 extern void hid_keyboard_init(uint8_t busid, uintptr_t reg_base);

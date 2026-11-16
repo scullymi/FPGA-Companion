@@ -3,7 +3,13 @@
 
 #include <stdio.h>
 
+#ifdef GAME20K_LOG_TAIL
+// game20k: the BL616's lines also go into a tail a restart keeps, see game20k/log_tail.c
+#include "game20k/log_tail.h"
+#define debugf(x, ...)  log_tail_printf(x "\r\n", ##__VA_ARGS__)
+#else
 #define debugf(x, ...)  printf(x "\r\n", ##__VA_ARGS__)
+#endif
 
 /* ansi color codes: 
    31m 	Red
