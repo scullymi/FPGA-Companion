@@ -505,7 +505,7 @@ void sdc_set_default(int drive, const char *name) {
   
   // A valid filename will always begin with a mount point, the card's or a USB drive's
   size_t mp = strncasecmp(name, CARD_MOUNTPOINT, strlen(CARD_MOUNTPOINT)) == 0 ? strlen(CARD_MOUNTPOINT) :
-              strncasecmp(name, "/usb", 4) == 0 ? 4 : 0;
+              strncasecmp(name, "/usb/", 5) == 0 ? 4 : 0;
   if(mp) {
     // name should consist of path and image name
     char *p = strrchr(name+mp, '/');

@@ -92,6 +92,12 @@ static bool is_damaged(uint32_t crc) {
   return hit;
 }
 
+bool games_in_dir(const char *dir) {
+  for(unsigned d = 0; d < GAMES_DIRS; d++)
+    if(dir && !strcasecmp(dir, games_dirs[d])) return true;
+  return false;
+}
+
 /* True when a file of that name is in the list already. */
 static bool listed(uint32_t crc) {
   for(games_entry_t *e = list; e; e = e->next)

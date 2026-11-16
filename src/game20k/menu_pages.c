@@ -261,7 +261,7 @@ void games_list_select(int line) {
   const char *img = sdc_get_image_name(MAX_DRIVES + GAME_ROM_IMAGE);
   if(!games_item((unsigned)line, &it)) return;
   // the file that runs already, with no restart pending: nothing to start, the menu closes
-  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT) && games_name_crc(img) == it.crc && !game_switch_to() &&
+  if(img && games_in_dir(cwd) && games_name_crc(img) == it.crc && !game_switch_to() &&
      !games_picked(&pk)) {
     osd_enable(OSD_INVISIBLE);
     return;
@@ -283,7 +283,7 @@ int games_list_first(void) {
   int sel         = 0;
   games_read();
   // the running file's line, as games_list_select() tells it; lines count from 1
-  if(img && cwd && !strcmp(cwd, CARD_MOUNTPOINT)) sel = games_list_line(games_name_crc(img));
+  if(img && games_in_dir(cwd)) sel = games_list_line(games_name_crc(img));
   if(!sel && games_count()) sel = 1;
   return sel;
 }

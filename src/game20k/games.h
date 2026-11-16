@@ -60,6 +60,9 @@ bool games_pick_commit(unsigned seq);
 /** @brief Drops the pick, e.g. when the core switch failed. */
 void games_pick_cancel(void);
 
+/** @brief True when dir is a folder the list reads, the card's root or a USB drive's roms folder. */
+bool games_in_dir(const char *dir);
+
 /** @brief The ROM file whose name has that CRC-32, from the card's root or a USB drive's roms folder, its path into path. Caller holds no lock. */
 bool games_find(uint32_t crc, char *path, size_t n);
 
