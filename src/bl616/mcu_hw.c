@@ -764,7 +764,7 @@ static void usbh_hid_client_thread(void *argument) {
     usb_debugf("GET_REPORT ret=%d - device should reenumerate as 0079:181c", ret);
   }
 
-  // a kill of the previous client's URB may have left a give, see the end of the thread
+  // A kill of the previous client's URB may have left a give. See the end of the thread.
   xSemaphoreTake(hid->sem, 0);
   usb_debugf("HID client #%d: entering hid thread loop", hid->index);
 
@@ -846,8 +846,8 @@ static void usbh_hid_client_thread(void *argument) {
   }
 
   usb_debugf("HID client #%d: stopping", hid->index);
-  // a stop seen right after the submit leaves the URB queued. Killing it here keeps the
-  // next client of this slot from a busy URB, the give of its callback is taken there.
+  // A stop seen right after the submit leaves the URB queued. Killing it here keeps the
+  // next client of this slot from a busy URB. That client takes the give of the callback.
   usbh_kill_urb(&hid->class->intin_urb);
   for (uint8_t i = 0; i < hid->report_count; i++) {
     if (hid->hid_state[i].joystick.js_index != NO_JOYSTICK) {
@@ -983,6 +983,8 @@ static void usbh_xbox_client_thread(void *argument) {
   setup.wLength       = sizeof(dummy_report);
   ret = usbh_control_transfer(xbox->class->hport, &setup, dummy_report);
 
+  // Drained before xbox_init(), which waits on it too. See usbh_hid_client_thread.
+  xSemaphoreTake(xbox->sem, 0);
   xbox_init(xbox);
   usb_debugf("XBOX client #%d: all init packets sent", xbox->index);
 
@@ -1014,7 +1016,6 @@ static void usbh_xbox_client_thread(void *argument) {
       hid_interval_ms = xbox->class->intin->bInterval;
   }
   usb_debugf("USB XBOX hid_interval: %dms", xbox->class->intin->bInterval);
-  xSemaphoreTake(xbox->sem, 0);  // as in usbh_hid_client_thread
 
   while(1) {
     if (xbox->stop)
@@ -1806,8 +1807,8 @@ void stop_hid(void) {
 /* game20k: the clients stop_hid() paused for JTAG start again once the load is done, a
    core loaded without a restart of the MCU (game_switch.c) keeps its pads and keyboards.
    usbh_hid_stop and usbh_xbox_stop clear the pause of a device unplugged meanwhile.
-   stop_hid() wakes the threads, so they have ended by now. A client whose thread still
-   runs is left alone. */
+   stop_hid() wakes the threads that wait for a report. A client whose thread still runs,
+   e.g. an Xbox pad in xbox_init(), is left alone. */
 static void resume_hid(void) {
   struct usb_config *usb = &usb_config;
 
