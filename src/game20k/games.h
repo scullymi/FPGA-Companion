@@ -27,7 +27,7 @@ typedef struct {
   char title[GAMES_TITLE_MAX + 1]; /**< for the messages */
 } games_pick_t;
 
-/** @brief Reads the list from the card's root: every *.rom with a valid footer and a board of the table. Menu task only.
+/** @brief Reads the list from the card's root and a USB drive's roms folder: every *.rom with a valid footer and a board of the table. Menu task only.
  *
  *  Sorted by title. Files found damaged since the card last changed stay out. */
 void games_read(void);
@@ -59,7 +59,7 @@ bool games_pick_commit(unsigned seq);
 /** @brief Drops the pick, e.g. when the core switch failed. */
 void games_pick_cancel(void);
 
-/** @brief The file in the card's root whose name has that CRC-32, as "/sd/<name>" into path. Caller holds no lock. */
+/** @brief The ROM file whose name has that CRC-32, from the card's root or a USB drive's roms folder, its path into path. Caller holds no lock. */
 bool games_find(uint32_t crc, char *path, size_t n);
 
 /** @brief Reads the footer of the file at path. Caller holds no lock. False without a valid one. */

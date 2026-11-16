@@ -3,8 +3,9 @@
 /** @file games.c
  *  @brief The Games page's list, the game picked there and the start game.
  *
- *  The list is every *.rom in the card's root whose footer is valid (games_file.c)
- *  and names a board with a menu in this firmware (menus.h), sorted by title. It is read
+ *  The list is every *.rom in the card's root and in the roms folder of a USB drive whose
+ *  footer is valid (games_file.c) and names a board with a menu in this firmware (menus.h),
+ *  sorted by title. A name in both places is listed once, the card's file wins. It is read
  *  in the menu task when the page opens and when the card changed, one footer per
  *  file, and holds only titles and names. The content is checked when it streams
  *  to the core: sdc.c compares the SHA-256 the stream yields with the footer's, a
@@ -30,7 +31,7 @@
 #include "../menu.h" // menu_notify()
 #include "games.h"
 
-#define GAMES_PATH_MAX    (FF_LFN_BUF + 6) /**< "/sd/" plus a long file name plus the NUL */
+#define GAMES_PATH_MAX    (FF_LFN_BUF + 12) /**< "/usb/roms/" plus a long file name plus the NUL */
 #define GAMES_DAMAGED_MAX 4                /**< damaged files remembered, the oldest gives way */
 
 /* One line of the list: the title, then the file name, in one allocation. */
@@ -41,6 +42,10 @@ typedef struct games_entry {
   const char *name; // behind the title in text[]
   char text[];      // title NUL name NUL
 } games_entry_t;
+
+/* where the ROM files are, in the order a name is looked up */
+static const char *const games_dirs[] = { CARD_MOUNTPOINT, "/usb/roms" };
+#define GAMES_DIRS (sizeof(games_dirs) / sizeof(games_dirs[0]))
 
 static games_entry_t *list; // menu task only
 static unsigned list_n;
@@ -88,6 +93,13 @@ static bool is_damaged(uint32_t crc) {
   return hit;
 }
 
+/* True when a file of that name is in the list already. */
+static bool listed(uint32_t crc) {
+  for(games_entry_t *e = list; e; e = e->next)
+    if(e->crc == crc) return true;
+  return false;
+}
+
 /* Puts one file into the list at its place by title. */
 static void insert(const char *title, const char *name, uint32_t crc, unsigned char board) {
   size_t tl = strlen(title), nl = strlen(name);
@@ -120,12 +132,14 @@ void games_read(void) {
   list_n = 0;
   stale  = false; // before the read: a change while it runs reads again
   sdc_lock();
-  if(f_opendir(&dir, CARD_MOUNTPOINT) == FR_OK) {
+  // a folder that is not there, e.g. without a USB drive, adds nothing
+  for(unsigned d = 0; d < GAMES_DIRS; d++) {
+    if(f_opendir(&dir, games_dirs[d]) != FR_OK) continue;
     while(f_readdir(&dir, &fno) == FR_OK && fno.fname[0]) {
       size_t len = strlen(fno.fname);
       if((fno.fattrib & (AM_DIR | AM_HID | AM_SYS)) || len < 5 || strcasecmp(fno.fname + len - 4, ".rom"))
         continue;
-      snprintf(path, sizeof(path), "%s/%s", CARD_MOUNTPOINT, fno.fname);
+      snprintf(path, sizeof(path), "%s/%s", games_dirs[d], fno.fname);
       bool ok = f_open(&f, path, FA_READ) == FR_OK;
       if(ok) {
         ok = games_footer_read(&f, &ft);
@@ -146,6 +160,7 @@ void games_read(void) {
         bad++;
         continue;
       }
+      if(listed(crc)) continue; /* the same name in an earlier folder */
       snprintf(title, sizeof(title), "%s", ft.title[0] ? ft.title : ft.set[0] ? ft.set : fno.fname);
       insert(title, fno.fname, crc, ft.board);
     }
@@ -210,10 +225,11 @@ bool games_find(uint32_t crc, char *path, size_t n) {
   FILINFO fno;
   bool found = false;
   sdc_lock();
-  if(f_opendir(&dir, CARD_MOUNTPOINT) == FR_OK) {
+  for(unsigned d = 0; !found && d < GAMES_DIRS; d++) {
+    if(f_opendir(&dir, games_dirs[d]) != FR_OK) continue;
     while(!found && f_readdir(&dir, &fno) == FR_OK && fno.fname[0])
       if(!(fno.fattrib & AM_DIR) && games_name_crc(fno.fname) == crc) {
-        int len = snprintf(path, n, "%s/%s", CARD_MOUNTPOINT, fno.fname);
+        int len = snprintf(path, n, "%s/%s", games_dirs[d], fno.fname);
         found   = len > 0 && (size_t)len < n;
       }
     f_closedir(&dir);

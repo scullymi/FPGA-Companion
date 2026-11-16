@@ -2201,11 +2201,17 @@ static void menu_task(__attribute__((unused)) void *parms) {
       if ( (fres = f_mount(&usb_fs, "/usb", 1)) != FR_OK ) menu_debugf("/usb mount failed: %d", fres);
       else {
 	menu_debugf("/usb mounted");
+#ifdef GAME20K
+	games_changed(NULL);  // game20k: the drive's roms folder joins the Games page
+#endif
 	menu_draw_dialog("USB", "A USB mass storage device has been detected!");
       }
     } else if(cmd == MENU_EVENT_USB_UMOUNTED) {
       if (f_unmount("/usb") != FR_OK )	menu_debugf("/usb unmount failed");
       else	                        menu_debugf("/usb unmounted");
+#ifdef GAME20K
+      games_changed(NULL);    // game20k: its ROM files leave the Games page
+#endif
       menu_draw_dialog("USB", "A USB mass storage device has been removed!");
     }
 
