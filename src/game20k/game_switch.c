@@ -327,7 +327,7 @@ static bool usb_core(unsigned char board, char *path, size_t n) {
    empty default keeps an MCU without it building. */
 __attribute__((weak)) void mcu_hw_watchdog(unsigned ms) { (void)ms; }
 
-#define JTAG_WATCHDOG_MS 20000 /* a load takes 1.6 s, the wait for its core at most 10 s */
+#define JTAG_WATCHDOG_MS 20000 /* well above a load plus the waits for a core, FPGA_BOOT_TIMEOUT each */
 
 #ifdef GAME20K_LOG_TAIL
 #include "timers.h"
