@@ -764,6 +764,8 @@ static void usbh_hid_client_thread(void *argument) {
     usb_debugf("GET_REPORT ret=%d - device should reenumerate as 0079:181c", ret);
   }
 
+  // a kill of the previous client's URB may have left a give, see the end of the thread
+  xSemaphoreTake(hid->sem, 0);
   usb_debugf("HID client #%d: entering hid thread loop", hid->index);
 
   while (1) {
@@ -844,6 +846,9 @@ static void usbh_hid_client_thread(void *argument) {
   }
 
   usb_debugf("HID client #%d: stopping", hid->index);
+  // a stop seen right after the submit leaves the URB queued. Killing it here keeps the
+  // next client of this slot from a busy URB, the give of its callback is taken there.
+  usbh_kill_urb(&hid->class->intin_urb);
   for (uint8_t i = 0; i < hid->report_count; i++) {
     if (hid->hid_state[i].joystick.js_index != NO_JOYSTICK) {
       hid_release_joystick(hid->hid_state[i].joystick.js_index);
@@ -1009,6 +1014,7 @@ static void usbh_xbox_client_thread(void *argument) {
       hid_interval_ms = xbox->class->intin->bInterval;
   }
   usb_debugf("USB XBOX hid_interval: %dms", xbox->class->intin->bInterval);
+  xSemaphoreTake(xbox->sem, 0);  // as in usbh_hid_client_thread
 
   while(1) {
     if (xbox->stop)
@@ -1069,6 +1075,7 @@ static void usbh_xbox_client_thread(void *argument) {
   }
 
   usb_debugf("XBOX client #%d: stopping", xbox->index);
+  usbh_kill_urb(&xbox->class->intin_urb);  // as in usbh_hid_client_thread
   xbox->task_handle = NULL;
   vTaskDelete(NULL);
 }
@@ -1772,8 +1779,8 @@ void stop_hid(void) {
     if(usb->hid_info[i].state != STATE_NONE ) {
       usb_debugf("HID shutdown %d", i);
       usb->hid_info[i].stop = 1;
-      // the client waits for a report without a timeout, a device that sends none would
-      // keep it running: killing the URB calls usbh_hid_callback, which wakes it
+      // The client waits for a report without a timeout. A device that sends none would
+      // keep it running. Killing the URB calls usbh_hid_callback, which wakes it.
       if (usb->hid_info[i].task_handle && usb->hid_info[i].class)
         usbh_kill_urb(&usb->hid_info[i].class->intin_urb);
 #ifdef GAME20K
@@ -1798,9 +1805,9 @@ void stop_hid(void) {
 #ifdef GAME20K
 /* game20k: the clients stop_hid() paused for JTAG start again once the load is done, a
    core loaded without a restart of the MCU (game_switch.c) keeps its pads and keyboards.
-   usbh_hid_stop and usbh_xbox_stop clear the pause of a device unplugged meanwhile. The
-   threads ended in stop_hid(), a client whose thread still runs is left alone. A thread
-   that submitted its URB right before it saw the stop leaves it queued, it goes first. */
+   usbh_hid_stop and usbh_xbox_stop clear the pause of a device unplugged meanwhile.
+   stop_hid() wakes the threads, so they have ended by now. A client whose thread still
+   runs is left alone. */
 static void resume_hid(void) {
   struct usb_config *usb = &usb_config;
 
@@ -1808,7 +1815,6 @@ static void resume_hid(void) {
     if (!hid_paused[i] || usb->hid_info[i].task_handle) continue;
     hid_paused[i] = false;
     usb_debugf("HID resume %d", i);
-    if (usb->hid_info[i].class->intin_urb.hcpriv) usbh_kill_urb(&usb->hid_info[i].class->intin_urb);
     usb->hid_info[i].stop = 0;
     xTaskCreate(usbh_hid_client_thread, (char *)"hid_task", 1024,
                 &usb->hid_info[i], configMAX_PRIORITIES - 3, &usb->hid_info[i].task_handle);
@@ -1818,7 +1824,6 @@ static void resume_hid(void) {
     if (!xbox_paused[i] || usb->xbox_info[i].task_handle) continue;
     xbox_paused[i] = false;
     usb_debugf("HID xbox resume %d", i);
-    if (usb->xbox_info[i].class->intin_urb.hcpriv) usbh_kill_urb(&usb->xbox_info[i].class->intin_urb);
     usb->xbox_info[i].stop = 0;
     xTaskCreate(usbh_xbox_client_thread, (char *)"xbox_task", 2048,
                 &usb->xbox_info[i], configMAX_PRIORITIES - 3, &usb->xbox_info[i].task_handle);
