@@ -31,7 +31,6 @@
 #include "../menu.h" // menu_notify()
 #include "games.h"
 
-#define GAMES_PATH_MAX    (FF_LFN_BUF + 12) /**< "/usb/roms/" plus a long file name plus the NUL */
 #define GAMES_DAMAGED_MAX 4                /**< damaged files remembered, the oldest gives way */
 
 /* One line of the list: the title, then the file name, in one allocation. */

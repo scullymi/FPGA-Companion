@@ -110,7 +110,7 @@ static bool core_switch(void) {
    pass, and dropped once the stream runs: from then on the stream is the newest pick. */
 static void play_here(bool file, const games_pick_t *pk, const ra_game_t *g) {
   const int drive = MAX_DRIVES + GAME_ROM_IMAGE;
-  char path[FF_LFN_BUF + 6], name[FF_LFN_BUF + 1]; /* "/sd/" plus a file name, and the name */
+  char path[GAMES_PATH_MAX], name[FF_LFN_BUF + 1]; /* a ROM file's path, and its name */
   if(!(file ? games_pick_commit(pk->seq) : game_switch_commit(g))) return;
   bool found = file ? games_find(pk->crc, path, sizeof(path))
                     : snprintf(path, sizeof(path), "%s/%s.rom", CARD_MOUNTPOINT, g->set) < (int)sizeof(path);
@@ -290,7 +290,7 @@ void switch_rom(void) {
     banner_show_kept("SYS: CORE NOT IN FLASH", false, false);
     return;
   }
-  char path[FF_LFN_BUF + 6]; /* "/sd/" plus a file name */
+  char path[GAMES_PATH_MAX];
   if(g) {
     snprintf(path, sizeof(path), "/sd/%s.rom", g->set);
     // the switch went by the file name, the file is taken from the card's root: a

@@ -503,10 +503,12 @@ void sdc_set_default(int drive, const char *name) {
   sdc_debugf("set default %d: %s", drive, name);
   if(drive >= MAX_DRIVES+MAX_IMAGES) return;
   
-  // A valid filename will always begin with the mount point
-  if(strncasecmp(name, CARD_MOUNTPOINT, strlen(CARD_MOUNTPOINT)) == 0) {
+  // A valid filename will always begin with a mount point, the card's or a USB drive's
+  size_t mp = strncasecmp(name, CARD_MOUNTPOINT, strlen(CARD_MOUNTPOINT)) == 0 ? strlen(CARD_MOUNTPOINT) :
+              strncasecmp(name, "/usb", 4) == 0 ? 4 : 0;
+  if(mp) {
     // name should consist of path and image name
-    char *p = strrchr(name+strlen(CARD_MOUNTPOINT), '/');
+    char *p = strrchr(name+mp, '/');
     if(p && *p) {
       // not strndup(): that allocates from the libc heap while everything
       // here is released with vPortFree(), i.e. into the FreeRTOS heap. This

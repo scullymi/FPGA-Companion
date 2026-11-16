@@ -11,6 +11,7 @@
 #include "games_file.h"
 
 #define GAMES_START_FILE "/sd/games.ini" /**< "start=<file>", written by Save settings */
+#define GAMES_PATH_MAX   (FF_LFN_BUF + 12) /**< the path of a ROM file: "/usb/roms/" plus a long file name plus the NUL */
 
 /** @brief One line of the page, a copy for the menu. */
 typedef struct {
