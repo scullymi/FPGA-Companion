@@ -1772,6 +1772,10 @@ void stop_hid(void) {
     if(usb->hid_info[i].state != STATE_NONE ) {
       usb_debugf("HID shutdown %d", i);
       usb->hid_info[i].stop = 1;
+      // the client waits for a report without a timeout, a device that sends none would
+      // keep it running: killing the URB calls usbh_hid_callback, which wakes it
+      if (usb->hid_info[i].task_handle && usb->hid_info[i].class)
+        usbh_kill_urb(&usb->hid_info[i].class->intin_urb);
 #ifdef GAME20K
       hid_paused[i] = usb->hid_info[i].state == STATE_DETECTED;
 #endif
@@ -1782,6 +1786,8 @@ void stop_hid(void) {
     if(usb->xbox_info[i].state != STATE_NONE ) {
       usb_debugf("HID xbox shutdown %d", i);
       usb->xbox_info[i].stop = 1;
+      if (usb->xbox_info[i].task_handle && usb->xbox_info[i].class)
+        usbh_kill_urb(&usb->xbox_info[i].class->intin_urb);  // as for HID above
 #ifdef GAME20K
       xbox_paused[i] = usb->xbox_info[i].state == STATE_DETECTED;
 #endif
@@ -1792,8 +1798,9 @@ void stop_hid(void) {
 #ifdef GAME20K
 /* game20k: the clients stop_hid() paused for JTAG start again once the load is done, a
    core loaded without a restart of the MCU (game_switch.c) keeps its pads and keyboards.
-   A device unplugged meanwhile is no longer paused (usbh_hid_stop, usbh_xbox_stop), and
-   a client whose thread has not ended yet is left alone. */
+   usbh_hid_stop and usbh_xbox_stop clear the pause of a device unplugged meanwhile. The
+   threads ended in stop_hid(), a client whose thread still runs is left alone. A thread
+   that submitted its URB right before it saw the stop leaves it queued, it goes first. */
 static void resume_hid(void) {
   struct usb_config *usb = &usb_config;
 
@@ -1801,6 +1808,7 @@ static void resume_hid(void) {
     if (!hid_paused[i] || usb->hid_info[i].task_handle) continue;
     hid_paused[i] = false;
     usb_debugf("HID resume %d", i);
+    if (usb->hid_info[i].class->intin_urb.hcpriv) usbh_kill_urb(&usb->hid_info[i].class->intin_urb);
     usb->hid_info[i].stop = 0;
     xTaskCreate(usbh_hid_client_thread, (char *)"hid_task", 1024,
                 &usb->hid_info[i], configMAX_PRIORITIES - 3, &usb->hid_info[i].task_handle);
@@ -1810,6 +1818,7 @@ static void resume_hid(void) {
     if (!xbox_paused[i] || usb->xbox_info[i].task_handle) continue;
     xbox_paused[i] = false;
     usb_debugf("HID xbox resume %d", i);
+    if (usb->xbox_info[i].class->intin_urb.hcpriv) usbh_kill_urb(&usb->xbox_info[i].class->intin_urb);
     usb->xbox_info[i].stop = 0;
     xTaskCreate(usbh_xbox_client_thread, (char *)"xbox_task", 2048,
                 &usb->xbox_info[i], configMAX_PRIORITIES - 3, &usb->xbox_info[i].task_handle);
