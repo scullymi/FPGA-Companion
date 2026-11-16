@@ -11,7 +11,7 @@
  *
  *    static const char menu_galaga_hdmi[] = "<?xml version=\"1.0\" ...";
  *    const menus_entry_t menus_rows[] = {
- *      { 1, NULL, 0x1234u, menu_galaga_hdmi },
+ *      { 1, NULL, 0x1234u, menu_galaga_hdmi, "galaga_hdmi" },
  *    };
  *
  *  and a basic menu with the settings every game20k core has. */

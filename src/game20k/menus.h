@@ -21,6 +21,7 @@ typedef struct {
   const char *set;     /**< NULL for the board's menu, else the set this menu is for, ahead of the board's */
   uint16_t tag;        /**< IFACE_TAG of the core built from the same sources, header bytes 16 and 17 */
   const char *xml;     /**< the menu, as the Companion parses it */
+  const char *core;    /**< the core's folder, its bitstream is <core>.bin in a cores folder */
 } menus_entry_t;
 
 extern const menus_entry_t menus_rows[];

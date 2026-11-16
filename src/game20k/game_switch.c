@@ -18,6 +18,11 @@
 #include "game.h"
 #include "ra.h"
 #include "ram_mirror.h"
+#ifdef ENABLE_JTAG
+#include "../gowin.h"
+#include "../jtag.h"
+#include "menus.h"
+#endif
 
 /* A game of another board, e.g. galaga.rom picked in the Pac-Man core
    (game_pick_other_board()), needs its core. The menu says so for a few
@@ -306,6 +311,77 @@ void switch_rom(void) {
   sdc_set_default(MAX_DRIVES + GAME_ROM_IMAGE, path);
 }
 
+#ifdef ENABLE_JTAG
+/* game20k: the core of a board as a file on a USB drive, /usb/cores/<core>.bin with the
+   core's folder from the menu table. Caller holds sdc_lock. False without a drive, a row
+   for the board or the file. */
+static bool usb_core(unsigned char board, char *path, size_t n) {
+  const menus_entry_t *e = menus_by_board(board, NULL);
+  FILINFO fno;
+  if(!mcu_hw_usb_msc_present() || !e || !e->core) return false;
+  if(snprintf(path, n, "/usb/cores/%s.bin", e->core) >= (int)n) return false;
+  return f_stat(path, &fno) == FR_OK;
+}
+
+/* game20k: the watchdog of the MCU, see jtag_load(). The BL616 has one (mcu_hw.c), this
+   empty default keeps an MCU without it building. */
+__attribute__((weak)) void mcu_hw_watchdog(unsigned ms) { (void)ms; }
+
+#define JTAG_WATCHDOG_MS 20000 /* a load takes 1.6 s, the wait for its core at most 10 s */
+
+#ifdef GAME20K_LOG_TAIL
+#include "timers.h"
+#include "log_tail.h"
+#define JTAG_HANG_MS 8000 /* then the load hangs, see jtag_hangs() */
+
+/* game20k: a JTAG load that still runs after JTAG_HANG_MS. The timer task preempts the
+   hung task: RECONFIG over JTAG loads the flash's first core, the console gets out again,
+   and the log tail and the tasks' states show where the load stopped. The watchdog
+   restarts the MCU later. */
+static void jtag_hangs(TimerHandle_t t) {
+  (void)t;
+  mcu_hw_fpga_reconfig(true);
+  vTaskDelay(pdMS_TO_TICKS(600));
+  printf("\r\n==== the JTAG load hangs for %u ms ====\r\n", JTAG_HANG_MS);
+  log_tail_print_armed();
+  TaskStatus_t st[24];
+  UBaseType_t n = uxTaskGetSystemState(st, 24, NULL);
+  for(UBaseType_t i = 0; i < n; i++)
+    printf("task %-16s state %d prio %lu stack free %lu\r\n", st[i].pcTaskName, (int)st[i].eCurrentState,
+           (unsigned long)st[i].uxCurrentPriority, (unsigned long)st[i].usStackHighWaterMark);
+}
+#endif
+
+/* game20k: loads the core at path over JTAG in place of the ring's hops, caller holds
+   sdc_lock. The load erases the FPGA first: when it fails, RECONFIG over JTAG loads the
+   first core of the flash, and the ring goes on from there. False when no core answers
+   afterwards. While the FPGA is erased the console does not get out (it goes through
+   the FPGA): the log tail keeps the lines, and a load that hangs ends in a restart by the
+   watchdog, whose start prints them (log_tail.c, main.c). */
+static bool jtag_load(const char *path) {
+#ifdef GAME20K_LOG_TAIL
+  static TimerHandle_t hang;
+  if(!hang) hang = xTimerCreate("jtag hang", pdMS_TO_TICKS(JTAG_HANG_MS), pdFALSE, NULL, jtag_hangs);
+  log_tail_arm(true);
+  if(hang) xTimerStart(hang, 0);
+#endif
+  mcu_hw_watchdog(JTAG_WATCHDOG_MS);
+  if(!gowin_upload_core(path)) {
+    debugf("Core switch: %s did not load, the flash's first core instead", path);
+    jtag_open();
+    gowin_fpgaReset();
+    jtag_close();
+  }
+  bool up = sys_wait4fpga();
+  mcu_hw_watchdog(0);
+#ifdef GAME20K_LOG_TAIL
+  if(hang) xTimerStop(hang, 0);
+  log_tail_arm(false);
+#endif
+  return up;
+}
+#endif
+
 /* game20k: a switch to a core of another board hops the ring here, right after the
    first look at the header and before anything of the core is set up (menu,
    settings, ROM): one start of the Pico for the whole way instead of one per hop.
@@ -336,12 +412,37 @@ bool ring_hops(unsigned char *probe) {
   // starts the card anew: the card lock stays held from one hop to the next, and only
   // the core the way ends at is waited for, see below the loop
   bool locked = false;
+#ifdef ENABLE_JTAG
+  bool jtag_tried = false;
+#endif
   for(;;) {
     if(!HOPS_ORIGIN(hops) && !HOPS_COUNT(hops)) hops |= (uint32_t)ram_mirror_board << 16;
     bool back            = hops & HOPS_BACK;
     unsigned char target = back ? HOPS_ORIGIN(hops) : board;
     // the board reached, no header, or the end of the way: switch_rom() takes over
     if(!ram_mirror_board || target == ram_mirror_board) break;
+#ifdef ENABLE_JTAG
+    // game20k: the target's core on a USB drive loads over JTAG in one step, the same
+    // time for every core. Once per way: a file that does not bring up its board leaves
+    // the rest of the way to the ring, from the core that came up
+    if(!back && !jtag_tried) {
+      char path[64];
+      if(!locked) sdc_lock();
+      locked = true;
+      if(usb_core(target, path, sizeof(path))) {
+        jtag_tried = true;
+        debugf("Core switch for %s, board %u, over JTAG from %s", title, target, path);
+        if(!jtag_load(path)) {
+          debugf("Core switch: no core after the JTAG load, restart");
+          mcu_hw_reset(); /* the marker carries the way on */
+        }
+        ram_mirror_forget();
+        *probe = ram_mirror_probe();
+        hopped = true;
+        continue;
+      }
+    }
+#endif
     // back at the board of the pick: the whole round had no core of the game's board,
     // and the way back ends right here
     if(!back && HOPS_COUNT(hops) && ram_mirror_board == HOPS_ORIGIN(hops)) {
