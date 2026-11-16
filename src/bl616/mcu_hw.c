@@ -206,6 +206,12 @@ static void mcu_hw_jtag_init(void);
 #define STATE_DETECTED  1 
 #define STATE_RUNNING   2
 #define STATE_FAILED    3
+
+#ifdef GAME20K
+/* game20k: the clients stop_hid() paused for a JTAG load, see resume_hid() */
+static bool hid_paused[CONFIG_USBHOST_MAX_HID_CLASS];
+static bool xbox_paused[CONFIG_USBHOST_MAX_XBOX_CLASS];
+#endif
 #define NO_JOYSTICK 255
 
 #define XINPUT_GAMEPAD_DPAD_UP 0x0001
@@ -1174,6 +1180,9 @@ void usbh_hid_stop(struct usbh_hid *hid_class)
 {
   uint8_t i = hid_class->minor;
   usb_config.hid_info[i].stop = 1;
+#ifdef GAME20K
+  hid_paused[i] = false;
+#endif
 
   for (uint8_t report = 0;
        report < usb_config.hid_info[i].report_count; report++) {
@@ -1227,6 +1236,9 @@ void usbh_xbox_run(struct usbh_xbox *xbox_class) {
 void usbh_xbox_stop(struct usbh_xbox *xbox_class) {
   uint8_t i = xbox_class->minor;
   usb_config.xbox_info[i].stop = 1;
+#ifdef GAME20K
+  xbox_paused[i] = false;
+#endif
 
   if (usb_config.xbox_info[i].js_index != NO_JOYSTICK) {
     hid_release_joystick(usb_config.xbox_info[i].js_index);
@@ -1760,6 +1772,9 @@ void stop_hid(void) {
     if(usb->hid_info[i].state != STATE_NONE ) {
       usb_debugf("HID shutdown %d", i);
       usb->hid_info[i].stop = 1;
+#ifdef GAME20K
+      hid_paused[i] = usb->hid_info[i].state == STATE_DETECTED;
+#endif
     }
   }
 
@@ -1767,9 +1782,41 @@ void stop_hid(void) {
     if(usb->xbox_info[i].state != STATE_NONE ) {
       usb_debugf("HID xbox shutdown %d", i);
       usb->xbox_info[i].stop = 1;
+#ifdef GAME20K
+      xbox_paused[i] = usb->xbox_info[i].state == STATE_DETECTED;
+#endif
     }
   }
  }
+
+#ifdef GAME20K
+/* game20k: the clients stop_hid() paused for JTAG start again once the load is done, a
+   core loaded without a restart of the MCU (game_switch.c) keeps its pads and keyboards.
+   A device unplugged meanwhile is no longer paused (usbh_hid_stop, usbh_xbox_stop), and
+   a client whose thread has not ended yet is left alone. */
+static void resume_hid(void) {
+  struct usb_config *usb = &usb_config;
+
+  for (int i = 0; i < CONFIG_USBHOST_MAX_HID_CLASS; i++) {
+    if (!hid_paused[i] || usb->hid_info[i].task_handle) continue;
+    hid_paused[i] = false;
+    usb_debugf("HID resume %d", i);
+    usb->hid_info[i].stop = 0;
+    xTaskCreate(usbh_hid_client_thread, (char *)"hid_task", 1024,
+                &usb->hid_info[i], configMAX_PRIORITIES - 3, &usb->hid_info[i].task_handle);
+  }
+
+  for (int i = 0; i < CONFIG_USBHOST_MAX_XBOX_CLASS; i++) {
+    if (!xbox_paused[i] || usb->xbox_info[i].task_handle) continue;
+    xbox_paused[i] = false;
+    usb_debugf("HID xbox resume %d", i);
+    usb->xbox_info[i].stop = 0;
+    xTaskCreate(usbh_xbox_client_thread, (char *)"xbox_task", 2048,
+                &usb->xbox_info[i], configMAX_PRIORITIES - 3, &usb->xbox_info[i].task_handle);
+  }
+}
+
+#endif
 
 extern void hid_keyboard_init(uint8_t busid, uintptr_t reg_base);
 extern int bl_sys_reset_por(void);
@@ -3064,6 +3111,9 @@ void mcu_hw_fpga_resume_spi(void) {
   bflb_gpio_int_clear(gpio, SPI_PIN_IRQ);
   bflb_irq_enable(gpio->irq_num);
   jtag_is_active = false;
+#ifdef GAME20K
+  resume_hid();
+#endif
 }
 void mcu_hw_jtag_toggleClk(uint32_t clk_len)
 {
