@@ -236,11 +236,17 @@ bool games_list_reread(void) {
 
 void games_list_draw(void) {
   const int width = u8g2_GetDisplayWidth(&u8g2);
+  int room        = width - 2; // for the title
   menu_page_font();
   if(!games_count()) {
     u8g2_DrawStr(&u8g2, 1, menu_page_y(0), "No games on the card");
     return;
   }
+#ifdef ENABLE_JTAG
+  // where the core comes from on the right, every title cut to the same room, so the
+  // column stays straight
+  room -= u8g2_GetStrWidth(&u8g2, "Flash") + 4;
+#endif
   for(int row = 0; row < 4; row++) {
     games_item_t it;
     char title[GAMES_TITLE_MAX + 4];
@@ -248,8 +254,12 @@ void games_list_draw(void) {
     if(!games_item((unsigned)i, &it)) break;
     int y = menu_page_y(row);
     snprintf(title, sizeof(title), "%s", it.title);
-    menu_ellipsize(title, width - 2);
+    menu_ellipsize(title, room);
     u8g2_DrawStr(&u8g2, 1, y, title);
+#ifdef ENABLE_JTAG
+    const char *src = it.core == GAMES_CORE_USB ? "USB" : "Flash";
+    u8g2_DrawStr(&u8g2, width - u8g2_GetStrWidth(&u8g2, src) - 1, y, src);
+#endif
     if(menu_page_selected() == i + 1) u8g2_DrawButtonFrame(&u8g2, 0, y, U8G2_BTN_INV, width, 1, 1);
   }
 }

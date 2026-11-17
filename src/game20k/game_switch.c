@@ -21,7 +21,6 @@
 #ifdef ENABLE_JTAG
 #include "../gowin.h"
 #include "../jtag.h"
-#include "menus.h"
 #endif
 
 /* A game of another board, e.g. galaga.rom picked in the Pac-Man core
@@ -312,17 +311,6 @@ void switch_rom(void) {
 }
 
 #ifdef ENABLE_JTAG
-/* game20k: the core of a board as a file on a USB drive, /usb/cores/<core>.bin with the
-   core's folder from the menu table. Caller holds sdc_lock. False without a drive, a row
-   for the board or the file. */
-static bool usb_core(unsigned char board, char *path, size_t n) {
-  const menus_entry_t *e = menus_by_board(board, NULL);
-  FILINFO fno;
-  if(!mcu_hw_usb_msc_present() || !e || !e->core) return false;
-  if(snprintf(path, n, "/usb/cores/%s.bin", e->core) >= (int)n) return false;
-  return f_stat(path, &fno) == FR_OK;
-}
-
 /* game20k: the watchdog of the MCU, see jtag_load(). The BL616 has one (mcu_hw.c), this
    empty default keeps an MCU without it building. */
 __attribute__((weak)) void mcu_hw_watchdog(unsigned ms) { (void)ms; }
@@ -426,10 +414,10 @@ bool ring_hops(unsigned char *probe) {
     // time for every core. Once per way: a file that does not bring up its board leaves
     // the rest of the way to the ring, from the core that came up
     if(!back && !jtag_tried) {
-      char path[64];
+      char path[GAMES_PATH_MAX];
       if(!locked) sdc_lock();
       locked = true;
-      if(usb_core(target, path, sizeof(path))) {
+      if(games_usb_core(target, path, sizeof(path))) {
         jtag_tried = true;
         debugf("Core switch for %s, board %u, over JTAG from %s", title, target, path);
         if(!jtag_load(path)) {

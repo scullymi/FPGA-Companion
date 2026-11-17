@@ -11,13 +11,20 @@
 #include "games_file.h"
 
 #define GAMES_START_FILE "/sd/games.ini"   /**< "start=<file>", written by Save settings */
-#define GAMES_PATH_MAX   (FF_LFN_BUF + 12) /**< a ROM path: "/usb/roms/", a long file name, the NUL */
+#define GAMES_PATH_MAX   (FF_LFN_BUF + 12) /**< a ROM or core path: "/usb/roms/", a long name, the NUL */
+
+/** @brief Where the core of a game's board comes from when a switch needs it. */
+typedef enum {
+  GAMES_CORE_FLASH, /**< the flash ring, the only way without JTAG */
+  GAMES_CORE_USB    /**< its file in a USB drive's cores folder, over JTAG, see games_usb_core() */
+} games_core_t;
 
 /** @brief One line of the page, a copy for the menu. */
 typedef struct {
   char title[GAMES_TITLE_MAX + 1]; /**< the footer's title, else the file name, cut */
   uint32_t crc;                    /**< CRC-32 of the file name, what a core switch carries */
   unsigned char board;             /**< board id from the footer */
+  games_core_t core;               /**< where its core comes from, as the list was read */
 } games_item_t;
 
 /** @brief The game picked on the page, until the core switch takes it. */
@@ -65,6 +72,12 @@ bool games_in_dir(const char *dir);
 
 /** @brief The ROM file whose name has that CRC-32, from the card's root or a USB drive's roms folder, its path into path. Caller holds no lock. */
 bool games_find(uint32_t crc, char *path, size_t n);
+
+/** @brief The core of a board as a file on a USB drive, /usb/cores/<core>.bin with the core's folder from the menu table, its path into path. Caller holds sdc_lock.
+ *
+ *  False without a drive, a row for the board or the file, or when the path does not fit
+ *  (GAMES_PATH_MAX is enough). Built only with ENABLE_JTAG, no other way loads such a file. */
+bool games_usb_core(unsigned char board, char *path, size_t n);
 
 /** @brief Reads the footer of the file at path. Caller holds no lock. False without a valid one. */
 bool games_footer_of(const char *path, games_footer_t *out);

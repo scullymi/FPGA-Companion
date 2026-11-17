@@ -9,7 +9,9 @@
  *  in the menu task when the page opens and when the card changed, one footer per
  *  file, and holds only titles and names. The content is checked when it streams
  *  to the core: sdc.c compares the SHA-256 the stream yields with the footer's, a
- *  file that fails stays off the list until the card changes.
+ *  file that fails stays off the list until the card changes. With JTAG, each line also
+ *  says where its board's core would come from: a file in the drive's cores folder
+ *  (games_usb_core()), else the flash ring.
  *
  *  A game picked on the page reaches game_switch.c as the CRC-32 of its file name and its
  *  board: switch_step() switches the core for another board, and switch_rom()
@@ -25,6 +27,7 @@
 #include <task.h>
 #include <ff.h>
 #include "../debug.h"
+#include "../mcu_hw.h" // ENABLE_JTAG, mcu_hw_usb_msc_present()
 #include "../sdc.h"
 #include "menus.h"   // the boards this firmware has a core menu for
 #include "game.h"    // GAME_ROM_IMAGE
@@ -38,6 +41,7 @@ typedef struct games_entry {
   struct games_entry *next;
   uint32_t crc; // of the file name
   unsigned char board;
+  games_core_t core;
   const char *name; // behind the title in text[]
   char text[];      // title NUL name NUL
 } games_entry_t;
@@ -105,8 +109,34 @@ static bool listed(uint32_t crc) {
   return false;
 }
 
+#ifdef ENABLE_JTAG
+bool games_usb_core(unsigned char board, char *path, size_t n) {
+  const menus_entry_t *e = menus_by_board(board, NULL);
+  FILINFO fno;
+  if(!mcu_hw_usb_msc_present() || !e || !e->core) return false;
+  int len = snprintf(path, n, "/usb/cores/%s.bin", e->core);
+  if(len < 0 || (size_t)len >= n) return false;
+  return f_stat(path, &fno) == FR_OK;
+}
+#endif
+
+/* Where the core of board comes from, caller holds sdc_lock. A board in the list already
+   has its answer there, so the drive is asked once per board and read. */
+static games_core_t core_of(unsigned char board) {
+#ifdef ENABLE_JTAG
+  char path[GAMES_PATH_MAX];
+  for(games_entry_t *e = list; e; e = e->next)
+    if(e->board == board) return e->core;
+  return games_usb_core(board, path, sizeof(path)) ? GAMES_CORE_USB : GAMES_CORE_FLASH;
+#else
+  (void)board;
+  return GAMES_CORE_FLASH;
+#endif
+}
+
 /* Puts one file into the list at its place by title. */
 static void insert(const char *title, const char *name, uint32_t crc, unsigned char board) {
+  games_core_t core = core_of(board);
   size_t tl = strlen(title), nl = strlen(name);
   games_entry_t *e = pvPortMalloc(sizeof(*e) + tl + nl + 2), **at = &list;
   if(!e) return;
@@ -115,6 +145,7 @@ static void insert(const char *title, const char *name, uint32_t crc, unsigned c
   e->name  = e->text + tl + 1;
   e->crc   = crc;
   e->board = board;
+  e->core  = core;
   while(*at && games_order((*at)->text, (*at)->name, title, name) <= 0) at = &(*at)->next;
   e->next = *at;
   *at     = e;
@@ -185,6 +216,7 @@ bool games_item(unsigned i, games_item_t *out) {
   snprintf(out->title, sizeof(out->title), "%s", e->text);
   out->crc   = e->crc;
   out->board = e->board;
+  out->core  = e->core;
   return true;
 }
 
