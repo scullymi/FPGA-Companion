@@ -43,14 +43,14 @@ typedef struct {
 #define tail (*(tail_t *)0x20010800u)
 _Static_assert(sizeof(tail_t) <= 2048, "the tail must fit 2 KB of HBN RAM");
 
-static bool checked; /* the first line of this run has looked at the ring */
+static bool checked;      /* the first line of this run has looked at the ring */
 static uint32_t armed_at; /* head when the part was armed */
-static bool frozen;  /* the ring holds an armed run's tail, kept until log_tail_dump() */
+static bool frozen;       /* the ring holds an armed run's tail, kept until log_tail_dump() */
 
 void log_tail_printf(const char *fmt, ...) {
   char line[LINE_MAX];
   va_list ap;
-  int n = snprintf(line, sizeof(line), "[%lu] ", (unsigned long)xTaskGetTickCount());
+  int n     = snprintf(line, sizeof(line), "[%lu] ", (unsigned long)xTaskGetTickCount());
   int start = n;
   va_start(ap, fmt);
   n += vsnprintf(line + n, sizeof(line) - n, fmt, ap);
@@ -127,11 +127,11 @@ void __wrap_exception_entry(uintptr_t *regs) {
   __asm__ volatile("csrr %0, mtval" : "=r"(tval));
   // ecalls come back, only real faults are kept (the SDK returns for causes 8 and 11)
   if((cause & 0x3ff) != 8 && (cause & 0x3ff) != 11) {
-    tail.magic   = TAIL_MAGIC;
-    tail.trap[0] = cause ? cause : 0x80000000u; /* never 0, that means none */
-    tail.trap[1] = epc;
-    tail.trap[2] = tval;
-    tail.trap[3] = regs ? regs[1] : 0; /* x1, ra, in the frame of vector.S */
+    tail.magic       = TAIL_MAGIC;
+    tail.trap[0]     = cause ? cause : 0x80000000u; /* never 0, that means none */
+    tail.trap[1]     = epc;
+    tail.trap[2]     = tval;
+    tail.trap[3]     = regs ? regs[1] : 0; /* x1, ra, in the frame of vector.S */
     const char *name = pcTaskGetName(NULL);
     for(int i = 0; i < 16; i++) tail.trap_task[i] = name ? name[i] : 0;
   }

@@ -261,8 +261,7 @@ void games_list_select(int line) {
   const char *img = sdc_get_image_name(MAX_DRIVES + GAME_ROM_IMAGE);
   if(!games_item((unsigned)line, &it)) return;
   // the file that runs already, with no restart pending: nothing to start, the menu closes
-  if(img && games_in_dir(cwd) && games_name_crc(img) == it.crc && !game_switch_to() &&
-     !games_picked(&pk)) {
+  if(img && games_in_dir(cwd) && games_name_crc(img) == it.crc && !game_switch_to() && !games_picked(&pk)) {
     osd_enable(OSD_INVISIBLE);
     return;
   }

@@ -31,7 +31,7 @@
 #include "../menu.h" // menu_notify()
 #include "games.h"
 
-#define GAMES_DAMAGED_MAX 4                /**< damaged files remembered, the oldest gives way */
+#define GAMES_DAMAGED_MAX 4 /**< damaged files remembered, the oldest gives way */
 
 /* One line of the list: the title, then the file name, in one allocation. */
 typedef struct games_entry {
@@ -43,7 +43,7 @@ typedef struct games_entry {
 } games_entry_t;
 
 /* where the ROM files are, in the order a name is looked up */
-static const char *const games_dirs[] = { CARD_MOUNTPOINT, "/usb/roms" };
+static const char *const games_dirs[] = {CARD_MOUNTPOINT, "/usb/roms"};
 #define GAMES_DIRS (sizeof(games_dirs) / sizeof(games_dirs[0]))
 
 static games_entry_t *list; // menu task only
