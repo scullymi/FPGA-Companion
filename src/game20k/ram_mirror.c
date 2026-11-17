@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 scullymi */
 /** @file ram_mirror.c
  *  @brief The RAM mirror on SPI target 5: header, snapshot and its checks, the back channel to the core. */
+#include <stdio.h>
 #include <string.h>
 
 #include "../mcu_hw.h"
@@ -16,16 +17,17 @@
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
    as the first byte of the next transfer. The seven constants are the same for every
-   game and must match ram_mirror_pkg.sv of the game20k FPGA platform. Layout 5: a
-   header of 24 bytes, in it the core's reset count (byte 8), its diagnostic
+   game and must match ram_mirror_pkg.sv of the game20k FPGA platform. Layout 6: a
+   header of 32 bytes, in it the core's reset count (byte 8), its diagnostic
    parameters (byte 9) and their complements (bytes 10 and 11), the board id of the
    core (byte 12, its complement in 13), the game RAM in the mirror in units of
    RAM_MIRROR_PAGE bytes (byte 14, its complement in 15) and the core's interface tag
    (bytes 16 and 17, low byte first, the complements in 18 and 19), which picks the
-   menu (menus.h). Bytes 20 to 23 are 0. Each core sends its own length, the buffers
-   here hold the largest one. */
-#define RAM_MIRROR_LAYOUT    0x05 /* header byte 4 */
-#define RAM_MIRROR_HEAD      24
+   menu (menus.h). Bytes 20 to 27 carry the board in each slot of the configuration
+   flash, valid when byte 28 is 1 and 29 its complement (flash_scan.sv), bytes 30 and
+   31 are 0. Each core sends its own length, the buffers here hold the largest one. */
+#define RAM_MIRROR_LAYOUT    0x06 /* header byte 4 */
+#define RAM_MIRROR_HEAD      32
 #define RAM_MIRROR_DATA_MAX  22528 /* largest game RAM a core may announce */
 #define RAM_MIRROR_LOG       1536  /* oracle log, 512 x 3 bytes */
 #define RAM_MIRROR_TAIL      8     /* footer: frame, flags, checksum, log count */
@@ -40,8 +42,10 @@ static unsigned char ram_mirror_seen[RAM_MIRROR_DATA_MAX / 8];
 /* the running core's game RAM in the mirror, byte 14 x RAM_MIRROR_PAGE, 0 until a
    valid header was read; com_task only */
 static unsigned ram_mirror_data;
-unsigned char ram_mirror_board; /* its board id, byte 12, adopted with the length */
-uint16_t ram_mirror_tag;        /* its interface tag, bytes 16 and 17, adopted with them */
+unsigned char ram_mirror_board;                   /* its board id, byte 12, adopted with the length */
+uint16_t ram_mirror_tag;                          /* its interface tag, bytes 16 and 17, adopted with them */
+unsigned char ram_mirror_slots[RAM_MIRROR_SLOTS]; /* the flash's slots, bytes 20 to 27 */
+bool ram_mirror_slots_known;                      /* ram_mirror_slots holds the scan of the running core */
 
 /* Reads the header of one transfer, full duplex: hdr_tx goes to the FPGA meanwhile.
    Shared by the probe at boot and the poll. Returns 0 with SPI still open and the
@@ -111,6 +115,16 @@ static unsigned char ram_mirror_header(const unsigned char *hdr_tx) {
     mcu_hw_spi_end();
     return ram_mirror_verdict = 0xE3;
   }
+  // the flash's slots once the core's scan is done, it may finish after the first header
+  if(!ram_mirror_slots_known && ram_mirror_buf[28] == 1 && ram_mirror_buf[29] == 0xFE) {
+    char line[RAM_MIRROR_SLOTS * 4 + 1];
+    size_t n = 0;
+    memcpy(ram_mirror_slots, ram_mirror_buf + 20, RAM_MIRROR_SLOTS);
+    ram_mirror_slots_known = true;
+    for(int i = 0; i < RAM_MIRROR_SLOTS; i++)
+      n += (size_t)snprintf(line + n, sizeof(line) - n, " %u", ram_mirror_slots[i]);
+    debugf("RAM mirror: flash slots%s", line);
+  }
   return 0;
 }
 
@@ -142,12 +156,13 @@ unsigned char ram_mirror_probe(void) {
 
 /* game20k: another core came up, its header is read anew as at the start */
 void ram_mirror_forget(void) {
-  ram_mirror_data    = 0;
-  ram_mirror_board   = 0;
-  ram_mirror_tag     = 0;
-  ram_mirror_resets  = -1;
-  ram_mirror_frame   = -1;
-  ram_mirror_verdict = 0xA5;
+  ram_mirror_data        = 0;
+  ram_mirror_board       = 0;
+  ram_mirror_tag         = 0;
+  ram_mirror_slots_known = false;
+  ram_mirror_resets      = -1;
+  ram_mirror_frame       = -1;
+  ram_mirror_verdict     = 0xA5;
   game_set_board(0);
 }
 
