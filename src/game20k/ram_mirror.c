@@ -46,7 +46,7 @@ static unsigned char ram_mirror_seen[RAM_MIRROR_DATA_MAX / 8];
 static unsigned ram_mirror_data;
 unsigned char ram_mirror_board;                   /* its board id, byte 12, adopted with the length */
 uint16_t ram_mirror_tag;                          /* its interface tag, bytes 16 and 17, adopted with them */
-unsigned char ram_mirror_slots[RAM_MIRROR_SLOTS]; /* the flash's slots, bytes 20 to 27 */
+unsigned char ram_mirror_slots[RAM_MIRROR_SLOTS]; /* the flash's slots, bytes 22 to 29 */
 bool ram_mirror_slots_known;                      /* ram_mirror_slots holds the scan of the running core */
 
 /* Reads the header of one transfer, full duplex: hdr_tx goes to the FPGA meanwhile.
