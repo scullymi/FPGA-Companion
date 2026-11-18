@@ -34,7 +34,7 @@ option(GAME20K_RA "RetroAchievements, without it no network client and no achiev
 
 set(GAME20K_SOURCES
   banner.c core_boot.c game.c game_switch.c games.c games_file.c menu_pages.c menus.c
-  ra_games.c ram_mirror.c)
+  ra_games.c ram_mirror.c stone.c)
 if(GAME20K_RA)
   list(APPEND GAME20K_SOURCES ra_events.c ra_mac.c ra_net.c ra_patch.c ra_queue.c ra_slim.c
     ra_state.c ra_task.c ra_text.c)

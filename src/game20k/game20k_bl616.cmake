@@ -10,10 +10,17 @@ if(GAME20K_RA)
   message(FATAL_ERROR "GAME20K_RA is not built for the BL616, set -DGAME20K_RA=OFF")
 endif()
 
+# the stepping stone, a C file g20k.py firmware generates from fpga/stone/stone.bin, see stone.c
+if(NOT DEFINED GAME20K_STONE)
+  message(FATAL_ERROR "GAME20K_STONE names no file, build the firmware with g20k.py firmware --bl616")
+endif()
+message(STATUS "game20k: stepping stone ${GAME20K_STONE}")
+set_source_files_properties(${GAME20K_STONE} PROPERTIES INCLUDE_DIRECTORIES ${GAME20K_DIR})
+
 # log_tail.c: the console of the BL616 goes out through the FPGA, the tail keeps what a
 # JTAG load with the FPGA erased logs
 target_sources(app PRIVATE ${GAME20K_SOURCES} ${GAME20K_GAMES_TABLE} ${GAME20K_MENU_TABLE}
-  ${RCHEEVOS_SOURCES} ${GAME20K_DIR}/log_tail.c)
+  ${GAME20K_STONE} ${RCHEEVOS_SOURCES} ${GAME20K_DIR}/log_tail.c)
 sdk_add_include_directories(${RCHEEVOS_DIR}/include ${RCHEEVOS_DIR}/src)
 # a CPU exception goes into the log tail before the SDK's handler restarts, see log_tail.c
 sdk_add_link_options(-Wl,--wrap=exception_entry)
