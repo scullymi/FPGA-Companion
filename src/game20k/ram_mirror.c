@@ -16,16 +16,18 @@
 
 /* RAM mirror on SPI target 5: each poll reads the header and, if there is a new
    snapshot, fetches the game RAM plus the oracle log, checks it, and sends the verdict
-   as the first byte of the next transfer. The seven constants are the same for every
-   game and must match ram_mirror_pkg.sv of the game20k FPGA platform. Layout 6: a
+   as the first byte of the next transfer. The constants are the same for every game
+   and must match ram_mirror_pkg.sv of the game20k FPGA platform (RAM_MIRROR_SLOTS in
+   ram_mirror.h). Layout 6: a
    header of 32 bytes, in it the core's reset count (byte 8), its diagnostic
    parameters (byte 9) and their complements (bytes 10 and 11), the board id of the
    core (byte 12, its complement in 13), the game RAM in the mirror in units of
    RAM_MIRROR_PAGE bytes (byte 14, its complement in 15) and the core's interface tag
    (bytes 16 and 17, low byte first, the complements in 18 and 19), which picks the
-   menu (menus.h). Bytes 20 to 27 carry the board in each slot of the configuration
-   flash, valid when byte 28 is 1 and 29 its complement (flash_scan.sv), bytes 30 and
-   31 are 0. Each core sends its own length, the buffers here hold the largest one. */
+   menu (menus.h). Byte 20 is 1 once the core's scan of the configuration flash is
+   done, 21 its complement, and bytes 22 to 29 carry the board in each of its slots
+   (flash_scan.sv). The flag comes first: a header that says done carries final boards
+   behind it. Bytes 30 and 31 are 0. Each core sends its own length, the buffers here hold the largest one. */
 #define RAM_MIRROR_LAYOUT    0x06 /* header byte 4 */
 #define RAM_MIRROR_HEAD      32
 #define RAM_MIRROR_DATA_MAX  22528 /* largest game RAM a core may announce */
@@ -116,10 +118,10 @@ static unsigned char ram_mirror_header(const unsigned char *hdr_tx) {
     return ram_mirror_verdict = 0xE3;
   }
   // the flash's slots once the core's scan is done, it may finish after the first header
-  if(!ram_mirror_slots_known && ram_mirror_buf[28] == 1 && ram_mirror_buf[29] == 0xFE) {
+  if(!ram_mirror_slots_known && ram_mirror_buf[20] == 1 && ram_mirror_buf[21] == 0xFE) {
     char line[RAM_MIRROR_SLOTS * 4 + 1];
     size_t n = 0;
-    memcpy(ram_mirror_slots, ram_mirror_buf + 20, RAM_MIRROR_SLOTS);
+    memcpy(ram_mirror_slots, ram_mirror_buf + 22, RAM_MIRROR_SLOTS);
     ram_mirror_slots_known = true;
     for(int i = 0; i < RAM_MIRROR_SLOTS; i++)
       n += (size_t)snprintf(line + n, sizeof(line) - n, " %u", ram_mirror_slots[i]);

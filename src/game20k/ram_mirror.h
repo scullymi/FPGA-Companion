@@ -8,7 +8,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define RAM_MIRROR_SLOTS 8 /**< flash slots in the header, bytes 20 to 27 */
+#define RAM_MIRROR_SLOTS 8 /**< flash slots in the header, bytes 22 to 29 */
 
 extern unsigned char ram_mirror_board; /**< the running core's board id, read only outside ram_mirror.c */
 extern uint16_t ram_mirror_tag;        /**< its interface tag, read only outside ram_mirror.c */
