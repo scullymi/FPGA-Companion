@@ -16,7 +16,8 @@
 /** @brief Where the core of a game's board comes from when a switch needs it. */
 typedef enum {
   GAMES_CORE_FLASH, /**< the flash ring, the only way without JTAG */
-  GAMES_CORE_USB    /**< its file in a USB drive's cores folder, over JTAG, see games_usb_core() */
+  GAMES_CORE_USB,   /**< its file in a USB drive's cores folder, over JTAG, see games_usb_core() */
+  GAMES_CORE_NONE   /**< neither: the running core's scan of the flash has none, no drive has it */
 } games_core_t;
 
 /** @brief One line of the page, a copy for the menu. */
@@ -78,6 +79,10 @@ bool games_find(uint32_t crc, char *path, size_t n);
  *  False without a drive, a row for the board or the file, or when the path does not fit
  *  (GAMES_PATH_MAX is enough). Built only with ENABLE_JTAG, no other way loads such a file. */
 bool games_usb_core(unsigned char board, char *path, size_t n);
+
+/** @brief Where the core of board comes from now, asked anew. Caller holds sdc_lock. Without a
+    scan of the flash (ram_mirror_slots_known) the flash counts as having it. */
+games_core_t games_core_of(unsigned char board);
 
 /** @brief Reads the footer of the file at path. Caller holds no lock. False without a valid one. */
 bool games_footer_of(const char *path, games_footer_t *out);

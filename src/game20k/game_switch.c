@@ -18,6 +18,7 @@
 #include "game.h"
 #include "ra.h"
 #include "ram_mirror.h"
+#include "stone.h"
 #ifdef ENABLE_JTAG
 #include "../gowin.h"
 #include "../jtag.h"
@@ -157,6 +158,22 @@ bool switch_step(void) {
     return false;
   }
   if(!start || key != shown) { /* a new target: its message first */
+    // game20k: no core of the board in the flash's scan or on a drive, a switch would end
+    // where it starts: the pick ends with a message instead
+    sdc_lock();
+    games_core_t core = games_core_of(board);
+    sdc_unlock();
+    if(core == GAMES_CORE_NONE) {
+      debugf("Core switch: no core of board %u for %s in the flash or on a drive", board, title);
+      start = 0;
+      shown = 0;
+      if(file) games_pick_cancel();
+      else game_switch_cancel();
+      menu_notify(MENU_EVENT_NO_CORE);
+      // the ROM now in the core decides again, as after a switch that failed
+      if(!game_rom_pending()) game_settle();
+      return false;
+    }
     start = now ? now : 1;
     shown = key;
     menu_notify(MENU_EVENT_CORE_SWITCH);
@@ -340,13 +357,14 @@ static void jtag_hangs(TimerHandle_t t) {
 }
 #endif
 
-/* game20k: loads the core at path over JTAG in place of the ring's hops, caller holds
-   sdc_lock. The load erases the FPGA first: when it fails, RECONFIG over JTAG loads the
-   first core of the flash, and the ring goes on from there. False when no core answers
-   afterwards. While the FPGA is erased the console does not get out (it goes through
-   the FPGA): the log tail keeps the lines, and a load that hangs ends in a restart by the
-   watchdog, whose start prints them (log_tail.c, main.c). */
-static bool jtag_load(const char *path) {
+/* game20k: loads the core at path over JTAG in place of the ring's hops, or with path NULL
+   the stepping stone that jumps to slot of the flash (stone.c), caller holds sdc_lock. The
+   load erases the FPGA first: when it fails, RECONFIG over JTAG loads the first core of the
+   flash, and the ring goes on from there. False when no core answers afterwards. While the
+   FPGA is erased the console does not get out (it goes through the FPGA): the log tail
+   keeps the lines, and a load that hangs ends in a restart by the watchdog, whose start
+   prints them (log_tail.c, main.c). */
+static bool jtag_load(const char *path, int slot) {
 #ifdef GAME20K_LOG_TAIL
   static TimerHandle_t hang;
   if(!hang) hang = xTimerCreate("jtag hang", pdMS_TO_TICKS(JTAG_HANG_MS), pdFALSE, NULL, jtag_hangs);
@@ -354,8 +372,9 @@ static bool jtag_load(const char *path) {
   if(hang) xTimerStart(hang, 0);
 #endif
   mcu_hw_watchdog(JTAG_WATCHDOG_MS);
-  if(!gowin_upload_core(path)) {
-    debugf("Core switch: %s did not load, the flash's first core instead", path);
+  if(!(path ? gowin_upload_core(path) : stone_jump(slot))) {
+    debugf("Core switch: %s did not load, the flash's first core instead",
+           path ? path : "the stepping stone");
     jtag_open();
     gowin_fpgaReset();
     jtag_close();
@@ -401,7 +420,7 @@ bool ring_hops(unsigned char *probe) {
   // the core the way ends at is waited for, see below the loop
   bool locked = false;
 #ifdef ENABLE_JTAG
-  bool jtag_tried = false;
+  bool jtag_tried = false, stone_tried = false;
 #endif
   for(;;) {
     if(!HOPS_ORIGIN(hops) && !HOPS_COUNT(hops)) hops |= (uint32_t)ram_mirror_board << 16;
@@ -409,6 +428,8 @@ bool ring_hops(unsigned char *probe) {
     unsigned char target = back ? HOPS_ORIGIN(hops) : board;
     // the board reached, no header, or the end of the way: switch_rom() takes over
     if(!ram_mirror_board || target == ram_mirror_board) break;
+    // the target's slot in the running core's scan of the flash, STONE_NONE without one
+    int slot = stone_slot(ram_mirror_slots, ram_mirror_slots_known, target);
 #ifdef ENABLE_JTAG
     // game20k: the target's core on a USB drive loads over JTAG in one step, the same
     // time for every core. Once per way: a file that does not bring up its board leaves
@@ -420,7 +441,7 @@ bool ring_hops(unsigned char *probe) {
       if(games_usb_core(target, path, sizeof(path))) {
         jtag_tried = true;
         debugf("Core switch for %s, board %u, over JTAG from %s", title, target, path);
-        if(!jtag_load(path)) {
+        if(!jtag_load(path, STONE_NONE)) {
           debugf("Core switch: no core after the JTAG load, restart");
           mcu_hw_reset(); /* the marker carries the way on */
         }
@@ -430,7 +451,37 @@ bool ring_hops(unsigned char *probe) {
         continue;
       }
     }
+    // game20k: the target's core in the flash, the stepping stone jumps to its slot in one
+    // step. Once per way: a jump that does not bring up the board (a slot written after
+    // the scan) leaves the rest of the way to the ring
+    if(!back && !stone_tried && slot != STONE_NONE) {
+      stone_tried = true;
+      if(!locked) sdc_lock();
+      locked = true;
+      debugf("Core switch for %s, board %u, by the stepping stone to slot %d", title, target, slot);
+      if(!jtag_load(NULL, slot)) {
+        debugf("Core switch: no core after the jump, restart");
+        mcu_hw_reset(); /* the marker carries the way on */
+      }
+      ram_mirror_forget();
+      *probe = ram_mirror_probe();
+      hopped = true;
+      continue;
+    }
 #endif
+    // game20k: the scan of the flash has no core of the game's board, a round of the ring
+    // would not find one either: the way goes back to the board of the pick, as after a
+    // whole round, and ends at once when that board runs
+    if(!back && ram_mirror_slots_known && slot == STONE_NONE) {
+      debugf("Core switch: the flash has no core of board %u for %s", board, title);
+      hops = HOPS_BACK | (hops & 0xff0000u);
+      continue;
+    }
+    // game20k: how far the ring goes, from the scan of the flash. A running core outside the
+    // flash (loaded from a USB drive) has no place in the ring to count from
+    int ring = stone_hops(ram_mirror_slots, ram_mirror_slots_known, ram_mirror_board, target);
+    if(!back && !HOPS_COUNT(hops) && ring != STONE_NONE)
+      debugf("Core switch: %d hops in the ring to board %u", ring, target);
     // back at the board of the pick: the whole round had no core of the game's board,
     // and the way back ends right here
     if(!back && HOPS_COUNT(hops) && ram_mirror_board == HOPS_ORIGIN(hops)) {

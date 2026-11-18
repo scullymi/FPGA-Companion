@@ -28,6 +28,8 @@
 #include <ff.h>
 #include "../debug.h"
 #include "../mcu_hw.h" // ENABLE_JTAG, mcu_hw_usb_msc_present()
+#include "ram_mirror.h"
+#include "stone.h"
 #include "../sdc.h"
 #include "menus.h"   // the boards this firmware has a core menu for
 #include "game.h"    // GAME_ROM_IMAGE
@@ -120,18 +122,22 @@ bool games_usb_core(unsigned char board, char *path, size_t n) {
 }
 #endif
 
+games_core_t games_core_of(unsigned char board) {
+#ifdef ENABLE_JTAG
+  char path[GAMES_PATH_MAX];
+  if(games_usb_core(board, path, sizeof(path))) return GAMES_CORE_USB;
+#endif
+  if(ram_mirror_slots_known && stone_slot(ram_mirror_slots, true, board) == STONE_NONE)
+    return GAMES_CORE_NONE;
+  return GAMES_CORE_FLASH;
+}
+
 /* Where the core of board comes from, caller holds sdc_lock. A board in the list already
    has its answer there, so the drive is asked once per board and read. */
 static games_core_t core_of(unsigned char board) {
-#ifdef ENABLE_JTAG
-  char path[GAMES_PATH_MAX];
   for(games_entry_t *e = list; e; e = e->next)
     if(e->board == board) return e->core;
-  return games_usb_core(board, path, sizeof(path)) ? GAMES_CORE_USB : GAMES_CORE_FLASH;
-#else
-  (void)board;
-  return GAMES_CORE_FLASH;
-#endif
+  return games_core_of(board);
 }
 
 /* Puts one file into the list at its place by title. */

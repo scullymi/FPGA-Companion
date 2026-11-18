@@ -243,9 +243,9 @@ void games_list_draw(void) {
     return;
   }
 #ifdef ENABLE_JTAG
-  // where the core comes from on the right, every title cut to the same room, so the
-  // column stays straight
-  room -= u8g2_GetStrWidth(&u8g2, "Flash") + 4;
+  // where the core comes from on the right, every title cut to the room left by the widest
+  // label, so the column stays straight
+  room -= u8g2_GetStrWidth(&u8g2, "no core") + 4;
 #endif
   for(int row = 0; row < 4; row++) {
     games_item_t it;
@@ -253,13 +253,18 @@ void games_list_draw(void) {
     int i = row + menu_page_scroll();
     if(!games_item((unsigned)i, &it)) break;
     int y = menu_page_y(row);
-    snprintf(title, sizeof(title), "%s", it.title);
-    menu_ellipsize(title, room);
-    u8g2_DrawStr(&u8g2, 1, y, title);
-#ifdef ENABLE_JTAG
-    const char *src = it.core == GAMES_CORE_USB ? "USB" : "Flash";
-    u8g2_DrawStr(&u8g2, width - u8g2_GetStrWidth(&u8g2, src) - 1, y, src);
+    // where the core comes from: the Pico has the flash only and names just a missing core,
+    // its title gives way on that row only
+    const char *src = it.core == GAMES_CORE_NONE ? "no core" : it.core == GAMES_CORE_USB ? "USB" : "Flash";
+    int left        = room;
+#ifndef ENABLE_JTAG
+    if(it.core != GAMES_CORE_NONE) src = NULL;
+    else left -= u8g2_GetStrWidth(&u8g2, src) + 4;
 #endif
+    snprintf(title, sizeof(title), "%s", it.title);
+    menu_ellipsize(title, left);
+    u8g2_DrawStr(&u8g2, 1, y, title);
+    if(src) u8g2_DrawStr(&u8g2, width - u8g2_GetStrWidth(&u8g2, src) - 1, y, src);
     if(menu_page_selected() == i + 1) u8g2_DrawButtonFrame(&u8g2, 0, y, U8G2_BTN_INV, width, 1, 1);
   }
 }
@@ -498,6 +503,16 @@ bool menu_page_event(long cmd) {
     // game20k: core and firmware come from different releases, the basic menu runs
     menu_draw_dialog_for("Release mismatch", "Firmware and FPGA\ndo not match.\nUpdate both.",
                          pdMS_TO_TICKS(8000));
+    return true;
+  }
+  if(cmd == MENU_EVENT_NO_CORE) {
+    // game20k: the scan of the flash has no core of the game's board, no drive has one
+#ifdef ENABLE_JTAG
+    menu_draw_dialog_for("No core", "Neither the flash nor\nthe stick has the core\nof this game.",
+                         pdMS_TO_TICKS(5000));
+#else
+    menu_draw_dialog_for("No core", "The flash has no core\nfor this game.", pdMS_TO_TICKS(5000));
+#endif
     return true;
   }
   if(cmd == MENU_EVENT_CORE_SWITCH_FAILED) {
