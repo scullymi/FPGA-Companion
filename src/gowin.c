@@ -252,6 +252,99 @@ static bool gowin_open(void) {
          idcode == IDCODE_GW5AST138);
 }
 
+// game20k: a bitstream from a read function into the FPGA's SRAM, from a file
+// (gowin_upload_core_bin()) or from memory (the stepping stone, game20k/stone.c). With
+// reconfig a RECONFIG over JTAG follows in the same JTAG session.
+bool gowin_upload_core_read(gowin_read_t read, void *ctx, uint32_t size, bool reconfig) {
+  // an empty bitstream would leave the TAP in the middle of the SRAM write
+  if(!size) {
+    gowin_debugf("No bitstream to load");
+    return false;
+  }
+
+  if(!gowin_open()) {
+    gowin_debugf("FPGA not detected");
+    jtag_close();
+    return false;
+  }
+  
+  // measure total download time
+  TickType_t ticks = xTaskGetTickCount();
+  
+  gowin_debugf("=== Erase SRAM ===");
+  if(!gowin_eraseSRAM()) {
+    gowin_debugf("Failed to erase SRAM");
+    jtag_close();
+    return false;
+  }
+
+  if (idcode == IDCODE_GW5AST138) {
+    gowin_debugf("=== 2nd Erase SRAM ===");
+    if(!gowin_eraseSRAM()) {
+      gowin_debugf("Failed to erase SRAM");
+      jtag_close();
+      return false;
+    }
+  }
+ 
+  gowin_debugf("=== Load SRAM ===");
+  gowin_writeSRAM_prepare();
+    
+  bool ok = true;
+  uint8_t buffer[512];
+  uint32_t total = 0;
+
+#ifdef MCU_HW_JTAG_GPIO_OUT_MODE
+  mcu_hw_jtag_enter_gpio_out_mode();
+#endif
+  
+  while(total < size) {
+    uint16_t n = size - total < sizeof(buffer) ? (uint16_t)(size - total) : sizeof(buffer);
+    if(!(ok = read(ctx, buffer, n))) break;
+    total += n;
+
+#ifndef MCU_HW_JTAG_GPIO_OUT_MODE
+    for(uint16_t i=0;i<n;i++) buffer[i] = reverse_byte(buffer[i]);
+    gowin_writeSRAM_transfer(buffer, n, total >= size);
+#else
+    mcu_hw_jtag_writeTDI_msb_first_gpio_out_mode(buffer, n, total >= size);
+#endif
+  }
+
+#ifdef MCU_HW_JTAG_GPIO_OUT_MODE
+  mcu_hw_jtag_exit_gpio_out_mode();
+
+  // send TMS 1/0 to return into RUN-TEST/IDLE
+  mcu_hw_jtag_tms(1, 0b01, 2);    // normally this happens in gowin_writeSRAM_transfer/jtag_shiftDR_part
+#endif  
+
+  if(!ok) {
+    fatal_debugf("Binary download failed after %lu bytes", total);
+    jtag_close();
+    return false;	
+  }
+
+  // don't set checksum. A load the FPGA did not take is no success, a RECONFIG after it
+  // would hide that
+  ok = gowin_writeSRAM_postproc(0xffffffff);
+  
+  gowin_debugf("Read %lu bytes", total);
+  
+  ticks = xTaskGetTickCount() - ticks;
+  gowin_debugf("Download time: %lu.%03lu seconds", ticks/1000, ticks%1000);
+
+  if(ok && reconfig) gowin_fpgaReset();
+  jtag_close();
+
+  return ok;
+}
+
+// game20k: the read function of gowin_upload_core_bin(), the next len bytes of the file
+static bool gowin_read_file(void *ctx, uint8_t *buf, uint16_t len) {
+  UINT got;
+  return f_read((FIL *)ctx, buf, len, &got) == FR_OK && got == len;
+}
+
 // try to open "core.bin" on the sd card and try to transfer it via JTAG to
 // the FPGA
 static bool gowin_upload_core_bin(const char *name) {
@@ -268,86 +361,10 @@ static bool gowin_upload_core_bin(const char *name) {
     gowin_debugf("Opening %s failed", name);
     return false;
   }
-    
-  if(!gowin_open()) {
-    gowin_debugf("FPGA not detected");
-    jtag_close();
-    f_close(&fil);
-    return false;
-  }
-  
-  // measure total download time
-  TickType_t ticks = xTaskGetTickCount();
-  
-  gowin_debugf("=== Erase SRAM ===");
-  if(!gowin_eraseSRAM()) {
-    gowin_debugf("Failed to erase SRAM");
-    jtag_close();
-    f_close(&fil);
-    return false;
-  }
 
-  if (idcode == IDCODE_GW5AST138) {
-    gowin_debugf("=== 2nd Erase SRAM ===");
-    if(!gowin_eraseSRAM()) {
-      gowin_debugf("Failed to erase SRAM");
-      jtag_close();
-      f_close(&fil);
-      return false;
-    }
-  }
- 
-  gowin_debugf("=== Load SRAM ===");
-  gowin_writeSRAM_prepare();
-    
-  FRESULT fr;
-  uint8_t buffer[512];
-  UINT bytesRead;
-  uint32_t total = 0;
-
-#ifdef MCU_HW_JTAG_GPIO_OUT_MODE
-  mcu_hw_jtag_enter_gpio_out_mode();
-#endif
-  
-  do {
-    if((fr = f_read(&fil, buffer, sizeof(buffer), &bytesRead)) == FR_OK) {
-      total += bytesRead;
-
-#ifndef MCU_HW_JTAG_GPIO_OUT_MODE
-      for(UINT i=0;i<bytesRead;i++) buffer[i] = reverse_byte(buffer[i]);
-      gowin_writeSRAM_transfer(buffer, bytesRead, total >= fno.fsize);
-#else
-      mcu_hw_jtag_writeTDI_msb_first_gpio_out_mode(buffer, bytesRead, total >= fno.fsize);
-#endif
-    }
-  } while(fr == FR_OK && total < fno.fsize);
-
-#ifdef MCU_HW_JTAG_GPIO_OUT_MODE
-  mcu_hw_jtag_exit_gpio_out_mode();
-
-  // send TMS 1/0 to return into RUN-TEST/IDLE
-  mcu_hw_jtag_tms(1, 0b01, 2);    // normally this happens in gowin_writeSRAM_transfer/jtag_shiftDR_part
-#endif  
-
-  if(fr != FR_OK) {
-    fatal_debugf("Binary download failed after %lu bytes", total);
-    jtag_close();
-    f_close(&fil);
-    return false;	
-  }
-
-  // don't set checksum
-  gowin_writeSRAM_postproc(0xffffffff);
-  
-  gowin_debugf("Read %lu bytes", total);
-  
-  ticks = xTaskGetTickCount() - ticks;
-  gowin_debugf("Download time: %lu.%03lu seconds", ticks/1000, ticks%1000);
-  
-  jtag_close();
+  bool ok = gowin_upload_core_read(gowin_read_file, &fil, fno.fsize, false);
   f_close(&fil);
-
-  return true;
+  return ok;
 }
 
 // try to open on the sd card and try to transfer it via JTAG into the FPGA

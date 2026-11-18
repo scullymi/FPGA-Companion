@@ -85,6 +85,9 @@
 #define IDCODE_GW5A25     0x1281b
 
 bool gowin_upload_core(const char *name);
+// game20k: the next len bytes of a bitstream into buf, false when there are none
+typedef bool (*gowin_read_t)(void *ctx, uint8_t *buf, uint16_t len);
+bool gowin_upload_core_read(gowin_read_t read, void *ctx, uint32_t size, bool reconfig);
 void gowin_fpgaReset(void);
 
 #endif // GOWIN_H
