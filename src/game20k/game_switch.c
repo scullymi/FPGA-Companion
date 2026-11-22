@@ -332,7 +332,7 @@ void switch_rom(void) {
    empty default keeps an MCU without it building. */
 __attribute__((weak)) void mcu_hw_watchdog(unsigned ms) { (void)ms; }
 
-#define JTAG_WATCHDOG_MS 20000 /* well above a load plus the waits for a core, FPGA_BOOT_TIMEOUT each */
+#define JTAG_WATCHDOG_MS 20000 /* well above a load plus two waits for a core, FPGA_BOOT_TIMEOUT each */
 
 #ifdef GAME20K_LOG_TAIL
 #include "timers.h"
@@ -359,8 +359,10 @@ static void jtag_hangs(TimerHandle_t t) {
 
 /* game20k: loads the core at path over JTAG in place of the ring's hops, or with path NULL
    the stepping stone that jumps to slot of the flash (stone.c), caller holds sdc_lock. The
-   load erases the FPGA first: when it fails, RECONFIG over JTAG loads the first core of the
-   flash, and the ring goes on from there. False when no core answers afterwards. While the
+   load erases the FPGA first: when it fails, or no core answers after it (e.g. a file built
+   for another board, whose SPI pins differ), RECONFIG over JTAG loads the first core of the
+   flash, and the way goes on from there within this start. A restart would find the same
+   file again. False when no core answers even then. While the
    FPGA is erased the console does not get out (it goes through the FPGA): the log tail
    keeps the lines, and a load that hangs ends in a restart by the watchdog, whose start
    prints them (log_tail.c, main.c). */
@@ -372,14 +374,20 @@ static bool jtag_load(const char *path, int slot) {
   if(hang) xTimerStart(hang, 0);
 #endif
   mcu_hw_watchdog(JTAG_WATCHDOG_MS);
-  if(!(path ? gowin_upload_core(path) : stone_jump(slot))) {
-    debugf("Core switch: %s did not load, the flash's first core instead",
-           path ? path : "the stepping stone");
+  bool up = path ? gowin_upload_core(path) : stone_jump(slot);
+  if(!up) debugf("Core switch: %s did not load", path ? path : "the stepping stone");
+  else if(!(up = sys_wait4fpga()))
+    debugf("Core switch: no core answers after %s", path ? path : "the stepping stone");
+  if(!up) {
+    debugf("Core switch: the flash's first core instead");
+#ifdef GAME20K_LOG_TAIL
+    if(hang) xTimerReset(hang, 0); /* the way back is no hang of the load */
+#endif
     jtag_open();
     gowin_fpgaReset();
     jtag_close();
+    up = sys_wait4fpga();
   }
-  bool up = sys_wait4fpga();
   mcu_hw_watchdog(0);
 #ifdef GAME20K_LOG_TAIL
   if(hang) xTimerStop(hang, 0);
