@@ -444,6 +444,9 @@ bool ring_hops(unsigned char *probe) {
     // the rest of the way to the ring, from the core that came up
     if(!back && !jtag_tried) {
       char path[GAMES_PATH_MAX];
+      // a core the flash does not have comes from a drive only: it mounts a few seconds
+      // after the start, also after a restart that carries the way on (games.c)
+      if(!locked && ram_mirror_slots_known && slot == STONE_NONE) games_usb_wait();
       if(!locked) sdc_lock();
       locked = true;
       if(games_usb_core(target, path, sizeof(path))) {

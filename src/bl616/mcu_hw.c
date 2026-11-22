@@ -28,6 +28,7 @@
 #include "../inifile.h"
 #include "../menu.h"
 #include "../gowin.h"
+#include "../game20k/game20k.h" // game20k: games_usb_mount()
 
 #include <bl616_hbn.h>
 #include "bl616_glb.h"
@@ -3110,6 +3111,14 @@ void mcu_hw_upload_core(char *name) {
     sdc_direct_release();
 #endif
   } else {
+#ifdef GAME20K
+      // game20k: games.c holds the drive's file system, it stays mounted for the Games page
+      (void)start;
+      (void)fs;
+      (void)res;
+      if (!games_usb_mount()) debugf("failed to mount USB drive");
+      else gowin_upload_core(name);
+#else
       f_mount(NULL, "/usb", 1);
       start = bflb_mtimer_get_time_ms();
       while ((res = f_mount(&fs, "/usb", 1)) != FR_OK && bflb_mtimer_get_time_ms() - start < USBH_MSC_READY_TIMEOUT_MS)
@@ -3121,6 +3130,7 @@ void mcu_hw_upload_core(char *name) {
 	  gowin_upload_core(name);
           f_mount(NULL, "/usb", 1);
         }
+#endif
   }
 #else
   fatal_debugf("JTAG not enabled!");

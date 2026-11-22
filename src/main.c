@@ -76,6 +76,7 @@ void core_start(void) {
     // user configure ones from the ini file. This will also
     // start rom image transfers if specified in the ini file
     switch_rom();            /* game20k: a game picked before a core switch goes first */
+    games_usb_defaults();    /* game20k: an image on a USB drive waits for the drive */
     sdc_mount_defaults();
     core_images_open();      /* game20k */
 

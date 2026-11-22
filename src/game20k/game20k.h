@@ -35,6 +35,7 @@ static inline unsigned char ram_mirror_probe(void) { return 0; }
 static inline void core_config_file(void) {}
 static inline void core_images_open(void) {}
 static inline void switch_rom(void) {}
+static inline void games_usb_defaults(void) {}
 static inline bool ra_patch_init(void) { return true; }
 static inline void ra_mac_init(void) {}
 

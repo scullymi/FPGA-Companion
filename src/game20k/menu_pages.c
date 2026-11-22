@@ -515,6 +515,12 @@ bool menu_page_event(long cmd) {
 #endif
     return true;
   }
+  if(cmd == MENU_EVENT_USB_MISSING) {
+    // game20k: the start game or an image of the ini is on a drive that was not there in time
+    menu_draw_dialog_for("USB drive", "The USB drive did not\nshow up in time. Its\ngame does not start.",
+                         pdMS_TO_TICKS(5000));
+    return true;
+  }
   if(cmd == MENU_EVENT_CORE_SWITCH_FAILED) {
     // game20k: the running bitstream was built before the core switch
     menu_draw_dialog_for("Core switch", "This bitstream cannot load\nanother core. The game goes on.",

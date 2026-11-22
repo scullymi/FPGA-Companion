@@ -2196,9 +2196,14 @@ static void menu_task(__attribute__((unused)) void *parms) {
 
       vTaskDelay(100);
 
+#ifdef GAME20K
+      // game20k: games.c mounts the drive, at the start also before the menu runs
+      if (!games_usb_mount()) menu_debugf("/usb mount failed");
+#else
       static FATFS usb_fs;
       FRESULT fres;
       if ( (fres = f_mount(&usb_fs, "/usb", 1)) != FR_OK ) menu_debugf("/usb mount failed: %d", fres);
+#endif
       else {
 	menu_debugf("/usb mounted");
 #ifdef GAME20K
@@ -2207,7 +2212,11 @@ static void menu_task(__attribute__((unused)) void *parms) {
 	menu_draw_dialog("USB", "A USB mass storage device has been detected!");
       }
     } else if(cmd == MENU_EVENT_USB_UMOUNTED) {
+#ifdef GAME20K
+      if (!games_usb_unmount())	menu_debugf("/usb unmount failed");
+#else
       if (f_unmount("/usb") != FR_OK )	menu_debugf("/usb unmount failed");
+#endif
       else	                        menu_debugf("/usb unmounted");
 #ifdef GAME20K
       games_changed(NULL);    // game20k: its ROM files leave the Games page

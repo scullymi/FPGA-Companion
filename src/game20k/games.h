@@ -10,7 +10,7 @@
 #include <stdint.h>
 #include "games_file.h"
 
-#define GAMES_START_FILE "/sd/games.ini"   /**< "start=<file>", written by Save settings */
+#define GAMES_START_FILE "/sd/games.ini"   /**< "start=<path>", written by Save settings */
 #define GAMES_PATH_MAX   (FF_LFN_BUF + 12) /**< a ROM or core path: "/usb/roms/", a long name, the NUL */
 
 /** @brief Where the core of a game's board comes from when a switch needs it. */
@@ -68,10 +68,33 @@ bool games_pick_commit(unsigned seq);
 /** @brief Drops the pick, e.g. when the core switch failed. */
 void games_pick_cancel(void);
 
+/** @brief Mounts the USB drive's file system at /usb once the USB stack has the drive. Caller holds no lock.
+ *
+ *  True when it is mounted, now or before. The menu task calls it when a drive comes, the
+ *  start of the firmware through games_usb_wait() before the menu runs. */
+bool games_usb_mount(void);
+/** @brief The drive is gone: unmounts /usb. Caller holds no lock. False when FatFs refused. */
+bool games_usb_unmount(void);
+/** @brief Waits until the drive is mounted, at most until GAMES_USB_WAIT_MS after the start. Caller holds no lock.
+ *
+ *  At power-on and after a restart of the MCU a drive mounts a few seconds later than the
+ *  start game and the ini are read. Later than that it returns at once. False when no drive
+ *  was mounted by then, games_usb_missed() tells it. */
+bool games_usb_wait(void);
+/** @brief True once after a wait for the drive ran out. Any task. */
+bool games_usb_missed(void);
+/** @brief Before the images of the ini mount: waits for the drive when one of them is on it. Caller holds no lock.
+ *
+ *  Then tells the menu with MENU_EVENT_USB_MISSING when a wait for the drive ran out since
+ *  the start, its game does not start. */
+void games_usb_defaults(void);
+
 /** @brief True when dir is a folder the list reads, the card's root or a USB drive's roms folder. */
 bool games_in_dir(const char *dir);
 
-/** @brief The ROM file whose name has that CRC-32, from the card's root or a USB drive's roms folder, its path into path. Caller holds no lock. */
+/** @brief The ROM file whose name has that CRC-32, from the card's root or a USB drive's roms folder, its path into path. Caller holds no lock.
+ *
+ *  The card goes first. Not found there, it waits for the drive (games_usb_wait()). */
 bool games_find(uint32_t crc, char *path, size_t n);
 
 /** @brief The core of a board as a file on a USB drive, /usb/cores/<core>.bin with the core's folder from the menu table, its path into path. Caller holds sdc_lock.
@@ -89,13 +112,14 @@ bool games_footer_of(const char *path, games_footer_t *out);
 
 /** @brief Save settings: the running ROM file becomes the start game in GAMES_START_FILE. Caller holds no lock.
  *
- *  A ROM outside the card's root, or none, removes the start game. */
+ *  A ROM outside the folders of the list (games_in_dir()), or none, removes the start game. */
 void games_save_start(void);
 
-/** @brief The start game at power-on: its name in the root into name, and its footer. Caller holds no lock.
+/** @brief The start game at power-on: its file name into name, and its footer. Caller holds no lock.
  *
- *  False when none is stored, or its file is gone, has no valid footer or a board
- *  the table does not know. */
+ *  A start game on a USB drive, or one whose core only a drive has (ENABLE_JTAG), waits for
+ *  the drive (games_usb_wait()). False when none is stored, its folder is not one of the list,
+ *  or its file is gone, has no valid footer or a board the table does not know. */
 bool games_start_file(char *name, size_t n, games_footer_t *ft);
 
 #endif /* GAMES_H */

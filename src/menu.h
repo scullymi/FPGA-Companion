@@ -40,6 +40,7 @@
 #define MENU_EVENT_PARK          26  // game20k: another core comes up, the menu task waits, see menu_park()
 #define MENU_EVENT_GAMES_CHANGED 27  // game20k: the card's ROM files changed and an open Games page reads them again
 #define MENU_EVENT_NO_CORE       28  // game20k: neither the flash nor a USB drive has the core of the game picked
+#define MENU_EVENT_USB_MISSING   29  // game20k: the start game or an image of the ini is on a USB drive that did not come
 
 #define MENU_EVENT_KEY_LATIN1    256  // 256..511
 
