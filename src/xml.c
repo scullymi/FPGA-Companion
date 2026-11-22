@@ -14,6 +14,7 @@
 
 static int state = 0;
 static int depth = 0;
+static int skip = 0;
 
 // a name or value is built up char by char in a buffer that doubles when it is full and
 // is kept for the next one: the heap is not touched for every char
@@ -23,6 +24,8 @@ typedef struct {
 } xml_buf_t;
 
 static xml_buf_t name, value;
+// chars at the start of value whose entities are decoded already
+static int decoded = 0;
 
 static void xml_buf_clear(xml_buf_t *b) {
   b->len = 0;
@@ -38,6 +41,8 @@ static void xml_buf_free(xml_buf_t *b) {
 void xml_init(void) {
   state = 0;  // wait for open tag  
   depth = 0;  // start in root level 
+  skip = 0;   // no element skipped
+  decoded = 0;
   xml_buf_free(&name);
   xml_buf_free(&value);
 }
@@ -46,7 +51,7 @@ static int xml_iswhite(unsigned char c) {
   return (c == ' ') || (c == '\t') || (c == '\r') || (c == '\n');  
 }
 
-// append char to buffer, a NUL char only makes sure the buffer exists
+// append char to buffer (a NUL char is not stored)
 static void xml_buf_add(xml_buf_t *b, char c) {
   // space for the new char and the term char
   if(b->len + 2 > b->size) {
@@ -63,10 +68,10 @@ static void xml_buf_add(xml_buf_t *b, char c) {
   b->str[b->len] = '\0';
 }
 
-// replace an entity at the end of the buffer by its char
-static int xml_buf_unescape(xml_buf_t *b, const char *entity, char c) {
+// replace an entity at the end of the buffer with its char if it begins at or after start
+static int xml_buf_unescape(xml_buf_t *b, int start, const char *entity, char c) {
   int n = strlen(entity);
-  if(b->len < n || strcasecmp(entity, b->str + b->len - n)) return 0;
+  if(b->len - n < start || strcasecmp(entity, b->str + b->len - n)) return 0;
   b->len -= n - 1;
   b->str[b->len - 1] = c;
   b->str[b->len] = '\0';
@@ -74,7 +79,6 @@ static int xml_buf_unescape(xml_buf_t *b, const char *entity, char c) {
 }
 
 int xml_parse(char c) {
-  static int skip = 0;
   
   // debugf("S%d: %d (%c)", state, c, (c>=32)?c:'.');
 
@@ -164,17 +168,21 @@ int xml_parse(char c) {
   case 9:  // attribute value started with '
     if((state == 8 && c == '\"') ||
        (state == 9 && c == '\'')) {
-      // an empty value is passed as NULL
-      if(!skip) xml_attribute_cb(name.str, value.len ? value.str : NULL);
+      // an empty value is passed as an empty string
+      if(!skip) xml_attribute_cb(name.str, value.str ? value.str : "");
       xml_buf_clear(&name);
       xml_buf_clear(&value);
+      decoded = 0;
       state = 4;     // -> search for next attribute
     } else {
       xml_buf_add(&value, c);
 
-      // check if string now ends with escaped char
-      if(!xml_buf_unescape(&value, "&amp;", '&') && !xml_buf_unescape(&value, "&lt;", '<'))
-	xml_buf_unescape(&value, "&gt;", '>');
+      // check if the string now ends with an entity. A decoded char never starts another one.
+      if(c == ';' &&
+	 (xml_buf_unescape(&value, decoded, "&amp;", '&') ||
+	  xml_buf_unescape(&value, decoded, "&lt;", '<') ||
+	  xml_buf_unescape(&value, decoded, "&gt;", '>')))
+	decoded = value.len;
     }
     break;
     
